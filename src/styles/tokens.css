@@ -1,0 +1,101 @@
+/* ══════════════════════════════════════════════════
+ *  Context Design Tokens — built on Open Props
+ * ══════════════════════════════════════════════════
+ * Context's polish layer. Maps Open Props primitives to
+ * Context-named tokens so the rest of the app uses our
+ * vocabulary, not Open Props's. If we swap the primitive
+ * library later, only this file needs to change.
+ *
+ * Open Props is loaded BEFORE this file (build.js order),
+ * giving us --size-1..15, --shadow-1..6, --radius-1..6,
+ * --ease-out-1..5, --font-size-1..8 etc.
+ *
+ * Type system: Geist Sans + Geist Mono v1.8.0 (Vercel's
+ * open-source faces, OFL-licensed). Self-hosted from /fonts/
+ * as variable WOFF2 — one file per family covers every weight
+ * via font-variation-settings. Total payload ~140KB, no
+ * third-party dependency, no Google Fonts roundtrip on first
+ * paint.
+ *
+ * Inter / JetBrains Mono stay as fallbacks for the brief window
+ * before Geist arrives + for any surface that hasn't been
+ * upgraded to call var(--font-sans) yet.
+ */
+
+@font-face {
+  font-family: 'Geist';
+  src: url('/fonts/Geist-Variable.woff2') format('woff2-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/GeistMono-Variable.woff2') format('woff2-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* Override the Inter/JBM defaults from main.css so every
+     surface using var(--font-sans) / var(--font-mono) picks
+     up Geist. main.css declares its values at :root with
+     specificity 0,1,0; this :root block is loaded LATER in
+     the bundle so it wins on cascade order. */
+  --font-sans: 'Geist', 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Geist Mono', 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+  /* Geist's stylistic set 1 + tighter spacing alternate */
+  font-feature-settings: 'ss01', 'cv11';
+  font-optical-sizing: auto;
+}
+
+:root {
+  /* ── Spacing — generous, modern SaaS ────────────── */
+  --space-2xs: var(--size-1);      /*  4px */
+  --space-xs:  var(--size-2);      /*  8px */
+  --space-sm:  var(--size-3);      /* 16px */
+  --space-md:  var(--size-4);      /* 20px */
+  --space-lg:  var(--size-5);      /* 24px */
+  --space-xl:  var(--size-6);      /* 28px */
+  --space-2xl: var(--size-7);      /* 32px */
+  --space-3xl: var(--size-8);      /* 48px */
+
+  /* ── Card chrome — Linear / Things 3 feel ─────── */
+  --card-bg: var(--surface);
+  --card-bg-hover: var(--surface);
+  --card-border-color: var(--border-soft);
+  --card-border-color-hover: rgba(31, 35, 40, 0.14);
+  --card-radius: 12px;
+  --card-padding: var(--space-lg);          /* 24px */
+  --card-padding-tight: var(--space-md);    /* 20px */
+  --card-gap: var(--space-md);              /* 20px */
+  --card-shadow: 0 1px 2px rgba(31, 35, 40, 0.04), 0 1px 3px rgba(31, 35, 40, 0.04);
+  --card-shadow-hover: 0 1px 2px rgba(31, 35, 40, 0.04), 0 6px 16px rgba(31, 35, 40, 0.07);
+  --card-shadow-focus: 0 0 0 3px rgba(37, 99, 235, 0.15), 0 1px 3px rgba(31, 35, 40, 0.06);
+
+  /* ── Easing — Linear's signature feel ─────────── */
+  --ease-snap: var(--ease-out-4);    /* fast in, glassy stop */
+  --ease-flow: var(--ease-out-3);    /* smooth, default */
+  --ease-soft: var(--ease-out-2);    /* gentle */
+
+  /* ── Section rhythm ───────────────────────────── */
+  --section-padding-x: var(--space-lg);
+  --section-padding-y: var(--space-xl);
+  --section-gap: var(--space-2xl);
+
+  /* ── Typography rhythm — Inter-led, breathing ── */
+  --type-display:    600 30px/1.15  var(--font-sans);
+  --type-h1:         600 22px/1.3   var(--font-sans);
+  --type-h2:         600 18px/1.35  var(--font-sans);
+  --type-h3:         600 15px/1.4   var(--font-sans);
+  --type-body:       400 14px/1.55  var(--font-sans);
+  --type-body-sm:    400 13px/1.5   var(--font-sans);
+  --type-meta:       400 12px/1.5   var(--font-sans);
+  --type-label:      500 10.5px/1.2 var(--font-mono);  /* eyebrow labels */
+  --type-stat:       600 30px/1     var(--font-mono);  /* numbers that pop */
+
+  /* ── Hover lift — soft, fast ──────────────────── */
+  --hover-lift: translateY(-1px);
+  --hover-lift-stronger: translateY(-2px);
+}

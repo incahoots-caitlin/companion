@@ -1,0 +1,317 @@
+/* ══════════════════════════════════════════════════
+ *  In Cahoots Studio — layout
+ * ══════════════════════════════════════════════════ */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: var(--type-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Sidebar ─────────────────────────────────────────── */
+.sidebar {
+  background: var(--surface);
+  border-right: 1px solid var(--border-soft);
+  padding: var(--space-lg) var(--space-md);
+  overflow-y: auto;
+}
+
+.sidebar-brand {
+  font: var(--type-h2);
+  letter-spacing: -0.01em;
+  margin-bottom: var(--space-xl);
+  padding: 0 var(--space-xs);
+}
+
+.sidebar-section { margin-bottom: var(--space-lg); }
+
+.sidebar-label {
+  font: var(--type-label);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: 0 var(--space-xs);
+  margin-bottom: var(--space-xs);
+}
+
+.sidebar-item {
+  display: block;
+  padding: 6px var(--space-xs);
+  border-radius: var(--radius-md);
+  color: var(--text-mid);
+  text-decoration: none;
+  font: var(--type-body);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.sidebar-item:hover {
+  background: var(--surface2);
+  color: var(--text);
+}
+
+.sidebar-item.active {
+  background: var(--surface2);
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* ── Main pane ───────────────────────────────────────── */
+.main {
+  overflow-y: auto;
+  background: var(--bg);
+}
+
+.main-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--surface-glass);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border-soft);
+  padding: var(--space-md) var(--section-padding-x);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.main-title {
+  font: var(--type-h1);
+  letter-spacing: -0.01em;
+}
+
+.header-actions { display: flex; gap: var(--space-xs); }
+
+.button {
+  font: var(--type-body-sm);
+  font-weight: 500;
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  background: var(--text);
+  color: var(--surface);
+  border: 0;
+  cursor: pointer;
+  transition: transform var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.button:hover {
+  background: var(--text-mid);
+  transform: var(--hover-lift);
+}
+
+.button-secondary {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-soft);
+}
+
+.button-secondary:hover {
+  background: var(--surface2);
+}
+
+/* ── Workflow starter row ────────────────────────────── */
+.section-label {
+  font: var(--type-label);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: var(--space-md) var(--section-padding-x) var(--space-xs);
+}
+
+.workflow-starters {
+  padding: 0 var(--section-padding-x) var(--space-md);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-sm);
+}
+
+.workflow-card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border-color);
+  border-radius: var(--card-radius);
+  padding: var(--card-padding-tight);
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast);
+}
+
+.workflow-card:hover {
+  transform: var(--hover-lift);
+  box-shadow: var(--card-shadow-hover);
+  border-color: var(--card-border-color-hover);
+}
+
+.workflow-card-title {
+  font: var(--type-h3);
+  margin-bottom: 4px;
+}
+
+.workflow-card-meta {
+  font: var(--type-meta);
+  color: var(--text-muted);
+}
+
+/* ── Receipt feed ────────────────────────────────────── */
+.feed {
+  padding: 0 var(--section-padding-x) var(--space-3xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.receipt {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border-color);
+  border-radius: var(--card-radius);
+  padding: var(--card-padding);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.receipt-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.receipt-title {
+  font: var(--type-h3);
+  font-family: var(--font-sans);
+}
+
+.receipt-meta {
+  font: var(--type-meta);
+  color: var(--text-muted);
+}
+
+.receipt-section-label {
+  font: var(--type-label);
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: var(--space-sm) 0 var(--space-xs);
+}
+
+.receipt-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-sm);
+  padding: 4px 0;
+  align-items: baseline;
+}
+
+.receipt-item-text { color: var(--text); }
+
+.receipt-item-qty {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  text-align: right;
+  min-width: 28px;
+}
+
+.receipt-item-task label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.receipt-item-task input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.receipt-item-task.done .task-label {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.receipt-divider {
+  border-top: 1px dashed var(--border);
+  margin: var(--space-md) 0;
+}
+
+.receipt-position {
+  text-align: center;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 16px;
+  color: var(--text-mid);
+  padding: var(--space-md) var(--space-sm);
+  line-height: 1.5;
+}
+
+.receipt-totals {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-sm);
+  font-family: var(--font-mono);
+}
+
+.receipt-totals .total {
+  font-weight: 700;
+  border-top: 1px solid var(--text);
+  padding-top: 4px;
+}
+
+.receipt-stamp {
+  text-align: center;
+  font-family: var(--font-sans);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-md);
+  padding: 8px 24px;
+  margin: var(--space-md) auto;
+  width: max-content;
+  transform: rotate(-1.5deg);
+}
+
+.receipt-paid-meta {
+  text-align: center;
+  font: var(--type-meta);
+  font-family: var(--font-mono);
+  color: var(--text-mid);
+  line-height: 1.7;
+}
+
+.receipt-footer {
+  text-align: center;
+  font: var(--type-meta);
+  color: var(--text-muted);
+  font-style: italic;
+  margin-top: var(--space-md);
+  padding-top: var(--space-sm);
+  border-top: 1px dashed var(--border);
+}
+
+/* Scrollbar polish */
+.main::-webkit-scrollbar,
+.sidebar::-webkit-scrollbar {
+  width: 8px;
+}
+.main::-webkit-scrollbar-thumb,
+.sidebar::-webkit-scrollbar-thumb {
+  background: var(--border-soft);
+  border-radius: 4px;
+}

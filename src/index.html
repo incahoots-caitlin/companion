@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>In Cahoots Studio</title>
+    <link rel="stylesheet" href="vendor/open-props.min.css" />
+    <link rel="stylesheet" href="styles/bridge.css" />
+    <link rel="stylesheet" href="styles/tokens.css" />
+    <link rel="stylesheet" href="styles/app.css" />
+    <script type="module" src="/main.js" defer></script>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="sidebar-brand">In Cahoots Studio</div>
+
+      <div class="sidebar-section">
+        <a class="sidebar-item active" data-view="today">Today</a>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-label">Products</div>
+        <a class="sidebar-item" data-view="cool">COOL</a>
+        <a class="sidebar-item" data-view="context">Context</a>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-label">Studio</div>
+        <a class="sidebar-item" data-view="northcote">Northcote Theatre</a>
+        <a class="sidebar-item" data-view="untitled">Untitled Group</a>
+        <a class="sidebar-item" data-view="pipeline">Pipeline</a>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-label">Personal</div>
+        <a class="sidebar-item" data-view="mba">MBA</a>
+        <a class="sidebar-item" data-view="fundraising">Fundraising</a>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="main-header">
+        <div class="main-title">Today</div>
+        <div class="header-actions">
+          <button class="button button-secondary" id="workflows-btn">Workflows</button>
+          <button class="button" id="strategic-thinking-btn">Start Strategic Thinking</button>
+        </div>
+      </header>
+
+      <div class="section-label">Start a workflow</div>
+      <section class="workflow-starters">
+        <div class="workflow-card">
+          <div class="workflow-card-title">New Client Onboarding</div>
+          <div class="workflow-card-meta">Discovery → scope → CSA → handoff</div>
+        </div>
+        <div class="workflow-card">
+          <div class="workflow-card-title">New Campaign Scope</div>
+          <div class="workflow-card-meta">Festival, venue, touring, capability</div>
+        </div>
+        <div class="workflow-card">
+          <div class="workflow-card-title">Subcontractor Onboarding</div>
+          <div class="workflow-card-meta">CSA + role + pre-start info</div>
+        </div>
+        <div class="workflow-card">
+          <div class="workflow-card-title">Strategic Thinking</div>
+          <div class="workflow-card-meta">Decision capture and receipt</div>
+        </div>
+        <div class="workflow-card">
+          <div class="workflow-card-title">Monthly Check-in</div>
+          <div class="workflow-card-meta">Retainer client review</div>
+        </div>
+        <div class="workflow-card">
+          <div class="workflow-card-title">Quarterly Review</div>
+          <div class="workflow-card-meta">QBR for retainer clients</div>
+        </div>
+      </section>
+
+      <div class="section-label">Recent receipts</div>
+      <section class="feed" id="feed"></section>
+    </main>
+  </body>
+</html>
