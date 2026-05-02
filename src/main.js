@@ -100,7 +100,23 @@ function renderReceipt(receipt) {
   const root = el("article", { class: "receipt" });
   root.dataset.receiptId = receipt.id;
 
-  // Header
+  // Brand wordmark + entity line (mirrors the typst thermal header).
+  const brand = el("div", { class: "receipt-brand" });
+  const wordmark = el("img", {
+    class: "receipt-wordmark",
+    src: "assets/header_serif.png",
+    alt: "In Cahoots",
+  });
+  brand.appendChild(wordmark);
+  brand.appendChild(
+    el("div", { class: "receipt-entity" }, [
+      "In Cahoots Group Pty Ltd · ABN 12687932949 · incahoots.marketing",
+    ])
+  );
+  root.appendChild(brand);
+  root.appendChild(el("div", { class: "receipt-divider" }));
+
+  // Doc label + date
   root.appendChild(
     el("div", { class: "receipt-header" }, [
       el("div", { class: "receipt-title" }, [receipt.title]),
@@ -160,6 +176,25 @@ function renderReceipt(receipt) {
   if (receipt.footer_note) {
     root.appendChild(el("div", { class: "receipt-footer" }, [receipt.footer_note]));
   }
+
+  // Brand sign-off (mirrors typst page-footer): tagline → Oslo mark → entity.
+  const signoff = el("div", { class: "receipt-signoff" });
+  signoff.appendChild(
+    el("div", { class: "receipt-tagline" }, ["pleasure being in cahoots"])
+  );
+  signoff.appendChild(
+    el("img", {
+      class: "receipt-oslo",
+      src: "assets/oslo.png",
+      alt: "in cahoots",
+    })
+  );
+  signoff.appendChild(
+    el("div", { class: "receipt-entity-small" }, [
+      "In Cahoots Group Pty Ltd · ABN 12687932949 · psst@incahoots.marketing",
+    ])
+  );
+  root.appendChild(signoff);
 
   return root;
 }
