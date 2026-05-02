@@ -164,6 +164,25 @@ function renderReceipt(receipt) {
   return root;
 }
 
+// Inline toast (replaces alert()).
+function showToast(message, opts = {}) {
+  let root = document.getElementById("toast-root");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "toast-root";
+    document.body.appendChild(root);
+  }
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.textContent = message;
+  root.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add("toast-show"));
+  setTimeout(() => {
+    toast.classList.remove("toast-show");
+    setTimeout(() => toast.remove(), 200);
+  }, opts.ttl ?? 2800);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const feed = document.getElementById("feed");
   if (feed) feed.appendChild(renderReceipt(STRATEGIC_THINKING));
@@ -176,7 +195,38 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // Sidebar routing (visual only for v0.1.x; real views land later).
+  const titleEl = document.querySelector(".main-title");
+  document.querySelectorAll(".sidebar-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      const view = item.dataset.view || "today";
+      const label = item.textContent.trim();
+      document.querySelectorAll(".sidebar-item").forEach((i) => {
+        i.classList.remove("active");
+        i.removeAttribute("aria-current");
+      });
+      item.classList.add("active");
+      item.setAttribute("aria-current", "page");
+      if (titleEl) titleEl.textContent = label;
+      if (view !== "today") {
+        showToast(`${label} isn't wired yet. Today is the live view this build.`);
+      }
+    });
+  });
+
+  // Workflow cards — visual feedback for now, runner lands next build.
+  document.querySelectorAll(".workflow-card").forEach((card) => {
+    card.addEventListener("click", () => {
+      const name = card.querySelector(".workflow-card-title")?.textContent || "Workflow";
+      showToast(`${name}: workflow runner lands next build.`);
+    });
+  });
+
   document.getElementById("strategic-thinking-btn")?.addEventListener("click", () => {
-    alert("Workflow runner wires up next build. The spike proves the architecture.");
+    showToast("Workflow runner lands next build. The spike proves the architecture.");
+  });
+
+  document.getElementById("workflows-btn")?.addEventListener("click", () => {
+    document.querySelector(".workflow-starters")?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 });
