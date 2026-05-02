@@ -49,7 +49,7 @@ When the user shares what they're thinking through, your job is to:
 
 - `"1"` = a new decision or insight Caitlin landed in this session
 - `"✓"` = something already done or confirmed during the session
-- `type: "task"` with `done: false` = a follow-up action she needs to take
+- `type: "task"` with `done: false` = a follow-up action she needs to take. Optionally include `on_done: "slack:#channel"` so ticking the item in Studio fires a Slack post. Use `#client-work` for client-specific tasks, `#all-in-cahoots` for studio-wide announcements, `#context-builds` for Context-related work.
 
 The `position` block holds the one-sentence "where we landed" line. Keep it sharp and direct.
 

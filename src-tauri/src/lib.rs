@@ -3,9 +3,12 @@
 // Tauri commands the frontend invokes:
 //   get_api_key_status()          -> bool
 //   save_api_key(key)             -> Result<(), String>
-//   run_strategic_thinking(input) -> Result<String, String>  (returns receipt JSON, also saves to DB)
+//   get_slack_status()            -> bool
+//   save_slack_webhook(url)       -> Result<(), String>
+//   run_strategic_thinking(input) -> Result<String, String>
 //   list_receipts(limit)          -> Result<Vec<String>, String>
 //   delete_receipt(id)            -> Result<(), String>
+//   tick_item(receipt_id, idx)    -> Result<String, String>  (returns updated JSON)
 
 use keyring::Entry;
 use rusqlite::{params, Connection};
@@ -15,6 +18,7 @@ use tauri::{Manager, State};
 
 const KEYRING_SERVICE: &str = "marketing.incahoots.studio";
 const KEYRING_USER: &str = "anthropic-api-key";
+const KEYRING_SLACK: &str = "slack-webhook-url";
 const ANTHROPIC_API: &str = "https://api.anthropic.com/v1/messages";
 const MODEL_ID: &str = "claude-opus-4-7";
 
@@ -89,6 +93,52 @@ fn save_api_key(key: String) -> Result<(), String> {
     entry
         .set_password(trimmed)
         .map_err(|e| format!("Keychain write error: {}", e))?;
+    Ok(())
+}
+
+fn read_slack_webhook() -> Option<String> {
+    Entry::new(KEYRING_SERVICE, KEYRING_SLACK)
+        .ok()
+        .and_then(|e| e.get_password().ok())
+}
+
+#[tauri::command]
+fn get_slack_status() -> bool {
+    read_slack_webhook().is_some()
+}
+
+#[tauri::command]
+fn save_slack_webhook(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("Empty URL".to_string());
+    }
+    if !trimmed.starts_with("https://hooks.slack.com/") {
+        return Err("Expected a Slack incoming-webhook URL (hooks.slack.com/...)".to_string());
+    }
+    let entry = Entry::new(KEYRING_SERVICE, KEYRING_SLACK)
+        .map_err(|e| format!("Keychain error: {}", e))?;
+    entry
+        .set_password(trimmed)
+        .map_err(|e| format!("Keychain write error: {}", e))?;
+    Ok(())
+}
+
+async fn post_to_slack(webhook: &str, message: &str) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let body = serde_json::json!({ "text": message });
+    let resp = client
+        .post(webhook)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Slack post: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("Slack returned {}", resp.status().as_u16()));
+    }
     Ok(())
 }
 
@@ -234,6 +284,90 @@ fn delete_receipt(state: State<DbState>, id: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn tick_item(
+    state: State<'_, DbState>,
+    receipt_id: String,
+    item_index: usize,
+) -> Result<String, String> {
+    // Load existing JSON from DB (sync, lock dropped before any await).
+    let original_json = {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        let mut stmt = conn
+            .prepare("SELECT json FROM receipts WHERE id = ?1")
+            .map_err(|e| format!("DB prepare: {}", e))?;
+        stmt.query_row(params![receipt_id], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("Receipt {} not found: {}", receipt_id, e))?
+    };
+
+    // Mutate the addressed item.done = true.
+    let mut value: serde_json::Value =
+        serde_json::from_str(&original_json).map_err(|e| format!("Parse: {}", e))?;
+
+    let mut hook_target: Option<String> = None;
+    let mut item_text = String::new();
+    let mut found = false;
+
+    {
+        let title = value["title"].as_str().unwrap_or("Receipt").to_string();
+        let mut idx = 0usize;
+        if let Some(sections) = value["sections"].as_array_mut() {
+            'outer: for section in sections.iter_mut() {
+                if let Some(items) = section["items"].as_array_mut() {
+                    for item in items.iter_mut() {
+                        if idx == item_index {
+                            if item["type"].as_str() == Some("task") {
+                                item["done"] = serde_json::Value::Bool(true);
+                                if let Some(t) = item["text"].as_str() {
+                                    item_text = format!("{} (from {})", t, title);
+                                }
+                                if let Some(h) = item["on_done"].as_str() {
+                                    hook_target = Some(h.to_string());
+                                }
+                                found = true;
+                                break 'outer;
+                            }
+                        }
+                        idx += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if !found {
+        return Err(format!(
+            "Item {} not found or not a task in receipt {}",
+            item_index, receipt_id
+        ));
+    }
+
+    // Save updated JSON back.
+    let new_json = serde_json::to_string(&value).map_err(|e| format!("Serialize: {}", e))?;
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        conn.execute(
+            "UPDATE receipts SET json = ?1 WHERE id = ?2",
+            params![new_json, receipt_id],
+        )
+        .map_err(|e| format!("DB update: {}", e))?;
+    }
+
+    // Fire on_done hook (best-effort).
+    if let Some(target) = hook_target {
+        if let Some(channel) = target.strip_prefix("slack:") {
+            if let Some(webhook) = read_slack_webhook() {
+                let msg = format!(":white_check_mark: *{}*\nposted to {}", item_text, channel);
+                if let Err(e) = post_to_slack(&webhook, &msg).await {
+                    eprintln!("Slack post failed: {}", e);
+                }
+            }
+        }
+    }
+
+    Ok(new_json)
+}
+
 // ── Tauri entry ─────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -252,10 +386,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_api_key_status,
             save_api_key,
+            get_slack_status,
+            save_slack_webhook,
             run_strategic_thinking,
             save_receipt,
             list_receipts,
-            delete_receipt
+            delete_receipt,
+            tick_item
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

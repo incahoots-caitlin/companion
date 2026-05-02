@@ -561,3 +561,55 @@ body {
   gap: var(--space-xs);
   padding: var(--space-md) var(--space-lg);
 }
+
+/* ── Settings modal sections ─────────────────────────────── */
+.settings-body {
+  padding: var(--space-md) var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-label {
+  font: var(--type-h3);
+}
+
+.settings-meta {
+  font: var(--type-body-sm);
+  color: var(--text-muted);
+}
+
+.settings-row {
+  display: flex;
+  gap: var(--space-xs);
+  align-items: stretch;
+  margin-top: 4px;
+}
+
+.settings-input {
+  flex: 1;
+  font: var(--type-body-sm);
+  font-family: var(--font-mono);
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-deep);
+  color: var(--text);
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.settings-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+/* Pin Settings to bottom of sidebar. */
+.sidebar { display: flex; flex-direction: column; }
+.sidebar-section-bottom { margin-top: auto; }

@@ -34,6 +34,12 @@ const STRATEGIC_THINKING = {
         { qty: "1", text: "Domain plan: cntxt.studio" },
         { qty: "✓", text: "Trademark logic clarified" },
         { qty: "1", text: "Product family architecture: studio + collective + tools" },
+        {
+          type: "task",
+          text: "Register cntxt.studio domain",
+          done: false,
+          on_done: "slack:#all-in-cahoots",
+        },
       ],
     },
   ],
@@ -76,9 +82,13 @@ function el(tag, props = {}, children = []) {
   return node;
 }
 
-function renderItem(item) {
+function renderItem(item, absoluteIndex) {
   if (item.type === "task") {
-    const checkbox = el("input", { type: "checkbox", checked: item.done ?? false });
+    const checkbox = el("input", {
+      type: "checkbox",
+      checked: item.done ?? false,
+      disabled: item.done ?? false,
+    });
     const label = el("span", { class: "task-label" }, [item.text]);
     const qty = el("span", { class: "receipt-item-qty" }, [item.qty || "☐"]);
     const row = el(
@@ -88,6 +98,8 @@ function renderItem(item) {
       },
       [el("label", {}, [checkbox, label]), qty]
     );
+    row.dataset.itemIndex = String(absoluteIndex);
+    if (item.on_done) row.dataset.onDone = item.on_done;
     return row;
   }
   return el("div", { class: "receipt-item" }, [
@@ -124,14 +136,19 @@ function renderReceipt(receipt) {
     ])
   );
 
-  // Sections
+  // Sections — track absolute item index across all sections so the
+  // backend tick_item command can address any task by single integer.
+  let absoluteIndex = 0;
   receipt.sections.forEach((section, idx) => {
     if (section.header) {
       root.appendChild(
         el("div", { class: "receipt-section-label" }, [section.header])
       );
     }
-    section.items.forEach((item) => root.appendChild(renderItem(item)));
+    section.items.forEach((item) => {
+      root.appendChild(renderItem(item, absoluteIndex));
+      absoluteIndex += 1;
+    });
     if (idx < receipt.sections.length - 1) {
       root.appendChild(el("div", { class: "receipt-divider" }));
     }
@@ -256,6 +273,96 @@ async function ensureApiKey() {
   }
 }
 
+// ─── Settings modal ──────────────────────────────────────────────────
+async function showSettingsModal() {
+  if (document.getElementById("settings-modal")) return;
+  const overlay = el("div", { id: "settings-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, ["Settings"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+
+  let apiSet = false;
+  let slackSet = false;
+  if (isTauri) {
+    try { apiSet = await invoke("get_api_key_status"); } catch {}
+    try { slackSet = await invoke("get_slack_status"); } catch {}
+  }
+
+  const body = el("div", { class: "settings-body" });
+
+  // Anthropic API key.
+  body.appendChild(el("div", { class: "settings-section" }, [
+    el("div", { class: "settings-label" }, ["Anthropic API key"]),
+    el("div", { class: "settings-meta" }, [
+      apiSet ? "Set in Keychain. Paste again to overwrite." : "Required for Strategic Thinking and other workflows.",
+    ]),
+    el("div", { class: "settings-row" }, [
+      el("input", {
+        id: "settings-api-key",
+        type: "password",
+        placeholder: "sk-ant-...",
+        class: "settings-input",
+      }),
+      el("button", { class: "button", id: "settings-api-save" }, ["Save"]),
+    ]),
+  ]));
+
+  // Slack webhook.
+  body.appendChild(el("div", { class: "settings-section" }, [
+    el("div", { class: "settings-label" }, ["Slack webhook URL"]),
+    el("div", { class: "settings-meta" }, [
+      slackSet
+        ? "Set in Keychain. Paste again to overwrite. on_done hooks on receipt items will post to this webhook's channel."
+        : "Optional. Set this and any task with on_done='slack:#channel' will post when ticked.",
+    ]),
+    el("div", { class: "settings-row" }, [
+      el("input", {
+        id: "settings-slack-url",
+        type: "url",
+        placeholder: "https://hooks.slack.com/services/...",
+        class: "settings-input",
+      }),
+      el("button", { class: "button", id: "settings-slack-save" }, ["Save"]),
+    ]),
+  ]));
+
+  modal.appendChild(body);
+  modal.appendChild(el("div", { class: "modal-actions" }, [
+    el("button", { class: "button button-secondary", id: "settings-close" }, ["Done"]),
+  ]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  document.getElementById("settings-close").addEventListener("click", close);
+
+  document.getElementById("settings-api-save").addEventListener("click", async () => {
+    const key = document.getElementById("settings-api-key").value.trim();
+    if (!key) return showToast("Paste a key first");
+    try {
+      await invoke("save_api_key", { key });
+      showToast("API key saved");
+      document.getElementById("settings-api-key").value = "";
+    } catch (e) { showToast(`Save failed: ${e}`); }
+  });
+
+  document.getElementById("settings-slack-save").addEventListener("click", async () => {
+    const url = document.getElementById("settings-slack-url").value.trim();
+    if (!url) return showToast("Paste a URL first");
+    try {
+      await invoke("save_slack_webhook", { url });
+      showToast("Slack webhook saved");
+      document.getElementById("settings-slack-url").value = "";
+    } catch (e) { showToast(`Save failed: ${e}`); }
+  });
+}
+
 // ─── Strategic Thinking modal ────────────────────────────────────────
 function showStrategicThinkingModal() {
   if (document.getElementById("st-modal")) return;
@@ -357,19 +464,47 @@ document.addEventListener("DOMContentLoaded", () => {
   const feed = document.getElementById("feed");
   loadFeed();
 
-  // Tick handler for any future task receipts.
-  feed?.addEventListener("change", (e) => {
-    if (e.target.matches('input[type="checkbox"]')) {
-      const row = e.target.closest(".receipt-item-task");
-      if (row) row.classList.toggle("done", e.target.checked);
+  // Tick handler: update UI optimistically, fire backend tick_item to
+  // persist + run on_done hook (Slack post, etc.).
+  feed?.addEventListener("change", async (e) => {
+    if (!e.target.matches('input[type="checkbox"]')) return;
+    const row = e.target.closest(".receipt-item-task");
+    if (!row) return;
+
+    const ticking = e.target.checked;
+    row.classList.toggle("done", ticking);
+    if (!ticking || !isTauri) return;
+
+    const receiptEl = row.closest(".receipt");
+    const receiptId = receiptEl?.dataset.receiptId;
+    const itemIndex = parseInt(row.dataset.itemIndex || "-1", 10);
+    if (!receiptId || itemIndex < 0) return;
+
+    e.target.disabled = true;
+    try {
+      await invoke("tick_item", { receiptId, itemIndex });
+      const onDone = row.dataset.onDone;
+      showToast(onDone ? `Ticked, hook fired (${onDone})` : "Ticked");
+    } catch (err) {
+      e.target.disabled = false;
+      e.target.checked = false;
+      row.classList.remove("done");
+      showToast(`Tick failed: ${err}`, { ttl: 5000 });
     }
   });
 
-  // Sidebar routing (visual only for v0.1.x; real views land later).
+  // Sidebar routing.
   const titleEl = document.querySelector(".main-title");
   document.querySelectorAll(".sidebar-item").forEach((item) => {
     item.addEventListener("click", () => {
       const view = item.dataset.view || "today";
+
+      // Settings opens a modal instead of routing.
+      if (view === "settings") {
+        showSettingsModal();
+        return;
+      }
+
       const label = item.textContent.trim();
       document.querySelectorAll(".sidebar-item").forEach((i) => {
         i.classList.remove("active");
