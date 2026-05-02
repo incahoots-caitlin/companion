@@ -24,7 +24,10 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 const KEYRING_SERVICE: &str = "marketing.incahoots.studio";
 const KEYRING_USER: &str = "anthropic-api-key";
 const KEYRING_SLACK: &str = "slack-webhook-url";
+const KEYRING_AIRTABLE_KEY: &str = "airtable-api-key";
+const KEYRING_AIRTABLE_BASE: &str = "airtable-base-id";
 const ANTHROPIC_API: &str = "https://api.anthropic.com/v1/messages";
+const AIRTABLE_API: &str = "https://api.airtable.com/v0";
 const MODEL_ID: &str = "claude-opus-4-7";
 
 const STRATEGIC_THINKING_PROMPT: &str =
@@ -127,6 +130,92 @@ fn save_slack_webhook(url: String) -> Result<(), String> {
         .set_password(trimmed)
         .map_err(|e| format!("Keychain write error: {}", e))?;
     Ok(())
+}
+
+// ── Airtable ───────────────────────────────────────────────────────────
+
+fn read_airtable_creds() -> Option<(String, String)> {
+    let key = Entry::new(KEYRING_SERVICE, KEYRING_AIRTABLE_KEY)
+        .ok()?
+        .get_password()
+        .ok()?;
+    let base = Entry::new(KEYRING_SERVICE, KEYRING_AIRTABLE_BASE)
+        .ok()?
+        .get_password()
+        .ok()?;
+    Some((key, base))
+}
+
+#[tauri::command]
+fn get_airtable_status() -> bool {
+    read_airtable_creds().is_some()
+}
+
+#[tauri::command]
+fn save_airtable_credentials(api_key: String, base_id: String) -> Result<(), String> {
+    let key = api_key.trim();
+    let base = base_id.trim();
+    if key.is_empty() || base.is_empty() {
+        return Err("Both API key and base ID required".to_string());
+    }
+    if !base.starts_with("app") {
+        return Err("Base ID must start with 'app' (find it at airtable.com/api)".to_string());
+    }
+    Entry::new(KEYRING_SERVICE, KEYRING_AIRTABLE_KEY)
+        .map_err(|e| format!("Keychain: {}", e))?
+        .set_password(key)
+        .map_err(|e| format!("Save key: {}", e))?;
+    Entry::new(KEYRING_SERVICE, KEYRING_AIRTABLE_BASE)
+        .map_err(|e| format!("Keychain: {}", e))?
+        .set_password(base)
+        .map_err(|e| format!("Save base: {}", e))?;
+    Ok(())
+}
+
+async fn airtable_get(table: &str, query: &str) -> Result<serde_json::Value, String> {
+    let (api_key, base_id) = read_airtable_creds().ok_or("Airtable not configured")?;
+    let qs = if query.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", query)
+    };
+    let url = format!("{}/{}/{}{}", AIRTABLE_API, base_id, table, qs);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let resp = client
+        .get(&url)
+        .bearer_auth(&api_key)
+        .send()
+        .await
+        .map_err(|e| format!("Network: {}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Airtable {}: {}", status.as_u16(), body));
+    }
+    resp.json().await.map_err(|e| format!("Parse: {}", e))
+}
+
+#[tauri::command]
+async fn list_airtable_clients() -> Result<String, String> {
+    let data = airtable_get(
+        "Clients",
+        "filterByFormula=%7Bstatus%7D%3D%27active%27&fields%5B%5D=code&fields%5B%5D=name&fields%5B%5D=status",
+    )
+    .await?;
+    serde_json::to_string(&data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_airtable_projects() -> Result<String, String> {
+    let data = airtable_get(
+        "Projects",
+        "filterByFormula=NOT(%7Bstatus%7D%3D%27archive%27)&fields%5B%5D=code&fields%5B%5D=name&fields%5B%5D=status&fields%5B%5D=client",
+    )
+    .await?;
+    serde_json::to_string(&data).map_err(|e| e.to_string())
 }
 
 async fn post_to_slack(webhook: &str, message: &str) -> Result<(), String> {
@@ -461,6 +550,10 @@ pub fn run() {
             save_api_key,
             get_slack_status,
             save_slack_webhook,
+            get_airtable_status,
+            save_airtable_credentials,
+            list_airtable_clients,
+            list_airtable_projects,
             run_strategic_thinking,
             save_receipt,
             list_receipts,

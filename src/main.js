@@ -287,9 +287,11 @@ async function showSettingsModal() {
 
   let apiSet = false;
   let slackSet = false;
+  let airtableSet = false;
   if (isTauri) {
     try { apiSet = await invoke("get_api_key_status"); } catch {}
     try { slackSet = await invoke("get_slack_status"); } catch {}
+    try { airtableSet = await invoke("get_airtable_status"); } catch {}
   }
 
   const body = el("div", { class: "settings-body" });
@@ -330,6 +332,33 @@ async function showSettingsModal() {
     ]),
   ]));
 
+  // Airtable.
+  body.appendChild(el("div", { class: "settings-section" }, [
+    el("div", { class: "settings-label" }, ["Airtable"]),
+    el("div", { class: "settings-meta" }, [
+      airtableSet
+        ? "Connected. Sidebar pulls active clients from your base. Paste again to rotate credentials."
+        : "Connect to your 'In Cahoots Ops' base. Personal access token + base ID. Studio's sidebar will pull active clients on launch.",
+    ]),
+    el("div", { class: "settings-row" }, [
+      el("input", {
+        id: "settings-airtable-key",
+        type: "password",
+        placeholder: "patXXXXXXXX...  (Personal Access Token)",
+        class: "settings-input",
+      }),
+    ]),
+    el("div", { class: "settings-row" }, [
+      el("input", {
+        id: "settings-airtable-base",
+        type: "text",
+        placeholder: "appXXXXXXXX  (Base ID)",
+        class: "settings-input",
+      }),
+      el("button", { class: "button", id: "settings-airtable-save" }, ["Save"]),
+    ]),
+  ]));
+
   modal.appendChild(body);
   modal.appendChild(el("div", { class: "modal-actions" }, [
     el("button", { class: "button button-secondary", id: "settings-close" }, ["Done"]),
@@ -361,6 +390,66 @@ async function showSettingsModal() {
       document.getElementById("settings-slack-url").value = "";
     } catch (e) { showToast(`Save failed: ${e}`); }
   });
+
+  document.getElementById("settings-airtable-save").addEventListener("click", async () => {
+    const apiKey = document.getElementById("settings-airtable-key").value.trim();
+    const baseId = document.getElementById("settings-airtable-base").value.trim();
+    if (!apiKey || !baseId) return showToast("Both fields required");
+    try {
+      await invoke("save_airtable_credentials", { apiKey, baseId });
+      showToast("Airtable connected");
+      document.getElementById("settings-airtable-key").value = "";
+      document.getElementById("settings-airtable-base").value = "";
+      // Refresh the sidebar so the new client list shows up.
+      loadStudioSidebar();
+    } catch (e) { showToast(`Save failed: ${e}`); }
+  });
+}
+
+// ─── Sidebar dynamic load (Airtable Clients) ─────────────────────────
+async function loadStudioSidebar() {
+  if (!isTauri) return;
+  const studioSection = document.querySelector(".sidebar-section[data-section='studio']");
+  if (!studioSection) return;
+
+  let configured = false;
+  try { configured = await invoke("get_airtable_status"); } catch {}
+  if (!configured) return; // keep static placeholders
+
+  let raw;
+  try {
+    raw = await invoke("list_airtable_clients");
+  } catch (e) {
+    console.warn("list_airtable_clients failed:", e);
+    return;
+  }
+  const data = JSON.parse(raw);
+  const records = data.records || [];
+
+  // Replace static client items, keep the "Studio" label and Pipeline link.
+  studioSection.innerHTML = "";
+  studioSection.appendChild(el("div", { class: "sidebar-label" }, ["Studio"]));
+  records.forEach((r) => {
+    const f = r.fields || {};
+    const label = f.code ? `${f.code} — ${f.name || f.code}` : (f.name || "Untitled");
+    const item = el("a", {
+      class: "sidebar-item",
+      "data-view": `client-${(f.code || "").toLowerCase()}`,
+    }, [label]);
+    item.addEventListener("click", () => {
+      document.querySelectorAll(".sidebar-item").forEach((i) => {
+        i.classList.remove("active");
+        i.removeAttribute("aria-current");
+      });
+      item.classList.add("active");
+      item.setAttribute("aria-current", "page");
+      const titleEl = document.querySelector(".main-title");
+      if (titleEl) titleEl.textContent = label;
+      showToast(`${f.code || f.name}: per-client view lands in v0.7+`);
+    });
+    studioSection.appendChild(item);
+  });
+  studioSection.appendChild(el("a", { class: "sidebar-item", "data-view": "pipeline" }, ["Pipeline"]));
 }
 
 // ─── Strategic Thinking modal ────────────────────────────────────────
@@ -521,6 +610,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // First-launch API key check (Tauri only).
   ensureApiKey();
+
+  // Airtable: hydrate sidebar with active clients if connected.
+  loadStudioSidebar();
 
   async function openStrategicThinking() {
     if (!isTauri) {
