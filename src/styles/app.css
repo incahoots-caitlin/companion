@@ -470,6 +470,7 @@ body {
 }
 
 .banner-warn { background: var(--text); }
+.banner-info { background: var(--accent); }
 
 .banner-text { flex: 1; }
 

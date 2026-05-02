@@ -280,6 +280,48 @@ async function ensureApiKey() {
   }
 }
 
+// ─── Auto-update ─────────────────────────────────────────────────────
+async function checkForUpdates() {
+  if (!isTauri) return;
+  const updater = window.__TAURI__?.updater;
+  if (!updater?.check) return;
+  try {
+    const update = await updater.check();
+    if (update?.available) showUpdateBanner(update);
+  } catch (e) {
+    console.warn("Update check failed:", e);
+  }
+}
+
+function showUpdateBanner(update) {
+  if (document.getElementById("update-banner")) return;
+  const banner = el("div", { id: "update-banner", class: "banner banner-info" }, [
+    el("div", { class: "banner-text" }, [
+      `Studio ${update.version} is ready. ${update.body || "Click install to update and restart."}`,
+    ]),
+    el("button", { class: "button banner-button", id: "update-dismiss" }, ["Later"]),
+    el("button", { class: "button banner-button", id: "update-install" }, ["Install"]),
+  ]);
+  document.body.prepend(banner);
+
+  document.getElementById("update-dismiss").addEventListener("click", () => banner.remove());
+
+  document.getElementById("update-install").addEventListener("click", async () => {
+    const btn = document.getElementById("update-install");
+    btn.disabled = true;
+    btn.textContent = "Downloading...";
+    try {
+      await update.downloadAndInstall();
+      // Tauri 2 updater restarts the app on macOS automatically. If it
+      // doesn't, the user can quit and relaunch.
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "Install";
+      showToast(`Update failed: ${e}`, { ttl: 6000 });
+    }
+  });
+}
+
 // ─── Settings modal ──────────────────────────────────────────────────
 async function showSettingsModal() {
   if (document.getElementById("settings-modal")) return;
@@ -646,6 +688,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Airtable: hydrate sidebar with active clients if connected.
   loadStudioSidebar();
+
+  // Background: check for updates on launch.
+  checkForUpdates();
 
   async function openStrategicThinking() {
     if (!isTauri) {
