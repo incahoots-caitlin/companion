@@ -128,11 +128,18 @@ function renderReceipt(receipt) {
   root.appendChild(brand);
   root.appendChild(el("div", { class: "receipt-divider" }));
 
-  // Doc label + date
+  // Doc label + date + reprint action
   root.appendChild(
     el("div", { class: "receipt-header" }, [
       el("div", { class: "receipt-title" }, [receipt.title]),
-      el("div", { class: "receipt-meta" }, [receipt.date]),
+      el("div", { class: "receipt-meta-cluster" }, [
+        el("span", { class: "receipt-meta" }, [receipt.date]),
+        el("button", {
+          class: "receipt-action-btn",
+          "data-action": "reprint",
+          title: "Reprint to Munbyn",
+        }, ["Reprint"]),
+      ]),
     ])
   );
 
@@ -552,6 +559,32 @@ async function loadFeed() {
 document.addEventListener("DOMContentLoaded", () => {
   const feed = document.getElementById("feed");
   loadFeed();
+
+  // Receipt action buttons (currently: reprint).
+  feed?.addEventListener("click", async (e) => {
+    const btn = e.target.closest('.receipt-action-btn[data-action="reprint"]');
+    if (!btn) return;
+    if (!isTauri) {
+      showToast("Reprint runs in the Studio app, not the browser preview.");
+      return;
+    }
+    const receiptEl = btn.closest(".receipt");
+    const receiptId = receiptEl?.dataset.receiptId;
+    if (!receiptId) return showToast("No receipt id");
+
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = "Printing...";
+    try {
+      await invoke("reprint_receipt", { receiptId });
+      showToast("Sent to Munbyn");
+    } catch (err) {
+      showToast(`Reprint failed: ${err}`, { ttl: 6000 });
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
 
   // Tick handler: update UI optimistically, fire backend tick_item to
   // persist + run on_done hook (Slack post, etc.).

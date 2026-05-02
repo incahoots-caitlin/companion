@@ -221,6 +221,35 @@ body {
   color: var(--text-muted);
 }
 
+.receipt-meta-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.receipt-action-btn {
+  font: var(--type-meta);
+  font-family: var(--font-mono);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.receipt-action-btn:hover:not(:disabled) {
+  background: var(--surface2);
+  color: var(--text);
+  border-color: var(--card-border-color-hover);
+}
+
+.receipt-action-btn:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
 .receipt-section-label {
   font: var(--type-label);
   text-transform: uppercase;

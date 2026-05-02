@@ -30,6 +30,14 @@ const ANTHROPIC_API: &str = "https://api.anthropic.com/v1/messages";
 const AIRTABLE_API: &str = "https://api.airtable.com/v0";
 const MODEL_ID: &str = "claude-opus-4-7";
 
+// Munbyn reprint paths. Both live in the team-shared Dropbox so Rose
+// also has them, but only Caitlin's Mac has the printer queue named
+// "Munbyn", so reprint will fail soft on her machine.
+const TYPST_DIR: &str =
+    "/Users/caitlinreilly/Library/CloudStorage/Dropbox/IN CAHOOTS/TEMPLATES/RECEIPT-DOCS/typst";
+const PRINT_SCRIPT: &str =
+    "/Users/caitlinreilly/Library/CloudStorage/Dropbox/IN CAHOOTS/TEMPLATES/RECEIPT-DOCS/print-thermal.sh";
+
 const STRATEGIC_THINKING_PROMPT: &str =
     include_str!("../prompts/strategic-thinking-system.md");
 
@@ -462,6 +470,94 @@ async fn tick_item(
     Ok(new_json)
 }
 
+// ── Munbyn reprint ─────────────────────────────────────────────────────
+
+fn template_for_workflow(workflow: &str) -> &'static str {
+    match workflow {
+        "strategic-thinking" => "thermal/strategic-receipt.typ",
+        // Default to the strategic receipt layout until other workflows
+        // get their own templates.
+        _ => "thermal/strategic-receipt.typ",
+    }
+}
+
+// macOS apps launched via Finder get a stripped PATH (/usr/bin:/bin only).
+// Augment so typst (Homebrew) and the print script's helpers are findable.
+fn enriched_path() -> String {
+    let existing = std::env::var("PATH").unwrap_or_default();
+    format!(
+        "/opt/homebrew/bin:/usr/local/bin:/opt/homebrew/sbin:/usr/local/sbin:{}",
+        existing
+    )
+}
+
+#[tauri::command]
+async fn reprint_receipt(state: State<'_, DbState>, receipt_id: String) -> Result<(), String> {
+    // Load receipt JSON + workflow from DB.
+    let (json, workflow) = {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        conn.query_row(
+            "SELECT json, workflow FROM receipts WHERE id = ?1",
+            params![receipt_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(|e| format!("Receipt {} not found: {}", receipt_id, e))?
+    };
+
+    // Bail early on installs without the templates folder.
+    if !std::path::Path::new(TYPST_DIR).exists() {
+        return Err(
+            "Receipt templates not on this machine. Reprint runs from Caitlin's install."
+                .to_string(),
+        );
+    }
+
+    // Write the receipt JSON into the typst data folder. Hidden filename
+    // so it doesn't pollute the templates registry.
+    let data_path = format!("{}/data/.studio-reprint.json", TYPST_DIR);
+    std::fs::write(&data_path, &json).map_err(|e| format!("Write temp data: {}", e))?;
+
+    let template = template_for_workflow(&workflow);
+    let safe_id = receipt_id.replace([':', '/', ' '], "-");
+    let pdf_path = format!("/tmp/studio-reprint-{}.pdf", safe_id);
+    let path = enriched_path();
+
+    // Compile typst PDF from the typst dir as project root.
+    let typst_out = tokio::process::Command::new("typst")
+        .env("PATH", &path)
+        .args([
+            "compile",
+            "--root",
+            ".",
+            template,
+            &pdf_path,
+            "--input",
+            "datafile=../data/.studio-reprint.json",
+        ])
+        .current_dir(TYPST_DIR)
+        .output()
+        .await
+        .map_err(|e| format!("typst spawn (is typst installed via Homebrew?): {}", e))?;
+    if !typst_out.status.success() {
+        let stderr = String::from_utf8_lossy(&typst_out.stderr);
+        return Err(format!("typst compile failed: {}", stderr));
+    }
+
+    // Send to Munbyn via the existing thermal print script.
+    let print_out = tokio::process::Command::new("bash")
+        .env("PATH", &path)
+        .args([PRINT_SCRIPT, &pdf_path])
+        .output()
+        .await
+        .map_err(|e| format!("print spawn: {}", e))?;
+    if !print_out.status.success() {
+        let stderr = String::from_utf8_lossy(&print_out.stderr);
+        return Err(format!("print failed: {}", stderr));
+    }
+
+    Ok(())
+}
+
 // ── Tauri entry ─────────────────────────────────────────────────────────
 
 fn toggle_main_window(app: &tauri::AppHandle) {
@@ -558,7 +654,8 @@ pub fn run() {
             save_receipt,
             list_receipts,
             delete_receipt,
-            tick_item
+            tick_item,
+            reprint_receipt
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
