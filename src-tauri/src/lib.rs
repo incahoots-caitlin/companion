@@ -14,7 +14,12 @@ use keyring::Entry;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    Manager, State,
+};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 const KEYRING_SERVICE: &str = "marketing.incahoots.studio";
 const KEYRING_USER: &str = "anthropic-api-key";
@@ -370,17 +375,85 @@ async fn tick_item(
 
 // ── Tauri entry ─────────────────────────────────────────────────────────
 
+fn toggle_main_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        match win.is_visible() {
+            Ok(true) => {
+                let _ = win.hide();
+            }
+            _ => {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let toggle_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyS);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_shortcut(toggle_shortcut)
+                .expect("register global shortcut")
+                .with_handler(move |app, shortcut, event| {
+                    if shortcut == &toggle_shortcut && event.state() == ShortcutState::Pressed {
+                        toggle_main_window(app);
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
+            // SQLite init.
             let dir = app.path().app_data_dir().expect("app_data_dir");
             std::fs::create_dir_all(&dir).expect("create app_data_dir");
             let path = dir.join("studio.db");
             let conn = Connection::open(&path).expect("open studio.db");
             init_db(&conn).expect("init schema");
             app.manage(DbState(Mutex::new(conn)));
+
+            // Tray icon with a small menu.
+            let open_item = MenuItem::with_id(app, "open", "Open Studio", true, None::<&str>)?;
+            let new_thinking = MenuItem::with_id(
+                app,
+                "new-thinking",
+                "Start Strategic Thinking",
+                true,
+                Some("Cmd+Shift+S"),
+            )?;
+            let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit Studio", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open_item, &new_thinking, &separator, &quit_item])?;
+
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .menu_on_left_click(true)
+                .tooltip("In Cahoots Studio")
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open" => {
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                    "new-thinking" => {
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                            let _ = win.eval(
+                                "document.getElementById('strategic-thinking-btn')?.click()",
+                            );
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .build(app)?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
