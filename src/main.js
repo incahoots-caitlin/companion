@@ -199,6 +199,117 @@ function renderReceipt(receipt) {
   return root;
 }
 
+// ─── Tauri bridge (works in dev preview by failing soft) ─────────────
+const tauri = window.__TAURI__?.core;
+const isTauri = !!tauri;
+
+async function invoke(cmd, args) {
+  if (!isTauri) {
+    throw new Error("Studio backend not available, running in browser preview");
+  }
+  return tauri.invoke(cmd, args);
+}
+
+// ─── API key banner ──────────────────────────────────────────────────
+function showApiKeyBanner() {
+  if (document.getElementById("api-key-banner")) return;
+  const banner = el("div", { id: "api-key-banner", class: "banner banner-warn" }, [
+    el("div", { class: "banner-text" }, [
+      "Set your Anthropic API key to run live workflows. ",
+      el("a", {
+        href: "https://console.anthropic.com/settings/keys",
+        target: "_blank",
+        rel: "noopener",
+      }, ["Grab one from console.anthropic.com"]),
+      ".",
+    ]),
+    el("input", {
+      id: "api-key-input",
+      type: "password",
+      placeholder: "sk-ant-...",
+      class: "banner-input",
+    }),
+    el("button", { class: "button banner-button", id: "api-key-save" }, ["Save"]),
+  ]);
+  document.body.prepend(banner);
+  document.getElementById("api-key-save").addEventListener("click", async () => {
+    const key = document.getElementById("api-key-input").value.trim();
+    if (!key) return showToast("Paste a key first");
+    try {
+      await invoke("save_api_key", { key });
+      banner.remove();
+      showToast("API key saved");
+    } catch (e) {
+      showToast(`Save failed: ${e}`);
+    }
+  });
+}
+
+async function ensureApiKey() {
+  if (!isTauri) return false;
+  try {
+    const has = await invoke("get_api_key_status");
+    if (!has) showApiKeyBanner();
+    return has;
+  } catch {
+    return false;
+  }
+}
+
+// ─── Strategic Thinking modal ────────────────────────────────────────
+function showStrategicThinkingModal() {
+  if (document.getElementById("st-modal")) return;
+  const overlay = el("div", { id: "st-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, ["Strategic Thinking"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+  modal.appendChild(el("div", { class: "modal-meta" }, [
+    "Drop in what you're thinking through. Claude reads it, asks back if needed, and returns a receipt with the decisions, ticks, and follow-up tasks.",
+  ]));
+  const textarea = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "I'm thinking about whether to launch COOL before the wedding or after, given the post-wedding sequencing decision yesterday...",
+    rows: 10,
+  });
+  modal.appendChild(textarea);
+  modal.appendChild(el("div", { class: "modal-actions" }, [
+    el("button", { class: "button button-secondary", id: "st-cancel" }, ["Cancel"]),
+    el("button", { class: "button", id: "st-run" }, ["Run"]),
+  ]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  textarea.focus();
+
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  document.getElementById("st-cancel").addEventListener("click", close);
+  document.getElementById("st-run").addEventListener("click", async () => {
+    const input = textarea.value.trim();
+    if (!input) return showToast("Type something first");
+    const runBtn = document.getElementById("st-run");
+    runBtn.disabled = true;
+    runBtn.textContent = "Thinking...";
+    try {
+      const json = await invoke("run_strategic_thinking", { input });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Receipt ready");
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
 // Inline toast (replaces alert()).
 function showToast(message, opts = {}) {
   let root = document.getElementById("toast-root");
@@ -249,17 +360,36 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // Workflow cards — visual feedback for now, runner lands next build.
+  // First-launch API key check (Tauri only).
+  ensureApiKey();
+
+  async function openStrategicThinking() {
+    if (!isTauri) {
+      showToast("Open the Studio app (DMG) to run live workflows. Preview is read-only.");
+      return;
+    }
+    const ready = await invoke("get_api_key_status");
+    if (!ready) {
+      showApiKeyBanner();
+      showToast("Set your Anthropic API key first");
+      return;
+    }
+    showStrategicThinkingModal();
+  }
+
+  // Workflow cards: Strategic Thinking opens the modal, others toast.
   document.querySelectorAll(".workflow-card").forEach((card) => {
+    const name = card.querySelector(".workflow-card-title")?.textContent || "Workflow";
     card.addEventListener("click", () => {
-      const name = card.querySelector(".workflow-card-title")?.textContent || "Workflow";
-      showToast(`${name}: workflow runner lands next build.`);
+      if (name === "Strategic Thinking") {
+        openStrategicThinking();
+      } else {
+        showToast(`${name}: workflow runner lands next build.`);
+      }
     });
   });
 
-  document.getElementById("strategic-thinking-btn")?.addEventListener("click", () => {
-    showToast("Workflow runner lands next build. The spike proves the architecture.");
-  });
+  document.getElementById("strategic-thinking-btn")?.addEventListener("click", openStrategicThinking);
 
   document.getElementById("workflows-btn")?.addEventListener("click", () => {
     document.querySelector(".workflow-starters")?.scrollIntoView({ behavior: "smooth", block: "start" });
