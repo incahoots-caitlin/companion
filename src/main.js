@@ -329,9 +329,33 @@ function showToast(message, opts = {}) {
   }, opts.ttl ?? 2800);
 }
 
+async function loadFeed() {
+  const feed = document.getElementById("feed");
+  if (!feed) return;
+  feed.innerHTML = "";
+
+  let persisted = [];
+  if (isTauri) {
+    try {
+      const rows = await invoke("list_receipts", { limit: 50 });
+      persisted = rows.map((j) => JSON.parse(j));
+    } catch (e) {
+      console.warn("list_receipts failed:", e);
+    }
+  }
+
+  if (persisted.length === 0) {
+    // Empty state: render the seed Strategic Thinking receipt so the feed
+    // never looks blank on first launch.
+    feed.appendChild(renderReceipt(STRATEGIC_THINKING));
+  } else {
+    persisted.forEach((r) => feed.appendChild(renderReceipt(r)));
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const feed = document.getElementById("feed");
-  if (feed) feed.appendChild(renderReceipt(STRATEGIC_THINKING));
+  loadFeed();
 
   // Tick handler for any future task receipts.
   feed?.addEventListener("change", (e) => {
