@@ -476,26 +476,20 @@ async function loadStudioSidebar() {
   const records = data.records || [];
 
   // Replace static client items, keep the "Studio" label and Pipeline link.
+  // Click handling is delegated globally — items just need data-client-code
+  // and data-view attributes set correctly.
   studioSection.innerHTML = "";
   studioSection.appendChild(el("div", { class: "sidebar-label" }, ["Studio"]));
   records.forEach((r) => {
     const f = r.fields || {};
-    const label = f.code ? `${f.code} — ${f.name || f.code}` : (f.name || "Untitled");
+    const code = (f.code || "").toUpperCase();
+    if (!code) return;
+    const label = `${code} — ${f.name || code}`;
     const item = el("a", {
       class: "sidebar-item",
-      "data-view": `client-${(f.code || "").toLowerCase()}`,
+      "data-view": `client-${code}`,
+      "data-client-code": code,
     }, [label]);
-    item.addEventListener("click", () => {
-      document.querySelectorAll(".sidebar-item").forEach((i) => {
-        i.classList.remove("active");
-        i.removeAttribute("aria-current");
-      });
-      item.classList.add("active");
-      item.setAttribute("aria-current", "page");
-      const titleEl = document.querySelector(".main-title");
-      if (titleEl) titleEl.textContent = label;
-      showToast(`${f.code || f.name}: per-client view lands in v0.7+`);
-    });
     studioSection.appendChild(item);
   });
   studioSection.appendChild(el("a", { class: "sidebar-item", "data-view": "pipeline" }, ["Pipeline"]));
@@ -703,7 +697,7 @@ function showNewClientOnboardingModal() {
 }
 
 // ─── New Campaign Scope modal ────────────────────────────────────────
-async function showNewCampaignScopeModal() {
+async function showNewCampaignScopeModal(prefillClientCode) {
   if (document.getElementById("ncs-modal")) return;
 
   // Pull active clients for the picker.
@@ -747,6 +741,9 @@ async function showNewCampaignScopeModal() {
     opt.textContent = `${c.code} — ${c.name}`;
     clientPicker.appendChild(opt);
   });
+  if (prefillClientCode && clients.some((c) => c.code === prefillClientCode)) {
+    clientPicker.value = prefillClientCode;
+  }
 
   const campaignName = el("input", { id: "ncs-name", type: "text", class: "settings-input", placeholder: "e.g. June tour launch" });
   const projectSlug = el("input", { id: "ncs-slug", type: "text", class: "settings-input", placeholder: "auto from name (e.g. tour-launch)" });
@@ -1018,6 +1015,7 @@ async function showClientPickerReviewModal({
   runningLabel,
   successToast,
   flagsPlaceholder,
+  prefillClientCode,
 }) {
   if (document.getElementById(modalId)) return;
 
@@ -1058,6 +1056,9 @@ async function showClientPickerReviewModal({
     opt.textContent = `${c.code} — ${c.name}`;
     clientPicker.appendChild(opt);
   });
+  if (prefillClientCode && clients.some((c) => c.code === prefillClientCode)) {
+    clientPicker.value = prefillClientCode;
+  }
   grid.appendChild(el("label", { class: "modal-field" }, [
     el("div", { class: "settings-label" }, ["Client"]),
     clientPicker,
@@ -1105,7 +1106,7 @@ async function showClientPickerReviewModal({
   });
 }
 
-async function showMonthlyCheckinModal() {
+async function showMonthlyCheckinModal(prefillClientCode) {
   return showClientPickerReviewModal({
     modalId: "mc-modal",
     title: "Monthly Check-in",
@@ -1114,10 +1115,11 @@ async function showMonthlyCheckinModal() {
     runningLabel: "Reading the month...",
     successToast: "Check-in receipt ready",
     flagsPlaceholder: "e.g. payment overdue, scope creeping, key contact has changed, big upcoming on-sale. Skip if there's nothing.",
+    prefillClientCode,
   });
 }
 
-async function showQuarterlyReviewModal() {
+async function showQuarterlyReviewModal(prefillClientCode) {
   return showClientPickerReviewModal({
     modalId: "qr-modal",
     title: "Quarterly Review",
@@ -1126,6 +1128,7 @@ async function showQuarterlyReviewModal() {
     runningLabel: "Reading the quarter...",
     successToast: "QBR receipt ready",
     flagsPlaceholder: "e.g. renewal coming up, scope feels off, want to propose a shape change, considering wind-down. Skip if there's nothing pressing.",
+    prefillClientCode,
   });
 }
 
@@ -1146,6 +1149,170 @@ function showToast(message, opts = {}) {
     toast.classList.remove("toast-show");
     setTimeout(() => toast.remove(), 200);
   }, opts.ttl ?? 2800);
+}
+
+// ─── View switcher (Today vs per-client) ─────────────────────────────
+function showTodayView() {
+  document.getElementById("today-view")?.removeAttribute("hidden");
+  document.getElementById("client-view")?.setAttribute("hidden", "");
+  const titleEl = document.querySelector(".main-title");
+  if (titleEl) titleEl.textContent = "Today";
+}
+
+async function loadClientView(clientCode) {
+  const todayEl = document.getElementById("today-view");
+  const clientEl = document.getElementById("client-view");
+  if (!clientEl) return;
+
+  todayEl?.setAttribute("hidden", "");
+  clientEl.removeAttribute("hidden");
+  clientEl.innerHTML = "";
+  clientEl.appendChild(el("div", { class: "client-empty" }, [`Loading ${clientCode}...`]));
+
+  // Pull client metadata, projects, and local receipts in parallel.
+  let clientFields = {};
+  let projects = [];
+  let localReceipts = [];
+
+  if (isTauri) {
+    const tasks = [
+      invoke("list_airtable_clients").then((raw) => {
+        const data = JSON.parse(raw);
+        const match = (data.records || []).find((r) => r.fields?.code === clientCode);
+        if (match) clientFields = match.fields;
+      }).catch((e) => console.warn("client lookup failed:", e)),
+
+      invoke("list_airtable_projects").then((raw) => {
+        const data = JSON.parse(raw);
+        projects = (data.records || [])
+          .map((r) => r.fields || {})
+          .filter((f) => (f.code || "").toUpperCase().startsWith(`${clientCode}-`));
+      }).catch((e) => console.warn("projects lookup failed:", e)),
+
+      invoke("list_receipts", { limit: 200 }).then((rows) => {
+        const all = rows.map((j) => {
+          try { return JSON.parse(j); } catch { return null; }
+        }).filter(Boolean);
+        localReceipts = all.filter((r) => {
+          const proj = (r.project || "").toUpperCase();
+          return proj === clientCode || proj.startsWith(`${clientCode}-`);
+        });
+      }).catch((e) => console.warn("local receipts lookup failed:", e)),
+    ];
+    await Promise.all(tasks);
+  }
+
+  const clientName = clientFields.name || clientCode;
+  const status = clientFields.status || "active";
+
+  // Re-render the view.
+  clientEl.innerHTML = "";
+  clientEl.appendChild(renderClientHeader(clientCode, clientName, status, clientFields));
+  clientEl.appendChild(el("div", { class: "section-label" }, ["Run for this client"]));
+  clientEl.appendChild(renderClientShortcuts(clientCode));
+
+  clientEl.appendChild(el("div", { class: "section-label" }, ["Active projects"]));
+  if (projects.length === 0) {
+    clientEl.appendChild(el("div", { class: "client-empty" }, [
+      `No projects in Airtable yet for ${clientCode}. Run New Campaign Scope to create one.`,
+    ]));
+  } else {
+    const list = el("div", { class: "client-projects" });
+    projects.forEach((p) => {
+      list.appendChild(el("div", { class: "client-project" }, [
+        el("div", {}, [
+          el("div", { class: "client-project-code" }, [p.code || ""]),
+          el("div", { class: "client-project-name" }, [p.name || ""]),
+        ]),
+        el("div", { class: "client-project-status" }, [p.status || ""]),
+      ]));
+    });
+    clientEl.appendChild(list);
+  }
+
+  clientEl.appendChild(el("div", { class: "section-label" }, [`Receipts for ${clientCode}`]));
+  if (localReceipts.length === 0) {
+    clientEl.appendChild(el("div", { class: "client-empty" }, [
+      "No receipts for this client yet. Run a workflow above to generate the first one.",
+    ]));
+  } else {
+    const feed = el("section", { class: "feed" });
+    localReceipts.forEach((r) => feed.appendChild(renderReceipt(r)));
+    clientEl.appendChild(feed);
+  }
+
+  const titleEl = document.querySelector(".main-title");
+  if (titleEl) titleEl.textContent = clientName;
+}
+
+function renderClientHeader(code, name, status, fields) {
+  const header = el("div", { class: "client-header" });
+  header.appendChild(el("div", { class: "client-code" }, [code]));
+  header.appendChild(el("div", { class: "client-name" }, [name]));
+
+  const meta = el("div", { class: "client-meta" });
+  meta.appendChild(el("span", { class: `client-status-pill status-${status}` }, [status]));
+  if (fields.primary_contact_email) {
+    meta.appendChild(el("a", { href: `mailto:${fields.primary_contact_email}` }, [fields.primary_contact_email]));
+  }
+  if (fields.abn) {
+    meta.appendChild(el("span", {}, [`ABN ${fields.abn}`]));
+  }
+  if (fields.dropbox_folder) {
+    meta.appendChild(el("a", { href: fields.dropbox_folder, target: "_blank", rel: "noopener" }, ["Dropbox"]));
+  }
+  header.appendChild(meta);
+  return header;
+}
+
+function renderClientShortcuts(clientCode) {
+  const grid = el("div", { class: "client-shortcut-grid" });
+
+  const shortcuts = [
+    {
+      title: "Strategic Thinking",
+      meta: "Open thinking session, no client lock-in",
+      action: () => showStrategicThinkingModal(),
+    },
+    {
+      title: "Monthly Check-in",
+      meta: "Pre-fill this client",
+      action: () => showMonthlyCheckinModal(clientCode),
+    },
+    {
+      title: "Quarterly Review",
+      meta: "Pre-fill this client",
+      action: () => showQuarterlyReviewModal(clientCode),
+    },
+    {
+      title: "New Campaign Scope",
+      meta: "Pre-fill this client",
+      action: () => showNewCampaignScopeModal(clientCode),
+    },
+  ];
+
+  shortcuts.forEach((s) => {
+    const card = el("button", { class: "client-shortcut" }, [
+      el("div", { class: "client-shortcut-title" }, [s.title]),
+      el("div", { class: "client-shortcut-meta" }, [s.meta]),
+    ]);
+    card.addEventListener("click", async () => {
+      if (!isTauri) {
+        showToast("Open the Studio app to run live workflows. Preview is read-only.");
+        return;
+      }
+      const ready = await invoke("get_api_key_status");
+      if (!ready) {
+        showApiKeyBanner();
+        showToast("Set your Anthropic API key first");
+        return;
+      }
+      s.action();
+    });
+    grid.appendChild(card);
+  });
+
+  return grid;
 }
 
 async function loadFeed() {
@@ -1245,28 +1412,48 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Sidebar routing.
   const titleEl = document.querySelector(".main-title");
-  document.querySelectorAll(".sidebar-item").forEach((item) => {
-    item.addEventListener("click", () => {
-      const view = item.dataset.view || "today";
 
-      // Settings opens a modal instead of routing.
-      if (view === "settings") {
-        showSettingsModal();
-        return;
-      }
-
-      const label = item.textContent.trim();
-      document.querySelectorAll(".sidebar-item").forEach((i) => {
-        i.classList.remove("active");
-        i.removeAttribute("aria-current");
-      });
-      item.classList.add("active");
-      item.setAttribute("aria-current", "page");
-      if (titleEl) titleEl.textContent = label;
-      if (view !== "today") {
-        showToast(`${label} isn't wired yet. Today is the live view this build.`);
-      }
+  function activateSidebar(item) {
+    document.querySelectorAll(".sidebar-item").forEach((i) => {
+      i.classList.remove("active");
+      i.removeAttribute("aria-current");
     });
+    item.classList.add("active");
+    item.setAttribute("aria-current", "page");
+  }
+
+  document.body.addEventListener("click", (e) => {
+    const item = e.target.closest(".sidebar-item");
+    if (!item) return;
+    const view = item.dataset.view || "today";
+
+    if (view === "settings") {
+      showSettingsModal();
+      return;
+    }
+
+    activateSidebar(item);
+
+    if (view === "today") {
+      showTodayView();
+      return;
+    }
+
+    // Per-client routes have data-client-code on the sidebar item, OR they
+    // start with "client-" (added dynamically by loadStudioSidebar).
+    const clientCode =
+      item.dataset.clientCode ||
+      (view.startsWith("client-") ? view.slice("client-".length).toUpperCase() : null);
+
+    if (clientCode) {
+      loadClientView(clientCode);
+      return;
+    }
+
+    // Anything else (Pipeline, Products, Personal items): keep on Today and toast.
+    showTodayView();
+    if (titleEl) titleEl.textContent = item.textContent.trim();
+    showToast(`${item.textContent.trim()} isn't wired yet. Today is the live view this build.`);
   });
 
   // First-launch API key check (Tauri only).
