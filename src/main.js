@@ -702,6 +702,104 @@ function showNewClientOnboardingModal() {
   });
 }
 
+// ─── Monthly Check-in modal ──────────────────────────────────────────
+async function showMonthlyCheckinModal() {
+  if (document.getElementById("mc-modal")) return;
+
+  // Pull active clients from Airtable for the dropdown.
+  let clients = [];
+  if (isTauri) {
+    try {
+      const raw = await invoke("list_airtable_clients");
+      const data = JSON.parse(raw);
+      clients = (data.records || []).map((r) => ({
+        code: r.fields?.code || "",
+        name: r.fields?.name || r.fields?.code || "Untitled",
+      })).filter((c) => c.code);
+    } catch (e) {
+      console.warn("list_airtable_clients failed:", e);
+    }
+  }
+
+  if (clients.length === 0) {
+    showToast("No clients in Airtable yet. Add one via New Client Onboarding first.", { ttl: 6000 });
+    return;
+  }
+
+  const overlay = el("div", { id: "mc-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, ["Monthly Check-in"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+  modal.appendChild(el("div", { class: "modal-meta" }, [
+    "Pick a client. Studio pulls their last 30 days of receipts as context, Claude returns a check-in receipt with what's done, what's open, what's next, and action items.",
+  ]));
+
+  const grid = el("div", { class: "modal-field-grid" });
+
+  const clientPicker = el("select", { id: "mc-client", class: "settings-input" });
+  clients.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c.code;
+    opt.textContent = `${c.code} — ${c.name}`;
+    clientPicker.appendChild(opt);
+  });
+
+  grid.appendChild(el("label", { class: "modal-field" }, [
+    el("div", { class: "settings-label" }, ["Client"]),
+    clientPicker,
+  ]));
+
+  modal.appendChild(grid);
+
+  modal.appendChild(el("div", { class: "settings-label", style: "margin-top: 16px;" }, ["Anything to flag (optional)"]));
+  const flags = el("textarea", {
+    id: "mc-flags",
+    class: "modal-textarea",
+    placeholder: "e.g. payment overdue, scope creeping, key contact has changed, big upcoming on-sale. Skip if there's nothing.",
+    rows: 5,
+  });
+  modal.appendChild(flags);
+
+  modal.appendChild(el("div", { class: "modal-actions" }, [
+    el("button", { class: "button button-secondary", id: "mc-cancel" }, ["Cancel"]),
+    el("button", { class: "button", id: "mc-run" }, ["Run"]),
+  ]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  clientPicker.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  document.getElementById("mc-cancel").addEventListener("click", close);
+
+  document.getElementById("mc-run").addEventListener("click", async () => {
+    const input = {
+      client_code: clientPicker.value,
+      extra_notes: flags.value.trim() || null,
+    };
+
+    const runBtn = document.getElementById("mc-run");
+    runBtn.disabled = true;
+    runBtn.textContent = "Reading the month...";
+    try {
+      const json = await invoke("run_monthly_checkin", { input });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Check-in receipt ready");
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
 // Inline toast (replaces alert()).
 function showToast(message, opts = {}) {
   let root = document.getElementById("toast-root");
@@ -874,6 +972,20 @@ document.addEventListener("DOMContentLoaded", () => {
     showNewClientOnboardingModal();
   }
 
+  async function openMonthlyCheckin() {
+    if (!isTauri) {
+      showToast("Open the Studio app to run live workflows. Preview is read-only.");
+      return;
+    }
+    const ready = await invoke("get_api_key_status");
+    if (!ready) {
+      showApiKeyBanner();
+      showToast("Set your Anthropic API key first");
+      return;
+    }
+    showMonthlyCheckinModal();
+  }
+
   document.querySelectorAll(".workflow-card").forEach((card) => {
     const name = card.querySelector(".workflow-card-title")?.textContent || "Workflow";
     card.addEventListener("click", () => {
@@ -881,6 +993,8 @@ document.addEventListener("DOMContentLoaded", () => {
         openStrategicThinking();
       } else if (name === "New Client Onboarding") {
         openNewClientOnboarding();
+      } else if (name === "Monthly Check-in") {
+        openMonthlyCheckin();
       } else {
         showToast(`${name}: workflow runner lands next build.`);
       }
