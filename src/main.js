@@ -876,11 +876,22 @@ async function handleCreateProjectFromReceipt(receiptEl) {
   }
 }
 
-// ─── Monthly Check-in modal ──────────────────────────────────────────
-async function showMonthlyCheckinModal() {
-  if (document.getElementById("mc-modal")) return;
+// ─── Generic client-picker review modal ──────────────────────────────
+//
+// Used by Monthly Check-in and Quarterly Review. Both have identical UX
+// shape: pick a client, optionally add flags, run a workflow that pulls
+// recent receipts as context.
+async function showClientPickerReviewModal({
+  modalId,
+  title,
+  meta,
+  command,
+  runningLabel,
+  successToast,
+  flagsPlaceholder,
+}) {
+  if (document.getElementById(modalId)) return;
 
-  // Pull active clients from Airtable for the dropdown.
   let clients = [];
   if (isTauri) {
     try {
@@ -900,48 +911,41 @@ async function showMonthlyCheckinModal() {
     return;
   }
 
-  const overlay = el("div", { id: "mc-modal", class: "modal-overlay" });
+  const overlay = el("div", { id: modalId, class: "modal-overlay" });
   const modal = el("div", { class: "modal" });
   const close = () => overlay.remove();
 
   modal.appendChild(el("div", { class: "modal-header" }, [
-    el("div", { class: "modal-title" }, ["Monthly Check-in"]),
+    el("div", { class: "modal-title" }, [title]),
     el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
   ]));
-  modal.appendChild(el("div", { class: "modal-meta" }, [
-    "Pick a client. Studio pulls their last 30 days of receipts as context, Claude returns a check-in receipt with what's done, what's open, what's next, and action items.",
-  ]));
+  modal.appendChild(el("div", { class: "modal-meta" }, [meta]));
 
   const grid = el("div", { class: "modal-field-grid" });
-
-  const clientPicker = el("select", { id: "mc-client", class: "settings-input" });
+  const clientPicker = el("select", { class: "settings-input" });
   clients.forEach((c) => {
     const opt = document.createElement("option");
     opt.value = c.code;
     opt.textContent = `${c.code} — ${c.name}`;
     clientPicker.appendChild(opt);
   });
-
   grid.appendChild(el("label", { class: "modal-field" }, [
     el("div", { class: "settings-label" }, ["Client"]),
     clientPicker,
   ]));
-
   modal.appendChild(grid);
 
   modal.appendChild(el("div", { class: "settings-label", style: "margin-top: 16px;" }, ["Anything to flag (optional)"]));
   const flags = el("textarea", {
-    id: "mc-flags",
     class: "modal-textarea",
-    placeholder: "e.g. payment overdue, scope creeping, key contact has changed, big upcoming on-sale. Skip if there's nothing.",
+    placeholder: flagsPlaceholder,
     rows: 5,
   });
   modal.appendChild(flags);
 
-  modal.appendChild(el("div", { class: "modal-actions" }, [
-    el("button", { class: "button button-secondary", id: "mc-cancel" }, ["Cancel"]),
-    el("button", { class: "button", id: "mc-run" }, ["Run"]),
-  ]));
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Run"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
 
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
@@ -949,28 +953,50 @@ async function showMonthlyCheckinModal() {
 
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
   modal.querySelector(".modal-close").addEventListener("click", close);
-  document.getElementById("mc-cancel").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
 
-  document.getElementById("mc-run").addEventListener("click", async () => {
+  runBtn.addEventListener("click", async () => {
     const input = {
       client_code: clientPicker.value,
       extra_notes: flags.value.trim() || null,
     };
-
-    const runBtn = document.getElementById("mc-run");
     runBtn.disabled = true;
-    runBtn.textContent = "Reading the month...";
+    runBtn.textContent = runningLabel;
     try {
-      const json = await invoke("run_monthly_checkin", { input });
+      const json = await invoke(command, { input });
       const receipt = JSON.parse(json);
       document.getElementById("feed").prepend(renderReceipt(receipt));
       close();
-      showToast("Check-in receipt ready");
+      showToast(successToast);
     } catch (e) {
       runBtn.disabled = false;
       runBtn.textContent = "Run";
       showToast(`Error: ${e.message || e}`, { ttl: 6000 });
     }
+  });
+}
+
+async function showMonthlyCheckinModal() {
+  return showClientPickerReviewModal({
+    modalId: "mc-modal",
+    title: "Monthly Check-in",
+    meta: "Pick a client. Studio pulls their last 30 days of receipts as context, Claude returns a check-in receipt with what's done, what's open, what's next, and action items.",
+    command: "run_monthly_checkin",
+    runningLabel: "Reading the month...",
+    successToast: "Check-in receipt ready",
+    flagsPlaceholder: "e.g. payment overdue, scope creeping, key contact has changed, big upcoming on-sale. Skip if there's nothing.",
+  });
+}
+
+async function showQuarterlyReviewModal() {
+  return showClientPickerReviewModal({
+    modalId: "qr-modal",
+    title: "Quarterly Review",
+    meta: "Pick a client. Studio pulls their last 90 days of receipts, Claude returns a QBR receipt with what worked, what didn't, and proposed next-quarter shape. Use this to drive the QBR call.",
+    command: "run_quarterly_review",
+    runningLabel: "Reading the quarter...",
+    successToast: "QBR receipt ready",
+    flagsPlaceholder: "e.g. renewal coming up, scope feels off, want to propose a shape change, considering wind-down. Skip if there's nothing pressing.",
   });
 }
 
@@ -1177,6 +1203,20 @@ document.addEventListener("DOMContentLoaded", () => {
     showMonthlyCheckinModal();
   }
 
+  async function openQuarterlyReview() {
+    if (!isTauri) {
+      showToast("Open the Studio app to run live workflows. Preview is read-only.");
+      return;
+    }
+    const ready = await invoke("get_api_key_status");
+    if (!ready) {
+      showApiKeyBanner();
+      showToast("Set your Anthropic API key first");
+      return;
+    }
+    showQuarterlyReviewModal();
+  }
+
   document.querySelectorAll(".workflow-card").forEach((card) => {
     const name = card.querySelector(".workflow-card-title")?.textContent || "Workflow";
     card.addEventListener("click", () => {
@@ -1188,6 +1228,8 @@ document.addEventListener("DOMContentLoaded", () => {
         openMonthlyCheckin();
       } else if (name === "New Campaign Scope") {
         openNewCampaignScope();
+      } else if (name === "Quarterly Review") {
+        openQuarterlyReview();
       } else {
         showToast(`${name}: workflow runner lands next build.`);
       }

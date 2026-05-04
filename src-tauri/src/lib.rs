@@ -63,6 +63,8 @@ const MONTHLY_CHECKIN_PROMPT: &str =
     include_str!("../prompts/monthly-checkin-system.md");
 const NEW_CAMPAIGN_SCOPE_PROMPT: &str =
     include_str!("../prompts/new-campaign-scope-system.md");
+const QUARTERLY_REVIEW_PROMPT: &str =
+    include_str!("../prompts/quarterly-review-system.md");
 
 // ── DB state ───────────────────────────────────────────────────────────
 
@@ -899,6 +901,124 @@ async fn run_monthly_checkin(
     Ok(json)
 }
 
+// ── Quarterly Review ───────────────────────────────────────────────────
+//
+// Same shape as Monthly Check-in but with a 90-day window. Reuses the
+// recent_receipts_for_client + summarise_receipt helpers.
+
+#[derive(Deserialize, Debug)]
+struct QuarterlyReviewInput {
+    client_code: String,
+    extra_notes: Option<String>,
+}
+
+#[tauri::command]
+async fn run_quarterly_review(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+
+    let parsed: QuarterlyReviewInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    let code = parsed.client_code.trim().to_uppercase();
+    if code.is_empty() {
+        return Err("Pick a client first".to_string());
+    }
+
+    let qs = format!(
+        "filterByFormula={}&maxRecords=1&fields%5B%5D=code&fields%5B%5D=name&fields%5B%5D=status",
+        urlencode(&format!("{{code}}='{}'", code))
+    );
+    let client_data = airtable_get("Clients", &qs).await.unwrap_or(serde_json::Value::Null);
+    let client_record = &client_data["records"][0]["fields"];
+    let client_name = client_record["name"].as_str().unwrap_or(&code);
+    let client_status = client_record["status"].as_str().unwrap_or("active");
+
+    let receipts: Vec<String> = {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        recent_receipts_for_client(&conn, &code, 90)?
+    };
+    let summaries: Vec<String> = receipts.iter().map(|j| summarise_receipt(j)).collect();
+    let bundle = if summaries.is_empty() {
+        "(No receipts in the last 90 days for this client.)".to_string()
+    } else {
+        summaries.join("\n\n")
+    };
+
+    let user_message = format!(
+        "## Quarterly review for {} ({})\n\n\
+         **Status:** {}\n\
+         **Today's date:** {}\n\
+         **Window:** last 90 days\n\n\
+         ## User flags from the studio side\n\n{}\n\n\
+         ## Recent receipts (last quarter)\n\n{}",
+        client_name,
+        code,
+        client_status,
+        chrono::Local::now().format("%A %d %B %Y"),
+        parsed.extra_notes.as_deref().unwrap_or("(none)"),
+        bundle,
+    );
+
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 4096,
+        system: QUARTERLY_REVIEW_PROMPT,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+    };
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+
+    let response = http
+        .post(ANTHROPIC_API)
+        .header("x-api-key", &key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Anthropic API {}: {}", status.as_u16(), text));
+    }
+
+    let api_response: AnthropicResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    let text = api_response
+        .content
+        .iter()
+        .filter(|b| b.block_type == "text")
+        .filter_map(|b| b.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("");
+
+    let json = extract_json_block(&text)?;
+
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+
+    file_receipt_to_airtable(&json).await;
+
+    Ok(json)
+}
+
 // ── New Campaign Scope ─────────────────────────────────────────────────
 
 #[derive(Deserialize, Debug)]
@@ -1502,6 +1622,7 @@ pub fn run() {
             run_new_client_onboarding,
             run_monthly_checkin,
             run_new_campaign_scope,
+            run_quarterly_review,
             create_airtable_client,
             create_airtable_project,
             save_receipt,
