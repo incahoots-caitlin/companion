@@ -222,6 +222,205 @@ fn save_airtable_credentials(api_key: String, base_id: String) -> Result<(), Str
     Ok(())
 }
 
+// ── Airtable write helpers (v0.9) ───────────────────────────────────────
+//
+// Returns are intentionally Result<(), String>: callers treat Airtable
+// filing as best-effort. If the user is offline or the PAT is rotated,
+// the workflow still completes locally — we just lose the cloud copy.
+
+async fn airtable_create_record(
+    table: &str,
+    fields: serde_json::Value,
+) -> Result<String, String> {
+    let (api_key, base_id) = read_airtable_creds().ok_or("Airtable not configured")?;
+    let url = format!("{}/{}/{}", AIRTABLE_API, base_id, table);
+    let body = serde_json::json!({
+        "records": [{ "fields": fields }],
+        "typecast": true
+    });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let resp = client
+        .post(&url)
+        .bearer_auth(&api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Airtable post: {}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Airtable {}: {}", status.as_u16(), body));
+    }
+    let parsed: serde_json::Value = resp.json().await.map_err(|e| format!("Parse: {}", e))?;
+    let record_id = parsed["records"][0]["id"]
+        .as_str()
+        .ok_or("Airtable response missing record id")?
+        .to_string();
+    Ok(record_id)
+}
+
+async fn airtable_update_record(
+    table: &str,
+    record_id: &str,
+    fields: serde_json::Value,
+) -> Result<(), String> {
+    let (api_key, base_id) = read_airtable_creds().ok_or("Airtable not configured")?;
+    let url = format!("{}/{}/{}/{}", AIRTABLE_API, base_id, table, record_id);
+    let body = serde_json::json!({ "fields": fields });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let resp = client
+        .patch(&url)
+        .bearer_auth(&api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Airtable patch: {}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Airtable {}: {}", status.as_u16(), body));
+    }
+    Ok(())
+}
+
+// Find a Clients record by code so Receipts.client can link to it.
+// Returns None when the code is unknown to Airtable yet (e.g. brand-new
+// receipt with a code Caitlin hasn't added) — caller files the receipt
+// without a client link rather than failing.
+async fn airtable_find_client_by_code(code: &str) -> Result<Option<String>, String> {
+    if code.is_empty() {
+        return Ok(None);
+    }
+    let escaped = code.replace('\'', "");
+    let formula = format!("{{code}}='{}'", escaped);
+    let qs = format!(
+        "filterByFormula={}&maxRecords=1&fields%5B%5D=code",
+        urlencode(&formula)
+    );
+    let data = airtable_get("Clients", &qs).await?;
+    Ok(data["records"][0]["id"].as_str().map(String::from))
+}
+
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                String::from(b as char)
+            }
+            _ => format!("%{:02X}", b),
+        })
+        .collect()
+}
+
+// File a receipt to the Airtable Receipts table. Best-effort: errors
+// logged but never bubble up to fail the workflow.
+async fn file_receipt_to_airtable(receipt_json: &str) {
+    let parsed: serde_json::Value = match serde_json::from_str(receipt_json) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("file_receipt_to_airtable: parse failed: {}", e);
+            return;
+        }
+    };
+
+    let id = parsed["id"].as_str().unwrap_or("");
+    let workflow = parsed["workflow"].as_str().unwrap_or("strategic-thinking");
+    let title = parsed["title"].as_str().unwrap_or("Receipt");
+    let date = parsed["date"].as_str().unwrap_or("");
+
+    // Receipt's `project` field is a project code like NCT-2026-06-tour-launch
+    // or a bare client code like NCT. Pull the leading 3-4 letters as the
+    // client code.
+    let client_code = parsed["project"]
+        .as_str()
+        .and_then(|p| p.split('-').next())
+        .filter(|c| c.chars().all(|ch| ch.is_ascii_uppercase()) && c.len() <= 4)
+        .unwrap_or("INC");
+
+    let ticked = count_ticked(&parsed);
+
+    // Convert ISO-ish date string to YYYY-MM-DD if possible. Receipts in
+    // Studio currently say "Saturday 04 May 2026" which Airtable's date
+    // field rejects, so we send today's date in ISO form when the source
+    // string isn't ISO already.
+    let iso_date: String = if date.len() == 10 && date.chars().nth(4) == Some('-') {
+        date.to_string()
+    } else {
+        chrono::Local::now().format("%Y-%m-%d").to_string()
+    };
+
+    let mut fields = serde_json::json!({
+        "id": id,
+        "workflow": workflow,
+        "title": title,
+        "date": iso_date,
+        "json": receipt_json,
+        "ticked_count": ticked,
+        "posted_to_slack": false,
+    });
+
+    // Link to the client row if we can find it.
+    match airtable_find_client_by_code(client_code).await {
+        Ok(Some(client_record_id)) => {
+            fields["client"] = serde_json::json!([client_record_id]);
+        }
+        Ok(None) => {
+            eprintln!(
+                "file_receipt_to_airtable: client code '{}' not found in Airtable",
+                client_code
+            );
+        }
+        Err(e) => {
+            eprintln!("file_receipt_to_airtable: client lookup failed: {}", e);
+        }
+    }
+
+    if let Err(e) = airtable_create_record("Receipts", fields).await {
+        eprintln!("file_receipt_to_airtable: create failed: {}", e);
+    }
+}
+
+fn count_ticked(receipt: &serde_json::Value) -> u32 {
+    let mut n = 0u32;
+    if let Some(sections) = receipt["sections"].as_array() {
+        for section in sections {
+            if let Some(items) = section["items"].as_array() {
+                for item in items {
+                    if item["type"].as_str() == Some("task")
+                        && item["done"].as_bool() == Some(true)
+                    {
+                        n += 1;
+                    }
+                }
+            }
+        }
+    }
+    n
+}
+
+// Look up a Receipts row by its Studio id (the rcpt_... primary key). Used
+// when ticking an item so we update the corresponding Airtable row's
+// ticked_count.
+async fn airtable_find_receipt_record_id(receipt_id: &str) -> Result<Option<String>, String> {
+    if receipt_id.is_empty() {
+        return Ok(None);
+    }
+    let escaped = receipt_id.replace('\'', "");
+    let formula = format!("{{id}}='{}'", escaped);
+    let qs = format!(
+        "filterByFormula={}&maxRecords=1&fields%5B%5D=id",
+        urlencode(&formula)
+    );
+    let data = airtable_get("Receipts", &qs).await?;
+    Ok(data["records"][0]["id"].as_str().map(String::from))
+}
+
 async fn airtable_get(table: &str, query: &str) -> Result<serde_json::Value, String> {
     let (api_key, base_id) = read_airtable_creds().ok_or("Airtable not configured")?;
     let qs = if query.is_empty() {
@@ -397,6 +596,10 @@ async fn run_strategic_thinking(
         persist_receipt(&conn, &json)?;
     }
 
+    // File to Airtable Receipts table. Best-effort — never fails the
+    // workflow if Airtable is unreachable or unconfigured.
+    file_receipt_to_airtable(&json).await;
+
     Ok(json)
 }
 
@@ -499,15 +702,45 @@ async fn tick_item(
         .map_err(|e| format!("DB update: {}", e))?;
     }
 
-    // Fire on_done hook (best-effort).
+    // Update Airtable Receipts row's ticked_count + posted_to_slack flag
+    // (best-effort, doesn't fail the tick if Airtable is unreachable).
+    let updated_value: serde_json::Value =
+        serde_json::from_str(&new_json).unwrap_or(serde_json::Value::Null);
+    let new_ticked = count_ticked(&updated_value);
+
+    // Fire on_done hook (best-effort) and capture whether Slack post fired.
+    let mut slack_fired = false;
     if let Some(target) = hook_target {
         if let Some(channel) = target.strip_prefix("slack:") {
             if let Some(webhook) = read_slack_webhook() {
                 let msg = format!(":white_check_mark: *{}*\nposted to {}", item_text, channel);
-                if let Err(e) = post_to_slack(&webhook, &msg).await {
-                    eprintln!("Slack post failed: {}", e);
+                match post_to_slack(&webhook, &msg).await {
+                    Ok(_) => slack_fired = true,
+                    Err(e) => eprintln!("Slack post failed: {}", e),
                 }
             }
+        }
+    }
+
+    // Best-effort Airtable sync.
+    match airtable_find_receipt_record_id(&receipt_id).await {
+        Ok(Some(airtable_record_id)) => {
+            let mut update_fields = serde_json::json!({ "ticked_count": new_ticked });
+            if slack_fired {
+                update_fields["posted_to_slack"] = serde_json::Value::Bool(true);
+            }
+            if let Err(e) =
+                airtable_update_record("Receipts", &airtable_record_id, update_fields).await
+            {
+                eprintln!("tick_item: Airtable update failed: {}", e);
+            }
+        }
+        Ok(None) => {
+            // Receipt not yet in Airtable (offline at creation, or filing
+            // failed earlier). Skip silently.
+        }
+        Err(e) => {
+            eprintln!("tick_item: Airtable lookup failed: {}", e);
         }
     }
 
