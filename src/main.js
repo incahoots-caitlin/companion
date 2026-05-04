@@ -876,6 +876,135 @@ async function handleCreateProjectFromReceipt(receiptEl) {
   }
 }
 
+// ─── Subcontractor Onboarding modal ──────────────────────────────────
+function showSubcontractorOnboardingModal() {
+  if (document.getElementById("sub-modal")) return;
+  const overlay = el("div", { id: "sub-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, ["Subcontractor Onboarding"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+  modal.appendChild(el("div", { class: "modal-meta" }, [
+    "Bring a new subcontractor onto the studio. Returns the onboarding pack: pre-start info request, role description draft, week-1 schedule, docs to share, first-WIP agenda, action items.",
+  ]));
+
+  const grid = el("div", { class: "modal-field-grid" });
+
+  const name = el("input", { type: "text", class: "settings-input", placeholder: "e.g. Rose Gaumann" });
+  const role = el("input", { type: "text", class: "settings-input", placeholder: "e.g. Marketing Coordinator" });
+  const startDate = el("input", { type: "date", class: "settings-input" });
+  const hourlyRate = el("input", { type: "number", step: "0.01", min: "0", class: "settings-input", placeholder: "e.g. 50.00" });
+  const email = el("input", { type: "email", class: "settings-input", placeholder: "name@example.com" });
+
+  [
+    ["Name", name],
+    ["Role", role],
+    ["Start date", startDate],
+    ["Hourly rate ($AUD)", hourlyRate],
+    ["Email", email],
+  ].forEach(([label, input]) => {
+    grid.appendChild(el("label", { class: "modal-field" }, [
+      el("div", { class: "settings-label" }, [label]),
+      input,
+    ]));
+  });
+
+  modal.appendChild(grid);
+
+  modal.appendChild(el("div", { class: "settings-label", style: "margin-top: 16px;" }, ["Notes"]));
+  const notes = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "Why they're joining, what they're best at, what they're new to, what hours/availability looks like, any context on previous work or interview impressions.",
+    rows: 6,
+  });
+  modal.appendChild(notes);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Run"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  name.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    const input = {
+      name: name.value.trim(),
+      role: role.value.trim(),
+      start_date: startDate.value || null,
+      hourly_rate: hourlyRate.value ? parseFloat(hourlyRate.value) : null,
+      email: email.value.trim() || null,
+      notes: notes.value.trim(),
+    };
+    if (!input.name) return showToast("Name required");
+    if (!input.role) return showToast("Role required");
+    if (!input.notes) return showToast("Notes required");
+
+    runBtn.disabled = true;
+    runBtn.textContent = "Drafting onboarding...";
+    try {
+      const json = await invoke("run_subcontractor_onboarding", { input });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Onboarding pack ready");
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
+async function handleCreateSubcontractorFromReceipt(receiptEl) {
+  const receiptId = receiptEl?.dataset?.receiptId;
+  if (!receiptId) return showToast("No receipt id");
+
+  let receipt;
+  try {
+    const rows = await invoke("list_receipts", { limit: 100 });
+    const match = rows.map((j) => JSON.parse(j)).find((r) => r.id === receiptId);
+    if (!match) return showToast("Couldn't find that receipt");
+    receipt = match;
+  } catch (e) {
+    return showToast(`Receipt lookup failed: ${e}`);
+  }
+
+  const subName = receipt.paid_block?.customer || "";
+  const initials = subName.split(" ").map((p) => p[0] || "").join("").toUpperCase().slice(0, 3);
+  const suggestedCode = initials ? `${initials}-S` : "";
+
+  const code = window.prompt(
+    `Confirm or enter the canonical code for "${subName}" (e.g. ROS-S):`,
+    suggestedCode
+  );
+  if (!code) return showToast("Cancelled — no subcontractor created");
+
+  try {
+    const recordId = await invoke("create_airtable_subcontractor", {
+      args: {
+        code: code.trim().toUpperCase(),
+        name: subName,
+        role: null,
+        start_date: null,
+        hourly_rate: null,
+        email: null,
+        notes: `Filed via Studio receipt ${receiptId}`,
+      },
+    });
+    showToast(`${code.toUpperCase()} created in Subcontractors (${recordId})`, { ttl: 4000 });
+  } catch (e) {
+    showToast(`Airtable create failed: ${e}`, { ttl: 6000 });
+  }
+}
+
 // ─── Generic client-picker review modal ──────────────────────────────
 //
 // Used by Monthly Check-in and Quarterly Review. Both have identical UX
@@ -1096,10 +1225,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // airtable:create-client → prompt for canonical code, then create the row.
       // airtable:create-project → confirm the project code, then file to Projects.
+      // airtable:create-subcontractor → confirm code, file to Subcontractors.
       if (onDone === "airtable:create-client") {
         await handleCreateClientFromReceipt(receiptEl);
       } else if (onDone === "airtable:create-project") {
         await handleCreateProjectFromReceipt(receiptEl);
+      } else if (onDone === "airtable:create-subcontractor") {
+        await handleCreateSubcontractorFromReceipt(receiptEl);
       } else {
         showToast(onDone ? `Ticked, hook fired (${onDone})` : "Ticked");
       }
@@ -1203,6 +1335,20 @@ document.addEventListener("DOMContentLoaded", () => {
     showMonthlyCheckinModal();
   }
 
+  async function openSubcontractorOnboarding() {
+    if (!isTauri) {
+      showToast("Open the Studio app to run live workflows. Preview is read-only.");
+      return;
+    }
+    const ready = await invoke("get_api_key_status");
+    if (!ready) {
+      showApiKeyBanner();
+      showToast("Set your Anthropic API key first");
+      return;
+    }
+    showSubcontractorOnboardingModal();
+  }
+
   async function openQuarterlyReview() {
     if (!isTauri) {
       showToast("Open the Studio app to run live workflows. Preview is read-only.");
@@ -1230,6 +1376,8 @@ document.addEventListener("DOMContentLoaded", () => {
         openNewCampaignScope();
       } else if (name === "Quarterly Review") {
         openQuarterlyReview();
+      } else if (name === "Subcontractor Onboarding") {
+        openSubcontractorOnboarding();
       } else {
         showToast(`${name}: workflow runner lands next build.`);
       }

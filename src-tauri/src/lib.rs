@@ -65,6 +65,8 @@ const NEW_CAMPAIGN_SCOPE_PROMPT: &str =
     include_str!("../prompts/new-campaign-scope-system.md");
 const QUARTERLY_REVIEW_PROMPT: &str =
     include_str!("../prompts/quarterly-review-system.md");
+const SUBCONTRACTOR_ONBOARDING_PROMPT: &str =
+    include_str!("../prompts/subcontractor-onboarding-system.md");
 
 // ── DB state ───────────────────────────────────────────────────────────
 
@@ -1240,6 +1242,170 @@ async fn create_airtable_project(args: serde_json::Value) -> Result<String, Stri
     airtable_create_record("Projects", fields).await
 }
 
+// ── Subcontractor Onboarding ───────────────────────────────────────────
+
+#[derive(Deserialize, Debug)]
+struct SubcontractorOnboardingInput {
+    name: String,
+    role: String,
+    start_date: Option<String>,
+    hourly_rate: Option<f64>,
+    email: Option<String>,
+    notes: String,
+}
+
+#[tauri::command]
+async fn run_subcontractor_onboarding(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+
+    let parsed: SubcontractorOnboardingInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    if parsed.name.trim().is_empty() {
+        return Err("Subcontractor name required".to_string());
+    }
+    if parsed.role.trim().is_empty() {
+        return Err("Role required".to_string());
+    }
+    if parsed.notes.trim().is_empty() {
+        return Err("Notes required".to_string());
+    }
+
+    let user_message = format!(
+        "## Subcontractor onboarding\n\n\
+         **Name:** {}\n\
+         **Role:** {}\n\
+         **Start date:** {}\n\
+         **Hourly rate:** {}\n\
+         **Email:** {}\n\
+         **Today's date:** {}\n\n\
+         ## Notes\n\n{}",
+        parsed.name.trim(),
+        parsed.role.trim(),
+        parsed.start_date.as_deref().unwrap_or("(not given)"),
+        parsed.hourly_rate.map(|r| format!("${:.2}/hr", r)).unwrap_or_else(|| "(not given)".to_string()),
+        parsed.email.as_deref().unwrap_or("(not given)"),
+        chrono::Local::now().format("%A %d %B %Y"),
+        parsed.notes.trim(),
+    );
+
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 4096,
+        system: SUBCONTRACTOR_ONBOARDING_PROMPT,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+    };
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+
+    let response = http
+        .post(ANTHROPIC_API)
+        .header("x-api-key", &key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Anthropic API {}: {}", status.as_u16(), text));
+    }
+
+    let api_response: AnthropicResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    let text = api_response
+        .content
+        .iter()
+        .filter(|b| b.block_type == "text")
+        .filter_map(|b| b.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("");
+
+    let json = extract_json_block(&text)?;
+
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+
+    file_receipt_to_airtable(&json).await;
+
+    Ok(json)
+}
+
+#[derive(Deserialize, Debug)]
+struct CreateSubcontractorArgs {
+    code: String,
+    name: String,
+    role: Option<String>,
+    start_date: Option<String>,
+    hourly_rate: Option<f64>,
+    email: Option<String>,
+    notes: Option<String>,
+}
+
+#[tauri::command]
+async fn create_airtable_subcontractor(args: serde_json::Value) -> Result<String, String> {
+    let parsed: CreateSubcontractorArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid args: {}", e))?;
+
+    let code_upper = parsed.code.trim().to_uppercase();
+    if code_upper.is_empty() {
+        return Err("Code required (e.g. ROS-S)".to_string());
+    }
+    // Allow shapes like "ROS-S" and "ROS"
+    if !code_upper.chars().all(|c| c.is_ascii_alphabetic() || c == '-') {
+        return Err("Code must be letters and optional hyphen".to_string());
+    }
+
+    let mut fields = serde_json::json!({
+        "code": code_upper,
+        "name": parsed.name.trim(),
+        "status": "active",
+    });
+    if let Some(r) = parsed.role.as_deref() {
+        if !r.trim().is_empty() {
+            fields["role"] = serde_json::Value::String(r.trim().to_string());
+        }
+    }
+    if let Some(s) = parsed.start_date.as_deref() {
+        if !s.trim().is_empty() {
+            fields["started_at"] = serde_json::Value::String(s.trim().to_string());
+        }
+    }
+    if let Some(r) = parsed.hourly_rate {
+        fields["hourly_rate"] = serde_json::json!(r);
+    }
+    if let Some(e) = parsed.email.as_deref() {
+        if !e.trim().is_empty() {
+            fields["email"] = serde_json::Value::String(e.trim().to_string());
+        }
+    }
+    if let Some(n) = parsed.notes.as_deref() {
+        if !n.trim().is_empty() {
+            fields["notes"] = serde_json::Value::String(n.trim().to_string());
+        }
+    }
+
+    airtable_create_record("Subcontractors", fields).await
+}
+
 // ── Airtable Clients write (used by airtable:create-client on_done) ────
 
 #[derive(Deserialize, Debug)]
@@ -1623,6 +1789,8 @@ pub fn run() {
             run_monthly_checkin,
             run_new_campaign_scope,
             run_quarterly_review,
+            run_subcontractor_onboarding,
+            create_airtable_subcontractor,
             create_airtable_client,
             create_airtable_project,
             save_receipt,
