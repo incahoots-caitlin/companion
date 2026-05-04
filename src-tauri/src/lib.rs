@@ -61,6 +61,8 @@ const NEW_CLIENT_ONBOARDING_PROMPT: &str =
     include_str!("../prompts/new-client-onboarding-system.md");
 const MONTHLY_CHECKIN_PROMPT: &str =
     include_str!("../prompts/monthly-checkin-system.md");
+const NEW_CAMPAIGN_SCOPE_PROMPT: &str =
+    include_str!("../prompts/new-campaign-scope-system.md");
 
 // ── DB state ───────────────────────────────────────────────────────────
 
@@ -897,6 +899,227 @@ async fn run_monthly_checkin(
     Ok(json)
 }
 
+// ── New Campaign Scope ─────────────────────────────────────────────────
+
+#[derive(Deserialize, Debug)]
+struct NewCampaignScopeInput {
+    client_code: String,
+    campaign_name: String,  // human-readable, e.g. "June tour launch"
+    project_slug: String,   // kebab-case, e.g. "tour-launch"
+    campaign_type: String,
+    start_date: String,     // ISO YYYY-MM-DD
+    end_date: Option<String>,
+    budget_signal: Option<String>,
+    brief_notes: String,
+}
+
+fn slug_from_string(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+#[tauri::command]
+async fn run_new_campaign_scope(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+
+    let parsed: NewCampaignScopeInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+
+    let code = parsed.client_code.trim().to_uppercase();
+    if code.is_empty() {
+        return Err("Pick a client first".to_string());
+    }
+    if parsed.campaign_name.trim().is_empty() {
+        return Err("Campaign name required".to_string());
+    }
+    if parsed.brief_notes.trim().is_empty() {
+        return Err("Brief notes required".to_string());
+    }
+
+    // Compute project code: {CLIENT}-{YYYY}-{MM}-{slug}
+    let slug = if parsed.project_slug.trim().is_empty() {
+        slug_from_string(&parsed.campaign_name)
+    } else {
+        slug_from_string(&parsed.project_slug)
+    };
+    // Try to parse YYYY-MM from the start_date for the code.
+    let (year, month): (String, String) = if parsed.start_date.len() >= 7
+        && parsed.start_date.chars().nth(4) == Some('-')
+    {
+        (parsed.start_date[..4].to_string(), parsed.start_date[5..7].to_string())
+    } else {
+        let now = chrono::Local::now();
+        (now.format("%Y").to_string(), now.format("%m").to_string())
+    };
+    let project_code = format!("{}-{}-{}-{}", code, year, month, slug);
+
+    // Lookup client name from Airtable for the prompt context.
+    let qs = format!(
+        "filterByFormula={}&maxRecords=1&fields%5B%5D=code&fields%5B%5D=name",
+        urlencode(&format!("{{code}}='{}'", code))
+    );
+    let client_data = airtable_get("Clients", &qs).await.unwrap_or(serde_json::Value::Null);
+    let client_name = client_data["records"][0]["fields"]["name"]
+        .as_str()
+        .unwrap_or(&code)
+        .to_string();
+
+    let user_message = format!(
+        "## New campaign scope\n\n\
+         **Client:** {} ({})\n\
+         **Campaign name:** {}\n\
+         **Project code:** {}\n\
+         **Type:** {}\n\
+         **Start:** {}\n\
+         **End:** {}\n\
+         **Budget signal:** {}\n\
+         **Today's date:** {}\n\n\
+         ## Brief notes\n\n{}",
+        client_name,
+        code,
+        parsed.campaign_name.trim(),
+        project_code,
+        parsed.campaign_type.trim(),
+        parsed.start_date.trim(),
+        parsed.end_date.as_deref().unwrap_or("(not given)"),
+        parsed.budget_signal.as_deref().unwrap_or("(not given)"),
+        chrono::Local::now().format("%A %d %B %Y"),
+        parsed.brief_notes.trim(),
+    );
+
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 4096,
+        system: NEW_CAMPAIGN_SCOPE_PROMPT,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+    };
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+
+    let response = http
+        .post(ANTHROPIC_API)
+        .header("x-api-key", &key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Anthropic API {}: {}", status.as_u16(), text));
+    }
+
+    let api_response: AnthropicResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    let text = api_response
+        .content
+        .iter()
+        .filter(|b| b.block_type == "text")
+        .filter_map(|b| b.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("");
+
+    let json = extract_json_block(&text)?;
+
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+
+    file_receipt_to_airtable(&json).await;
+
+    Ok(json)
+}
+
+// ── Airtable Projects write (used by airtable:create-project on_done) ──
+
+#[derive(Deserialize, Debug)]
+struct CreateProjectArgs {
+    code: String,
+    name: String,
+    client_code: String,
+    campaign_type: Option<String>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+    budget_total: Option<f64>,
+    notes: Option<String>,
+}
+
+#[tauri::command]
+async fn create_airtable_project(args: serde_json::Value) -> Result<String, String> {
+    let parsed: CreateProjectArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid args: {}", e))?;
+
+    let project_code = parsed.code.trim();
+    if project_code.is_empty() {
+        return Err("Project code required".to_string());
+    }
+    let client_code = parsed.client_code.trim().to_uppercase();
+    if client_code.is_empty() {
+        return Err("Client code required".to_string());
+    }
+
+    // Find the Clients record so we can link to it.
+    let client_record_id = airtable_find_client_by_code(&client_code)
+        .await?
+        .ok_or_else(|| format!("Client {} not in Airtable", client_code))?;
+
+    let mut fields = serde_json::json!({
+        "code": project_code,
+        "name": parsed.name.trim(),
+        "client": [client_record_id],
+        "status": "scoping",
+    });
+    if let Some(t) = parsed.campaign_type.as_deref() {
+        if !t.trim().is_empty() {
+            fields["type"] = serde_json::Value::String(t.trim().to_string());
+        }
+    }
+    if let Some(s) = parsed.start_date.as_deref() {
+        if !s.trim().is_empty() {
+            fields["start_date"] = serde_json::Value::String(s.trim().to_string());
+        }
+    }
+    if let Some(e) = parsed.end_date.as_deref() {
+        if !e.trim().is_empty() {
+            fields["end_date"] = serde_json::Value::String(e.trim().to_string());
+        }
+    }
+    if let Some(b) = parsed.budget_total {
+        fields["budget_total"] = serde_json::json!(b);
+    }
+    if let Some(n) = parsed.notes.as_deref() {
+        if !n.trim().is_empty() {
+            fields["notes"] = serde_json::Value::String(n.trim().to_string());
+        }
+    }
+
+    airtable_create_record("Projects", fields).await
+}
+
 // ── Airtable Clients write (used by airtable:create-client on_done) ────
 
 #[derive(Deserialize, Debug)]
@@ -1278,7 +1501,9 @@ pub fn run() {
             run_strategic_thinking,
             run_new_client_onboarding,
             run_monthly_checkin,
+            run_new_campaign_scope,
             create_airtable_client,
+            create_airtable_project,
             save_receipt,
             list_receipts,
             delete_receipt,

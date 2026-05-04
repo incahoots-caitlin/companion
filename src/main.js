@@ -702,6 +702,180 @@ function showNewClientOnboardingModal() {
   });
 }
 
+// ─── New Campaign Scope modal ────────────────────────────────────────
+async function showNewCampaignScopeModal() {
+  if (document.getElementById("ncs-modal")) return;
+
+  // Pull active clients for the picker.
+  let clients = [];
+  if (isTauri) {
+    try {
+      const raw = await invoke("list_airtable_clients");
+      const data = JSON.parse(raw);
+      clients = (data.records || []).map((r) => ({
+        code: r.fields?.code || "",
+        name: r.fields?.name || r.fields?.code || "Untitled",
+      })).filter((c) => c.code);
+    } catch (e) {
+      console.warn("list_airtable_clients failed:", e);
+    }
+  }
+
+  if (clients.length === 0) {
+    showToast("No clients in Airtable yet. Add one via New Client Onboarding first.", { ttl: 6000 });
+    return;
+  }
+
+  const overlay = el("div", { id: "ncs-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, ["New Campaign Scope"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+  modal.appendChild(el("div", { class: "modal-meta" }, [
+    "Scope a discrete campaign for an existing client. Claude returns deliverables, timeline, reporting rhythm, assumptions, and follow-ups. Project code is auto-built from {CLIENT}-{YYYY}-{MM}-{slug}.",
+  ]));
+
+  const grid = el("div", { class: "modal-field-grid" });
+
+  const clientPicker = el("select", { id: "ncs-client", class: "settings-input" });
+  clients.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c.code;
+    opt.textContent = `${c.code} — ${c.name}`;
+    clientPicker.appendChild(opt);
+  });
+
+  const campaignName = el("input", { id: "ncs-name", type: "text", class: "settings-input", placeholder: "e.g. June tour launch" });
+  const projectSlug = el("input", { id: "ncs-slug", type: "text", class: "settings-input", placeholder: "auto from name (e.g. tour-launch)" });
+  const campaignType = el("select", { id: "ncs-type", class: "settings-input" });
+  ["festival", "venue", "touring", "label", "artist", "PR", "comedy", "capability"].forEach((t) => {
+    const opt = document.createElement("option");
+    opt.value = t;
+    opt.textContent = t;
+    campaignType.appendChild(opt);
+  });
+  const startDate = el("input", { id: "ncs-start", type: "date", class: "settings-input" });
+  const endDate = el("input", { id: "ncs-end", type: "date", class: "settings-input" });
+  const budget = el("input", { id: "ncs-budget", type: "text", class: "settings-input", placeholder: "e.g. $8k, ~15k, TBC" });
+
+  [
+    ["Client", clientPicker],
+    ["Campaign type", campaignType],
+    ["Campaign name", campaignName],
+    ["Slug (optional)", projectSlug],
+    ["Start date", startDate],
+    ["End date (optional)", endDate],
+    ["Budget signal", budget],
+  ].forEach(([label, input]) => {
+    grid.appendChild(el("label", { class: "modal-field" }, [
+      el("div", { class: "settings-label" }, [label]),
+      input,
+    ]));
+  });
+
+  modal.appendChild(grid);
+
+  modal.appendChild(el("div", { class: "settings-label", style: "margin-top: 16px;" }, ["Brief notes"]));
+  const notes = el("textarea", {
+    id: "ncs-notes",
+    class: "modal-textarea",
+    placeholder: "What the campaign is, what success looks like, what you've already discussed with the client, what you're worried about. Notes from your scoping call go here verbatim.",
+    rows: 8,
+  });
+  modal.appendChild(notes);
+
+  modal.appendChild(el("div", { class: "modal-actions" }, [
+    el("button", { class: "button button-secondary", id: "ncs-cancel" }, ["Cancel"]),
+    el("button", { class: "button", id: "ncs-run" }, ["Run"]),
+  ]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  campaignName.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  document.getElementById("ncs-cancel").addEventListener("click", close);
+
+  document.getElementById("ncs-run").addEventListener("click", async () => {
+    const input = {
+      client_code: clientPicker.value,
+      campaign_name: campaignName.value.trim(),
+      project_slug: projectSlug.value.trim(),
+      campaign_type: campaignType.value,
+      start_date: startDate.value,
+      end_date: endDate.value || null,
+      budget_signal: budget.value.trim() || null,
+      brief_notes: notes.value.trim(),
+    };
+    if (!input.campaign_name) return showToast("Campaign name required");
+    if (!input.start_date) return showToast("Start date required");
+    if (!input.brief_notes) return showToast("Brief notes required");
+
+    const runBtn = document.getElementById("ncs-run");
+    runBtn.disabled = true;
+    runBtn.textContent = "Drafting scope...";
+    try {
+      const json = await invoke("run_new_campaign_scope", { input });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Scope draft ready");
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
+// ─── airtable:create-project handler ─────────────────────────────────
+async function handleCreateProjectFromReceipt(receiptEl) {
+  const receiptId = receiptEl?.dataset?.receiptId;
+  if (!receiptId) return showToast("No receipt id");
+
+  let receipt;
+  try {
+    const rows = await invoke("list_receipts", { limit: 100 });
+    const match = rows.map((j) => JSON.parse(j)).find((r) => r.id === receiptId);
+    if (!match) return showToast("Couldn't find that receipt");
+    receipt = match;
+  } catch (e) {
+    return showToast(`Receipt lookup failed: ${e}`);
+  }
+
+  const projectCode = receipt.project || "";
+  const clientCode = (projectCode.split("-")[0] || "").toUpperCase();
+
+  const confirmCode = window.prompt("Confirm project code:", projectCode);
+  if (!confirmCode) return showToast("Cancelled — no project created");
+
+  // Pull campaign_name from the customer field of the receipt's paid_block,
+  // fall back to the title.
+  const projectName = receipt.paid_block?.customer || receipt.title || projectCode;
+
+  try {
+    const recordId = await invoke("create_airtable_project", {
+      args: {
+        code: confirmCode.trim(),
+        name: projectName,
+        client_code: clientCode,
+        campaign_type: null,
+        start_date: null,
+        end_date: null,
+        budget_total: null,
+        notes: `Filed via Studio receipt ${receiptId}`,
+      },
+    });
+    showToast(`${confirmCode} created in Airtable Projects (${recordId})`, { ttl: 4000 });
+  } catch (e) {
+    showToast(`Airtable create failed: ${e}`, { ttl: 6000 });
+  }
+}
+
 // ─── Monthly Check-in modal ──────────────────────────────────────────
 async function showMonthlyCheckinModal() {
   if (document.getElementById("mc-modal")) return;
@@ -895,8 +1069,11 @@ document.addEventListener("DOMContentLoaded", () => {
       const onDone = row.dataset.onDone;
 
       // airtable:create-client → prompt for canonical code, then create the row.
+      // airtable:create-project → confirm the project code, then file to Projects.
       if (onDone === "airtable:create-client") {
         await handleCreateClientFromReceipt(receiptEl);
+      } else if (onDone === "airtable:create-project") {
+        await handleCreateProjectFromReceipt(receiptEl);
       } else {
         showToast(onDone ? `Ticked, hook fired (${onDone})` : "Ticked");
       }
@@ -972,6 +1149,20 @@ document.addEventListener("DOMContentLoaded", () => {
     showNewClientOnboardingModal();
   }
 
+  async function openNewCampaignScope() {
+    if (!isTauri) {
+      showToast("Open the Studio app to run live workflows. Preview is read-only.");
+      return;
+    }
+    const ready = await invoke("get_api_key_status");
+    if (!ready) {
+      showApiKeyBanner();
+      showToast("Set your Anthropic API key first");
+      return;
+    }
+    showNewCampaignScopeModal();
+  }
+
   async function openMonthlyCheckin() {
     if (!isTauri) {
       showToast("Open the Studio app to run live workflows. Preview is read-only.");
@@ -995,6 +1186,8 @@ document.addEventListener("DOMContentLoaded", () => {
         openNewClientOnboarding();
       } else if (name === "Monthly Check-in") {
         openMonthlyCheckin();
+      } else if (name === "New Campaign Scope") {
+        openNewCampaignScope();
       } else {
         showToast(`${name}: workflow runner lands next build.`);
       }
