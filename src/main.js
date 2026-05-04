@@ -555,6 +555,153 @@ function showStrategicThinkingModal() {
   });
 }
 
+// ─── airtable:create-client handler ──────────────────────────────────
+//
+// When a New Client Onboarding receipt's "Create client + project rows
+// in Airtable" task is ticked, prompt for the canonical 3-letter code
+// (Claude can suggest one in the receipt's project field but the human
+// confirms) and call the backend to file it.
+async function handleCreateClientFromReceipt(receiptEl) {
+  const receiptId = receiptEl?.dataset?.receiptId;
+  if (!receiptId) return showToast("No receipt id");
+
+  // Pull receipt JSON back from backend so we get the latest copy.
+  let receipt;
+  try {
+    const rows = await invoke("list_receipts", { limit: 100 });
+    const match = rows.map((j) => JSON.parse(j)).find((r) => r.id === receiptId);
+    if (!match) return showToast("Couldn't find that receipt to read its details");
+    receipt = match;
+  } catch (e) {
+    return showToast(`Receipt lookup failed: ${e}`);
+  }
+
+  const suggestedCode = (receipt.project || "").toUpperCase().slice(0, 4);
+  const clientName = receipt.paid_block?.customer || "";
+
+  const code = window.prompt(
+    `Confirm or enter the canonical 3-letter code for "${clientName}":`,
+    suggestedCode
+  );
+  if (!code) return showToast("Cancelled — no client created");
+
+  const status = "active";
+  const notes = `Onboarded via Studio receipt ${receiptId}`;
+
+  try {
+    const recordId = await invoke("create_airtable_client", {
+      args: {
+        code: code.trim().toUpperCase(),
+        name: clientName,
+        status,
+        primary_contact_email: null,
+        notes,
+      },
+    });
+    showToast(`${code.toUpperCase()} created in Airtable (${recordId})`, { ttl: 4000 });
+    // Refresh the sidebar so the new client appears.
+    loadStudioSidebar();
+  } catch (e) {
+    showToast(`Airtable create failed: ${e}`, { ttl: 6000 });
+  }
+}
+
+// ─── New Client Onboarding modal ─────────────────────────────────────
+function showNewClientOnboardingModal() {
+  if (document.getElementById("nco-modal")) return;
+  const overlay = el("div", { id: "nco-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, ["New Client Onboarding"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+  modal.appendChild(el("div", { class: "modal-meta" }, [
+    "Drop the first-call notes in. Claude returns discovery questions, a draft scope, follow-up tasks, and a first-WIP agenda. Ticking the 'create client + project rows' task files them to Airtable.",
+  ]));
+
+  // Two-column field grid for the structured inputs.
+  const grid = el("div", { class: "modal-field-grid" });
+
+  const clientName = el("input", { id: "nco-client-name", type: "text", class: "settings-input", placeholder: "e.g. Northcote Theatre" });
+  const contactEmail = el("input", { id: "nco-contact-email", type: "email", class: "settings-input", placeholder: "name@example.com" });
+  const projectType = el("select", { id: "nco-project-type", class: "settings-input" });
+  ["festival", "venue / show", "touring", "label / artist", "PR", "comedy", "capability", "other"].forEach((t) => {
+    const opt = document.createElement("option");
+    opt.value = t;
+    opt.textContent = t;
+    projectType.appendChild(opt);
+  });
+  const budget = el("input", { id: "nco-budget", type: "text", class: "settings-input", placeholder: "e.g. ~10k, unsure, post-grant" });
+  const timeline = el("input", { id: "nco-timeline", type: "text", class: "settings-input", placeholder: "e.g. on-sale July, flexible, urgent" });
+
+  [
+    ["Client name", clientName],
+    ["Contact email", contactEmail],
+    ["Project type", projectType],
+    ["Budget signal", budget],
+    ["Timeline signal", timeline],
+  ].forEach(([label, input]) => {
+    grid.appendChild(el("label", { class: "modal-field" }, [
+      el("div", { class: "settings-label" }, [label]),
+      input,
+    ]));
+  });
+
+  modal.appendChild(grid);
+
+  modal.appendChild(el("div", { class: "settings-label", style: "margin-top: 16px;" }, ["First-call notes"]));
+  const notes = el("textarea", {
+    id: "nco-notes",
+    class: "modal-textarea",
+    placeholder: "What they want, what's been tried, who else is involved, what success looks like, what they're worried about. Notes from your discovery call go here verbatim.",
+    rows: 8,
+  });
+  modal.appendChild(notes);
+
+  modal.appendChild(el("div", { class: "modal-actions" }, [
+    el("button", { class: "button button-secondary", id: "nco-cancel" }, ["Cancel"]),
+    el("button", { class: "button", id: "nco-run" }, ["Run"]),
+  ]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  clientName.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  document.getElementById("nco-cancel").addEventListener("click", close);
+
+  document.getElementById("nco-run").addEventListener("click", async () => {
+    const input = {
+      client_name: clientName.value.trim(),
+      contact_email: contactEmail.value.trim() || null,
+      project_type: projectType.value,
+      budget_signal: budget.value.trim() || null,
+      timeline_signal: timeline.value.trim() || null,
+      first_call_notes: notes.value.trim(),
+    };
+    if (!input.client_name) return showToast("Client name required");
+    if (!input.first_call_notes) return showToast("First-call notes required");
+
+    const runBtn = document.getElementById("nco-run");
+    runBtn.disabled = true;
+    runBtn.textContent = "Thinking...";
+    try {
+      const json = await invoke("run_new_client_onboarding", { input });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Onboarding receipt ready");
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
 // Inline toast (replaces alert()).
 function showToast(message, opts = {}) {
   let root = document.getElementById("toast-root");
@@ -648,7 +795,13 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       await invoke("tick_item", { receiptId, itemIndex });
       const onDone = row.dataset.onDone;
-      showToast(onDone ? `Ticked, hook fired (${onDone})` : "Ticked");
+
+      // airtable:create-client → prompt for canonical code, then create the row.
+      if (onDone === "airtable:create-client") {
+        await handleCreateClientFromReceipt(receiptEl);
+      } else {
+        showToast(onDone ? `Ticked, hook fired (${onDone})` : "Ticked");
+      }
     } catch (err) {
       e.target.disabled = false;
       e.target.checked = false;
@@ -706,12 +859,28 @@ document.addEventListener("DOMContentLoaded", () => {
     showStrategicThinkingModal();
   }
 
-  // Workflow cards: Strategic Thinking opens the modal, others toast.
+  // Workflow cards: route by title to the right modal.
+  async function openNewClientOnboarding() {
+    if (!isTauri) {
+      showToast("Open the Studio app to run live workflows. Preview is read-only.");
+      return;
+    }
+    const ready = await invoke("get_api_key_status");
+    if (!ready) {
+      showApiKeyBanner();
+      showToast("Set your Anthropic API key first");
+      return;
+    }
+    showNewClientOnboardingModal();
+  }
+
   document.querySelectorAll(".workflow-card").forEach((card) => {
     const name = card.querySelector(".workflow-card-title")?.textContent || "Workflow";
     card.addEventListener("click", () => {
       if (name === "Strategic Thinking") {
         openStrategicThinking();
+      } else if (name === "New Client Onboarding") {
+        openNewClientOnboarding();
       } else {
         showToast(`${name}: workflow runner lands next build.`);
       }

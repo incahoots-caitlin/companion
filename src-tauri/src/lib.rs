@@ -57,6 +57,8 @@ fn print_script() -> Result<String, String> {
 
 const STRATEGIC_THINKING_PROMPT: &str =
     include_str!("../prompts/strategic-thinking-system.md");
+const NEW_CLIENT_ONBOARDING_PROMPT: &str =
+    include_str!("../prompts/new-client-onboarding-system.md");
 
 // ── DB state ───────────────────────────────────────────────────────────
 
@@ -603,6 +605,158 @@ async fn run_strategic_thinking(
     Ok(json)
 }
 
+// ── New Client Onboarding ──────────────────────────────────────────────
+
+#[derive(Deserialize, Debug)]
+struct NewClientOnboardingInput {
+    client_name: String,
+    contact_email: Option<String>,
+    project_type: String,
+    first_call_notes: String,
+    budget_signal: Option<String>,
+    timeline_signal: Option<String>,
+}
+
+#[tauri::command]
+async fn run_new_client_onboarding(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+
+    let parsed: NewClientOnboardingInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+
+    if parsed.client_name.trim().is_empty() || parsed.first_call_notes.trim().is_empty() {
+        return Err("Client name and first-call notes are required".to_string());
+    }
+
+    // Format the structured input into a single user message Claude can read.
+    let user_message = format!(
+        "## New client intake\n\n\
+         **Client name:** {}\n\
+         **Contact email:** {}\n\
+         **Project type:** {}\n\
+         **Budget signal:** {}\n\
+         **Timeline signal:** {}\n\n\
+         ## First-call notes\n\n{}\n\n\
+         ## Today's date\n\n{}",
+        parsed.client_name.trim(),
+        parsed.contact_email.as_deref().unwrap_or("(not given)"),
+        parsed.project_type.trim(),
+        parsed.budget_signal.as_deref().unwrap_or("(not given)"),
+        parsed.timeline_signal.as_deref().unwrap_or("(not given)"),
+        parsed.first_call_notes.trim(),
+        chrono::Local::now().format("%A %d %B %Y"),
+    );
+
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 4096,
+        system: NEW_CLIENT_ONBOARDING_PROMPT,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("HTTP client init: {}", e))?;
+
+    let response = client
+        .post(ANTHROPIC_API)
+        .header("x-api-key", &key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Anthropic API {}: {}", status.as_u16(), text));
+    }
+
+    let api_response: AnthropicResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    let text = api_response
+        .content
+        .iter()
+        .filter(|b| b.block_type == "text")
+        .filter_map(|b| b.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("");
+
+    let json = extract_json_block(&text)?;
+
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+
+    file_receipt_to_airtable(&json).await;
+
+    Ok(json)
+}
+
+// ── Airtable Clients write (used by airtable:create-client on_done) ────
+
+#[derive(Deserialize, Debug)]
+struct CreateClientArgs {
+    code: String,
+    name: String,
+    status: Option<String>,
+    primary_contact_email: Option<String>,
+    notes: Option<String>,
+}
+
+#[tauri::command]
+async fn create_airtable_client(args: serde_json::Value) -> Result<String, String> {
+    let parsed: CreateClientArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid args: {}", e))?;
+
+    let code_upper = parsed.code.trim().to_uppercase();
+    if code_upper.is_empty() || code_upper.len() > 4 {
+        return Err("Client code must be 1-4 uppercase letters".to_string());
+    }
+    if !code_upper.chars().all(|c| c.is_ascii_alphabetic()) {
+        return Err("Client code must be letters only".to_string());
+    }
+
+    // Refuse if a client with this code already exists.
+    if airtable_find_client_by_code(&code_upper).await?.is_some() {
+        return Err(format!("Client {} already exists in Airtable", code_upper));
+    }
+
+    let mut fields = serde_json::json!({
+        "code": code_upper,
+        "name": parsed.name.trim(),
+        "status": parsed.status.as_deref().unwrap_or("active"),
+        "onboarded_at": chrono::Local::now().format("%Y-%m-%d").to_string(),
+    });
+    if let Some(email) = parsed.primary_contact_email.as_deref() {
+        if !email.trim().is_empty() {
+            fields["primary_contact_email"] = serde_json::Value::String(email.trim().to_string());
+        }
+    }
+    if let Some(notes) = parsed.notes.as_deref() {
+        if !notes.trim().is_empty() {
+            fields["notes"] = serde_json::Value::String(notes.trim().to_string());
+        }
+    }
+
+    airtable_create_record("Clients", fields).await
+}
+
 // ── Receipt CRUD ───────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -933,6 +1087,8 @@ pub fn run() {
             list_airtable_clients,
             list_airtable_projects,
             run_strategic_thinking,
+            run_new_client_onboarding,
+            create_airtable_client,
             save_receipt,
             list_receipts,
             delete_receipt,

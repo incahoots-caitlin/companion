@@ -615,6 +615,24 @@ body {
   padding: var(--space-md) var(--space-lg);
 }
 
+.modal-field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-sm) var(--space-md);
+  padding: 0 var(--space-lg);
+  margin-bottom: var(--space-sm);
+}
+
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.modal-field .settings-label {
+  margin-bottom: 0;
+}
+
 /* ── Settings modal sections ─────────────────────────────── */
 .settings-body {
   padding: var(--space-md) var(--space-lg);
