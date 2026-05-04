@@ -14,6 +14,7 @@ use keyring::Entry;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
@@ -32,11 +33,27 @@ const MODEL_ID: &str = "claude-opus-4-7";
 
 // Munbyn reprint paths. Both live in the team-shared Dropbox so Rose
 // also has them, but only Caitlin's Mac has the printer queue named
-// "Munbyn", so reprint will fail soft on her machine.
-const TYPST_DIR: &str =
-    "/Users/caitlinreilly/Library/CloudStorage/Dropbox/IN CAHOOTS/TEMPLATES/RECEIPT-DOCS/typst";
-const PRINT_SCRIPT: &str =
-    "/Users/caitlinreilly/Library/CloudStorage/Dropbox/IN CAHOOTS/TEMPLATES/RECEIPT-DOCS/print-thermal.sh";
+// "Munbyn", so reprint will fail soft on Rose's machine.
+//
+// Resolved at runtime via $HOME so the published binary doesn't bake in
+// any single user's path. Each user's Dropbox lives at the same relative
+// location, just under their own home dir.
+const TYPST_REL: &str =
+    "Library/CloudStorage/Dropbox/IN CAHOOTS/TEMPLATES/RECEIPT-DOCS/typst";
+const PRINT_SCRIPT_REL: &str =
+    "Library/CloudStorage/Dropbox/IN CAHOOTS/TEMPLATES/RECEIPT-DOCS/print-thermal.sh";
+
+fn home_dir() -> Result<String, String> {
+    std::env::var("HOME").map_err(|_| "HOME not set".to_string())
+}
+
+fn typst_dir() -> Result<String, String> {
+    Ok(format!("{}/{}", home_dir()?, TYPST_REL))
+}
+
+fn print_script() -> Result<String, String> {
+    Ok(format!("{}/{}", home_dir()?, PRINT_SCRIPT_REL))
+}
 
 const STRATEGIC_THINKING_PROMPT: &str =
     include_str!("../prompts/strategic-thinking-system.md");
@@ -44,6 +61,31 @@ const STRATEGIC_THINKING_PROMPT: &str =
 // ── DB state ───────────────────────────────────────────────────────────
 
 pub struct DbState(pub Mutex<Connection>);
+
+// ── Rate limit state ────────────────────────────────────────────────────
+// Defends against a buggy frontend looping a Claude API call and burning
+// credits. Single-user desktop app, so a global "last call time" is plenty.
+
+const RATE_LIMIT_INTERVAL: Duration = Duration::from_secs(5);
+
+pub struct RateLimit(pub Mutex<Option<Instant>>);
+
+fn check_rate_limit(state: &RateLimit) -> Result<(), String> {
+    let mut guard = state.0.lock().map_err(|e| format!("Rate-limit lock: {}", e))?;
+    let now = Instant::now();
+    if let Some(last) = *guard {
+        let elapsed = now.duration_since(last);
+        if elapsed < RATE_LIMIT_INTERVAL {
+            let wait = RATE_LIMIT_INTERVAL - elapsed;
+            return Err(format!(
+                "Slow down — wait {}s before running another workflow",
+                wait.as_secs() + 1
+            ));
+        }
+    }
+    *guard = Some(now);
+    Ok(())
+}
 
 fn init_db(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(
@@ -295,7 +337,9 @@ fn extract_json_block(text: &str) -> Result<String, String> {
 async fn run_strategic_thinking(
     input: String,
     state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
 ) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
     let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
     if input.trim().is_empty() {
         return Err("Empty input".to_string());
@@ -504,17 +548,20 @@ async fn reprint_receipt(state: State<'_, DbState>, receipt_id: String) -> Resul
         .map_err(|e| format!("Receipt {} not found: {}", receipt_id, e))?
     };
 
+    let typst_dir = typst_dir()?;
+    let print_script = print_script()?;
+
     // Bail early on installs without the templates folder.
-    if !std::path::Path::new(TYPST_DIR).exists() {
+    if !std::path::Path::new(&typst_dir).exists() {
         return Err(
-            "Receipt templates not on this machine. Reprint runs from Caitlin's install."
+            "Receipt templates not on this machine. Reprint runs on installs that have the In Cahoots Dropbox synced."
                 .to_string(),
         );
     }
 
     // Write the receipt JSON into the typst data folder. Hidden filename
     // so it doesn't pollute the templates registry.
-    let data_path = format!("{}/data/.studio-reprint.json", TYPST_DIR);
+    let data_path = format!("{}/data/.studio-reprint.json", typst_dir);
     std::fs::write(&data_path, &json).map_err(|e| format!("Write temp data: {}", e))?;
 
     let template = template_for_workflow(&workflow);
@@ -534,7 +581,7 @@ async fn reprint_receipt(state: State<'_, DbState>, receipt_id: String) -> Resul
             "--input",
             "datafile=../data/.studio-reprint.json",
         ])
-        .current_dir(TYPST_DIR)
+        .current_dir(&typst_dir)
         .output()
         .await
         .map_err(|e| format!("typst spawn (is typst installed via Homebrew?): {}", e))?;
@@ -546,7 +593,7 @@ async fn reprint_receipt(state: State<'_, DbState>, receipt_id: String) -> Resul
     // Send to Munbyn via the existing thermal print script.
     let print_out = tokio::process::Command::new("bash")
         .env("PATH", &path)
-        .args([PRINT_SCRIPT, &pdf_path])
+        .args([&print_script, &pdf_path])
         .output()
         .await
         .map_err(|e| format!("print spawn: {}", e))?;
@@ -600,6 +647,7 @@ pub fn run() {
             let conn = Connection::open(&path).expect("open studio.db");
             init_db(&conn).expect("init schema");
             app.manage(DbState(Mutex::new(conn)));
+            app.manage(RateLimit(Mutex::new(None)));
 
             // Tray icon with a small menu.
             let open_item = MenuItem::with_id(app, "open", "Open Studio", true, None::<&str>)?;
