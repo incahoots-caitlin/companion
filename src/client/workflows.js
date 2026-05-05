@@ -9,7 +9,7 @@
 // Onboarding don't take a client argument because they create the client.
 //
 // Three workflows in the grid are placeholders (Schedule social post, Log
-// time, Edit project) — those show a toast saying they ship in v0.20.
+// time, Edit project) — those show a toast saying they ship in v0.21.
 
 export function launch(key, clientCode, ctx) {
   // ctx.modals = { showStrategicThinkingModal, showMonthlyCheckinModal, ... }
@@ -19,7 +19,7 @@ export function launch(key, clientCode, ctx) {
 
   const placeholders = ["schedule-social-post", "log-time", "edit-project"];
   if (placeholders.includes(key)) {
-    ctx.toast?.("Ships in v0.20");
+    ctx.toast?.("Ships in v0.21");
     return;
   }
 

@@ -360,6 +360,14 @@ pub fn check_lumin_references() -> Vec<DriftItem> {
             hits.extend(grep_recursive(&p, "lumin"));
         }
     }
+    // Don't flag drift.rs itself — it talks about Lumin in code that
+    // implements this very check.
+    hits.retain(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n != "drift.rs")
+            .unwrap_or(true)
+    });
     if hits.is_empty() {
         return vec![];
     }

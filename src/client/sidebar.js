@@ -84,7 +84,21 @@ export async function loadClients() {
   if (!studioSection) return;
 
   const records = await fetchClients();
-  if (!records) return; // keep whatever's already in the DOM
+  if (!records) {
+    // Airtable not configured yet — replace the static "Loading..."
+    // with a real placeholder so it doesn't read as a stuck spinner.
+    studioSection.innerHTML = "";
+    studioSection.appendChild(el("div", { class: "sidebar-label" }, ["Studio"]));
+    studioSection.appendChild(
+      el("div", { class: "sidebar-empty" }, [
+        "Connect Airtable in Settings to see clients",
+      ])
+    );
+    studioSection.appendChild(
+      el("a", { class: "sidebar-item", "data-view": "pipeline", href: "#" }, ["Pipeline"])
+    );
+    return;
+  }
 
   // Sort by code so the order is stable across launches.
   records.sort((a, b) => {

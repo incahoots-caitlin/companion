@@ -842,8 +842,12 @@ fn summarise_receipt(json: &str) -> String {
                     let qty = item["qty"].as_str().unwrap_or("");
                     let text = item["text"].as_str().unwrap_or("");
                     let is_task = item["type"].as_str() == Some("task");
-                    let done = item["done"].as_bool() == Some(false);
-                    let prefix = if is_task && done {
+                    // `is_open` is true when the JSON `done` field is false
+                    // (i.e. the task is still open / unticked). Keep the name
+                    // explicit so a future reader doesn't "fix" this into a
+                    // real inversion.
+                    let is_open = item["done"].as_bool() == Some(false);
+                    let prefix = if is_task && is_open {
                         "  ☐"
                     } else if is_task {
                         "  ☑"
@@ -1768,8 +1772,16 @@ fn read_morning_briefing() -> Result<String, String> {
         Some((m, p)) => {
             let body = std::fs::read_to_string(&p).map_err(|e| format!("Read briefing: {}", e))?;
             // Cap at 8KB so a runaway log doesn't stuff the dashboard.
+            // Use char-safe truncation so a multibyte UTF-8 boundary near
+            // 8192 bytes (emoji, accented chars) doesn't panic the slice.
             let trimmed = if body.len() > 8192 {
-                format!("{}\n\n... (truncated)", &body[..8192])
+                let cut = body
+                    .char_indices()
+                    .take_while(|(i, _)| *i < 8192)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(0);
+                format!("{}\n\n... (truncated)", &body[..cut])
             } else {
                 body
             };

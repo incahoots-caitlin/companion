@@ -341,23 +341,23 @@ const WORKFLOW_CARDS = [
     title: "Strategic Thinking",
     meta: "Open thinking session",
   },
-  // Placeholders — workflows ship in v0.20.
+  // Placeholders — workflows ship in v0.21.
   {
     key: "schedule-social-post",
     title: "Schedule social post",
-    meta: "Ships in v0.20",
+    meta: "Ships in v0.21",
     placeholder: true,
   },
   {
     key: "log-time",
     title: "Log time",
-    meta: "Ships in v0.20",
+    meta: "Ships in v0.21",
     placeholder: true,
   },
   {
     key: "edit-project",
     title: "Edit project",
-    meta: "Ships in v0.20",
+    meta: "Ships in v0.21",
     placeholder: true,
   },
 ];
