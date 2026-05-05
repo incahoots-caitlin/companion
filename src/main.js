@@ -507,16 +507,32 @@ async function showSettingsModal() {
     granolaActions,
   ]));
 
-  // Google integration (v0.24 Block C). Same two-step setup as Granola:
+  // Google integration (v0.25 Block C). Same two-step setup as Granola:
   // paste OAuth client ID issued by Google Cloud Console (Desktop app
   // type, redirect URI http://localhost:53682/callback), then click
-  // Connect Google to run the browser PKCE flow. Calendar read-only is
-  // the v0.24 scope; Gmail and Drive get added in v0.25 by re-authing.
-  const googleMeta = googleStatus.connected
-    ? `Connected. Calendar shows on Today and per-client views.${googleStatus.last_sync_at ? ` Last sync: ${formatGranolaTimestamp(googleStatus.last_sync_at)}.` : ""}`
-    : googleStatus.has_client_id
-      ? "Client ID saved. Click Connect to authorise in your browser."
-      : "Optional. Paste a Google OAuth client ID (Desktop app type, redirect URI http://localhost:53682/callback), then click Connect.";
+  // Connect Google to run the browser PKCE flow. v0.25 covers Calendar,
+  // Gmail and Drive in a single OAuth — one client, three scopes. Users
+  // upgrading from v0.24 (Calendar only) need to re-authorise once to
+  // pick up the Gmail and Drive scopes.
+  const googleScopes = Array.isArray(googleStatus.scopes) ? googleStatus.scopes : [];
+  const allScopes = ["calendar", "gmail", "drive"];
+  const missingScopes = allScopes.filter((s) => !googleScopes.includes(s));
+  const scopeList = googleScopes.length ? googleScopes.join(", ") : "none";
+  let googleMeta;
+  if (googleStatus.connected) {
+    const base = `Connected. Scopes: ${scopeList}.`;
+    const lastSync = googleStatus.last_sync_at
+      ? ` Last sync: ${formatGranolaTimestamp(googleStatus.last_sync_at)}.`
+      : "";
+    const upgrade = missingScopes.length
+      ? ` Re-authorise to add ${missingScopes.join(" + ")}.`
+      : "";
+    googleMeta = base + lastSync + upgrade;
+  } else if (googleStatus.has_client_id) {
+    googleMeta = "Client ID saved. Click Connect to authorise Calendar, Gmail and Drive in your browser.";
+  } else {
+    googleMeta = "Optional. Paste a Google OAuth client ID (Desktop app type, redirect URI http://localhost:53682/callback), then click Connect. Enable the Calendar, Gmail and Drive APIs on the Cloud Console project first.";
+  }
 
   const googleActions = el("div", { class: "settings-row", style: "margin-top: 8px;" });
   if (googleStatus.connected) {

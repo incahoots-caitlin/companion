@@ -68,6 +68,7 @@ export async function loadHeader(state, code) {
       abn: match.fields?.abn || null,
       dropbox_folder: match.fields?.dropbox_folder || null,
       gmail_thread_filter: match.fields?.gmail_thread_filter || null,
+      drive_folder_id: match.fields?.drive_folder_id || null,
       notes: match.fields?.notes || null,
       // last_touch is filled in by loadReceipts once receipts arrive.
       last_touch: null,
@@ -285,6 +286,80 @@ export async function loadMeetings(state) {
   }
 }
 
+// ── Emails (v0.25) ────────────────────────────────────────────────────
+//
+// Reads the Clients table's gmail_thread_filter as a Gmail search-syntax
+// query. When empty, the Rust side falls back to a name match. Hidden
+// when Google isn't connected with the gmail scope.
+
+export async function loadEmails(state) {
+  try {
+    if (!state.code || !state.header) {
+      state.emails = [];
+      return;
+    }
+    let status = null;
+    try { status = await safeInvoke("get_google_status"); } catch {}
+    const scopes = Array.isArray(status?.scopes) ? status.scopes : [];
+    if (!status?.connected || !scopes.includes("gmail")) {
+      state.emails = [];
+      return;
+    }
+    const raw = await safeInvoke("list_gmail_for_client", {
+      input: {
+        client_code: state.code,
+        client_name: state.header.name || null,
+        filter_expr: state.header.gmail_thread_filter || null,
+      },
+    });
+    const threads = JSON.parse(raw || "[]");
+    state.emails = Array.isArray(threads) ? threads : [];
+    state.last_fetch_at.emails = Date.now();
+  } catch (e) {
+    console.warn("loadEmails failed:", e);
+    state.emails = [];
+  }
+}
+
+// ── Drive files (v0.25) ───────────────────────────────────────────────
+//
+// Reads Clients.drive_folder_id and lists files modified in the last
+// 14 days. When the field is empty the Rust command returns []. Hidden
+// when Google isn't connected with the drive scope.
+
+export async function loadDriveFiles(state) {
+  try {
+    if (!state.code || !state.header) {
+      state.drive_files = [];
+      return;
+    }
+    let status = null;
+    try { status = await safeInvoke("get_google_status"); } catch {}
+    const scopes = Array.isArray(status?.scopes) ? status.scopes : [];
+    if (!status?.connected || !scopes.includes("drive")) {
+      state.drive_files = [];
+      return;
+    }
+    if (!state.header.drive_folder_id) {
+      state.drive_files = [];
+      return;
+    }
+    const raw = await safeInvoke("list_drive_recent_for_client", {
+      input: {
+        client_code: state.code,
+        folder_id: state.header.drive_folder_id,
+        days: 14,
+      },
+    });
+    const files = JSON.parse(raw || "[]");
+    state.drive_files = Array.isArray(files) ? files : [];
+    state.last_fetch_at.drive_files = Date.now();
+  } catch (e) {
+    console.warn("loadDriveFiles failed:", e);
+    state.drive_files = [];
+  }
+}
+
 // ── Top-level loaders ─────────────────────────────────────────────────
 
 export async function loadAll(state, code) {
@@ -300,6 +375,8 @@ export async function loadAll(state, code) {
     loadProjects(state),
     loadReceipts(state),
     loadMeetings(state),
+    loadEmails(state),
+    loadDriveFiles(state),
   ]);
   return state;
 }
@@ -325,6 +402,12 @@ export async function refreshStale(state) {
   }
   if ((state.last_fetch_at.meetings || 0) + STALE_MS < now) {
     tasks.push(loadMeetings(state));
+  }
+  if ((state.last_fetch_at.emails || 0) + STALE_MS < now) {
+    tasks.push(loadEmails(state));
+  }
+  if ((state.last_fetch_at.drive_files || 0) + STALE_MS < now) {
+    tasks.push(loadDriveFiles(state));
   }
   await Promise.allSettled(tasks);
 }

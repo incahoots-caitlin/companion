@@ -12,6 +12,8 @@
 
 mod calendar;
 mod drift;
+mod drive;
+mod gmail;
 mod google;
 mod granola;
 mod oauth;
@@ -51,8 +53,16 @@ const KEYRING_GRANOLA_LAST_PULL: &str = "granola-last-pull-at";
 
 // Same idea, for the Google Calendar pull (v0.24). Stamped on every
 // successful list_calendar_today / list_calendar_week so the Settings
-// "Last sync" line knows when calendar data was last freshened.
+// "Last sync" line knows when calendar data was last freshened. Gmail
+// and Drive (v0.25) share the same stamp — Settings shows the latest
+// successful Google call regardless of surface.
 const KEYRING_GOOGLE_LAST_SYNC: &str = "google-last-sync-at";
+
+// Records which scopes the user actually granted on their last
+// successful re-authorise. Stamped to "calendar,gmail,drive" today;
+// future versions may grant fewer when the user opts out of some
+// surfaces. Settings reads this to render the connected-scope summary.
+const KEYRING_GOOGLE_GRANTED_SCOPES: &str = "google-granted-scopes";
 
 // Munbyn reprint paths. Both live in the team-shared Dropbox so Rose
 // also has them, but only Caitlin's Mac has the printer queue named
@@ -539,6 +549,7 @@ async fn list_airtable_clients() -> Result<String, String> {
 &fields%5B%5D=abn\
 &fields%5B%5D=dropbox_folder\
 &fields%5B%5D=gmail_thread_filter\
+&fields%5B%5D=drive_folder_id\
 &fields%5B%5D=notes",
     )
     .await?;
@@ -2989,15 +3000,39 @@ struct GoogleStatus {
     connected: bool,
     has_client_id: bool,
     last_sync_at: Option<String>,
+    // v0.25: which surfaces this token covers. Settings renders this as
+    // "Calendar, Gmail, Drive" so Caitlin can see at a glance whether
+    // she needs to re-authorise to add a missing surface. Defaults to
+    // ["calendar"] for tokens minted under v0.24 — those need a
+    // re-authorise to upgrade. We assume the full set for any new
+    // connect (the OAuth flow now requests all three).
+    scopes: Vec<String>,
 }
 
 #[tauri::command]
 fn get_google_status() -> GoogleStatus {
+    let connected = oauth::is_connected(&google::GOOGLE);
+    let scopes = if connected {
+        match oauth::read_keychain(KEYRING_GOOGLE_GRANTED_SCOPES) {
+            Some(s) if !s.is_empty() => s
+                .split(',')
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect(),
+            // No granted-scope record means the token was minted under
+            // v0.24 (Calendar only). The user needs a re-authorise to
+            // upgrade — Settings copy nudges them.
+            _ => vec!["calendar".to_string()],
+        }
+    } else {
+        Vec::new()
+    };
     GoogleStatus {
-        connected: oauth::is_connected(&google::GOOGLE),
+        connected,
         has_client_id: oauth::read_keychain(google::GOOGLE.client_id_keychain_key)
             .is_some(),
         last_sync_at: oauth::read_keychain(KEYRING_GOOGLE_LAST_SYNC),
+        scopes,
     }
 }
 
@@ -3012,13 +3047,22 @@ fn save_google_client_id(client_id: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn connect_google() -> Result<(), String> {
-    oauth::start_oauth_flow(&google::GOOGLE).await
+    oauth::start_oauth_flow(&google::GOOGLE).await?;
+    // Record which surfaces this token covers. v0.25 always asks for
+    // Calendar + Gmail + Drive — if the user re-authorises we overwrite
+    // the v0.24 marker that says Calendar only.
+    let _ = oauth::write_keychain(
+        KEYRING_GOOGLE_GRANTED_SCOPES,
+        "calendar,gmail,drive",
+    );
+    Ok(())
 }
 
 #[tauri::command]
 fn disconnect_google() -> Result<(), String> {
     oauth::disconnect(&google::GOOGLE)?;
     let _ = oauth::delete_keychain(KEYRING_GOOGLE_LAST_SYNC);
+    let _ = oauth::delete_keychain(KEYRING_GOOGLE_GRANTED_SCOPES);
     Ok(())
 }
 
@@ -3091,6 +3135,170 @@ async fn list_calendar_for_client(input: serde_json::Value) -> Result<String, St
     let events = calendar::list_events_for_client(&name, &aliases).await?;
     stamp_google_last_sync();
     serde_json::to_string(&events).map_err(|e| format!("Serialise: {}", e))
+}
+
+// ── Gmail integration (v0.25, Block C) ─────────────────────────────────
+//
+// Three frontend-facing commands wrap the Gmail v1 REST plumbing. All
+// fail soft when Google isn't connected — the calling render layer hides
+// the email triage section in that case rather than throwing.
+//
+//   - gmail_unread_count()             -> u32
+//   - list_gmail_urgent()              -> JSON array of EmailThread
+//   - list_gmail_for_client(code, ..)  -> JSON array of EmailThread
+//
+// The "urgent" heuristic (unread + starred OR sender in primary contacts)
+// needs the Clients table's primary_contact_email values. We fetch them
+// inside the command rather than asking the frontend to pass them — keeps
+// the call surface tight and lets the dashboard refresh cheaply.
+
+#[tauri::command]
+async fn gmail_unread_count() -> Result<u32, String> {
+    let count = gmail::count_unread().await?;
+    stamp_google_last_sync();
+    Ok(count)
+}
+
+async fn fetch_important_sender_emails() -> Vec<String> {
+    // Pull active clients' primary_contact_email values. Best-effort —
+    // when Airtable is down we just return an empty list and the
+    // urgent-thread loop falls back to "starred only".
+    let raw = match list_airtable_clients().await {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<String> = Vec::new();
+    if let Some(records) = parsed["records"].as_array() {
+        for rec in records {
+            if let Some(email) = rec["fields"]["primary_contact_email"].as_str() {
+                let trimmed = email.trim().to_lowercase();
+                if !trimmed.is_empty() {
+                    out.push(trimmed);
+                }
+            }
+        }
+    }
+    out
+}
+
+#[tauri::command]
+async fn list_gmail_urgent() -> Result<String, String> {
+    let senders = fetch_important_sender_emails().await;
+    let threads = gmail::list_urgent_threads(&senders).await?;
+    stamp_google_last_sync();
+    serde_json::to_string(&threads).map_err(|e| format!("Serialise: {}", e))
+}
+
+#[derive(Deserialize, Debug)]
+struct ListGmailForClientInput {
+    client_code: String,
+    #[serde(default)]
+    client_name: Option<String>,
+    // Optional override — when set, used verbatim as the Gmail q=
+    // expression. Otherwise we read `gmail_thread_filter` off the
+    // Clients table for this code and use that.
+    #[serde(default)]
+    filter_expr: Option<String>,
+}
+
+#[tauri::command]
+async fn list_gmail_for_client(input: serde_json::Value) -> Result<String, String> {
+    let parsed: ListGmailForClientInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    let code = parsed.client_code.trim().to_uppercase();
+    if code.is_empty() {
+        return Err("Pick a client first".to_string());
+    }
+
+    // Resolve client name + filter from Airtable when not supplied.
+    let (name, filter_expr) = match (parsed.client_name.clone(), parsed.filter_expr.clone()) {
+        (Some(n), Some(f)) if !n.trim().is_empty() => (n.trim().to_string(), Some(f)),
+        _ => {
+            let qs = format!(
+                "filterByFormula={}&maxRecords=1&fields%5B%5D=name&fields%5B%5D=gmail_thread_filter",
+                urlencode(&format!("{{code}}='{}'", code))
+            );
+            let data = airtable_get("Clients", &qs)
+                .await
+                .unwrap_or(serde_json::Value::Null);
+            let n = data["records"][0]["fields"]["name"]
+                .as_str()
+                .unwrap_or(&code)
+                .to_string();
+            let f = parsed.filter_expr.or_else(|| {
+                data["records"][0]["fields"]["gmail_thread_filter"]
+                    .as_str()
+                    .map(String::from)
+            });
+            (parsed.client_name.unwrap_or(n), f)
+        }
+    };
+
+    let threads = gmail::list_threads_for_client(&name, filter_expr.as_deref()).await?;
+    stamp_google_last_sync();
+    serde_json::to_string(&threads).map_err(|e| format!("Serialise: {}", e))
+}
+
+// ── Drive integration (v0.25, Block C) ─────────────────────────────────
+//
+// One frontend-facing command. Resolves the client's drive_folder_id
+// from Airtable when the caller doesn't supply it, then queries Drive
+// v3 for files modified in the last `days` (default 14). Empty when the
+// client has no folder ID set — the per-client section hides itself.
+
+#[derive(Deserialize, Debug)]
+struct ListDriveForClientInput {
+    client_code: String,
+    #[serde(default)]
+    folder_id: Option<String>,
+    #[serde(default = "default_drive_window_days")]
+    days: i64,
+}
+
+fn default_drive_window_days() -> i64 {
+    14
+}
+
+#[tauri::command]
+async fn list_drive_recent_for_client(input: serde_json::Value) -> Result<String, String> {
+    let parsed: ListDriveForClientInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    let code = parsed.client_code.trim().to_uppercase();
+    if code.is_empty() {
+        return Err("Pick a client first".to_string());
+    }
+
+    let folder_id = match parsed.folder_id {
+        Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => {
+            // Look up the client's drive_folder_id field.
+            let qs = format!(
+                "filterByFormula={}&maxRecords=1&fields%5B%5D=drive_folder_id",
+                urlencode(&format!("{{code}}='{}'", code))
+            );
+            let data = airtable_get("Clients", &qs)
+                .await
+                .unwrap_or(serde_json::Value::Null);
+            data["records"][0]["fields"]["drive_folder_id"]
+                .as_str()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        }
+    };
+
+    if folder_id.is_empty() {
+        // No folder configured — the section will hide itself.
+        return Ok("[]".to_string());
+    }
+
+    let files = drive::list_recent_files_for_client(&folder_id, parsed.days).await?;
+    stamp_google_last_sync();
+    serde_json::to_string(&files).map_err(|e| format!("Serialise: {}", e))
 }
 
 // ── Tauri entry ─────────────────────────────────────────────────────────
@@ -3239,7 +3447,12 @@ pub fn run() {
             disconnect_google,
             list_calendar_today,
             list_calendar_week,
-            list_calendar_for_client
+            list_calendar_for_client,
+            // v0.25 Block C — Gmail + Drive (same Google OAuth)
+            gmail_unread_count,
+            list_gmail_urgent,
+            list_gmail_for_client,
+            list_drive_recent_for_client
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

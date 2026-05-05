@@ -348,6 +348,131 @@ function renderMeetingRow(ev) {
   return row;
 }
 
+// ── Recent emails (v0.25) ─────────────────────────────────────────────
+//
+// Hidden when the email list is empty — Google not connected, no Gmail
+// scope, or no threads matched the client filter all collapse to the
+// same empty state. Caitlin sees a row only when there's something
+// useful to surface.
+
+function fmtEmailDate(ms) {
+  if (!ms) return "";
+  const d = new Date(Number(ms));
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" });
+}
+
+function renderEmails(state) {
+  const items = state.emails || [];
+  if (items.length === 0) return null; // hide section
+  const root = el("section", { class: "client-section", "data-section": "emails" });
+  root.appendChild(el("div", { class: "section-label" }, ["📨 RECENT EMAILS"]));
+  const list = el("div", { class: "today-list" });
+  items.forEach((t) => list.appendChild(renderEmailRow(t)));
+  root.appendChild(list);
+  return root;
+}
+
+function renderEmailRow(t) {
+  const row = el("button", {
+    class: "today-row today-row-email",
+    type: "button",
+    "data-thread-id": t.id || "",
+  });
+  if (t.web_link) {
+    row.addEventListener("click", () => {
+      if (window.__TAURI__?.opener?.openUrl) {
+        window.__TAURI__.opener.openUrl(t.web_link).catch(() => window.open(t.web_link, "_blank"));
+      } else {
+        window.open(t.web_link, "_blank");
+      }
+    });
+  }
+  const senderDisplay = (t.from || "").replace(/<.*?>/, "").trim() || t.from || "";
+  const left = el("div", { class: "today-row-main" }, [
+    el("div", { class: "today-row-title" }, [t.subject || "(no subject)"]),
+    el("div", { class: "today-row-meta" }, [
+      [senderDisplay, fmtEmailDate(t.date_ms)].filter(Boolean).join(" · "),
+    ]),
+  ]);
+  const right = el("div", { class: "today-row-side" });
+  if (t.starred) {
+    right.appendChild(el("span", { class: "client-status-pill status-warn" }, ["★"]));
+  }
+  if (t.unread) {
+    right.appendChild(el("span", { class: "client-status-pill status-active" }, ["unread"]));
+  }
+  row.appendChild(left);
+  row.appendChild(right);
+  return row;
+}
+
+// ── Recent Drive activity (v0.25) ─────────────────────────────────────
+//
+// Hidden when no files came back. Empty list means: Google not
+// connected, drive scope missing, no drive_folder_id on the client, or
+// no files modified in the last 14 days. Same hide-on-empty pattern.
+
+function fmtDriveTime(s) {
+  if (!s) return "";
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return s;
+  // "Tue 5 May" — short, scannable. Time of day is rarely meaningful
+  // for "this file moved", so we drop it.
+  return d.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" });
+}
+
+// Friendly label for the most common Workspace mime types. Anything
+// else falls back to a generic "File".
+function driveTypeLabel(mime) {
+  if (!mime) return "File";
+  if (mime === "application/vnd.google-apps.document") return "Doc";
+  if (mime === "application/vnd.google-apps.spreadsheet") return "Sheet";
+  if (mime === "application/vnd.google-apps.presentation") return "Slides";
+  if (mime === "application/vnd.google-apps.folder") return "Folder";
+  if (mime === "application/pdf") return "PDF";
+  if (mime.startsWith("image/")) return "Image";
+  if (mime.startsWith("video/")) return "Video";
+  return "File";
+}
+
+function renderDriveFiles(state) {
+  const items = state.drive_files || [];
+  if (items.length === 0) return null;
+  const root = el("section", { class: "client-section", "data-section": "drive" });
+  root.appendChild(el("div", { class: "section-label" }, ["📁 RECENT DRIVE ACTIVITY"]));
+  const list = el("div", { class: "today-list" });
+  items.forEach((f) => list.appendChild(renderDriveRow(f)));
+  root.appendChild(list);
+  return root;
+}
+
+function renderDriveRow(f) {
+  const row = el("button", {
+    class: "today-row",
+    type: "button",
+    "data-file-id": f.id || "",
+  });
+  if (f.web_view_link) {
+    row.addEventListener("click", () => {
+      if (window.__TAURI__?.opener?.openUrl) {
+        window.__TAURI__.opener.openUrl(f.web_view_link).catch(() => window.open(f.web_view_link, "_blank"));
+      } else {
+        window.open(f.web_view_link, "_blank");
+      }
+    });
+  }
+  const metaBits = [driveTypeLabel(f.mime_type)];
+  if (f.modified_by) metaBits.push(f.modified_by);
+  metaBits.push(fmtDriveTime(f.modified_time));
+  const left = el("div", { class: "today-row-main" }, [
+    el("div", { class: "today-row-title" }, [f.name || "(untitled)"]),
+    el("div", { class: "today-row-meta" }, [metaBits.filter(Boolean).join(" · ")]),
+  ]);
+  row.appendChild(left);
+  return row;
+}
+
 // ── Receipts ──────────────────────────────────────────────────────────
 
 function renderReceipts(state) {
@@ -476,6 +601,8 @@ export function draw(state) {
     renderDecisions(state),
     renderCommitments(state),
     renderMeetings(state),
+    renderEmails(state),
+    renderDriveFiles(state),
     renderProjects(state),
     renderReceipts(state),
     renderWorkflows(state),

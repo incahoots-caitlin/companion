@@ -288,6 +288,88 @@ function renderDrift(state) {
   return root;
 }
 
+// ── Section: email triage (v0.25) ─────────────────────────────────────
+//
+// "N unread, M flagged urgent." Hidden when Google isn't connected or
+// the gmail scope wasn't granted. Click anywhere on the row opens the
+// Gmail inbox in the browser.
+
+function renderEmail(state) {
+  const e = state.email || {};
+  // Hide entirely when unread is null — that's the "not connected /
+  // no gmail scope" state from loadEmail.
+  if (e.unread == null && (!e.urgent || e.urgent.length === 0) && !e.error) {
+    return null;
+  }
+  const root = el("section", { class: "today-section", "data-section": "email" });
+  root.appendChild(el("div", { class: "section-label" }, ["📨 EMAIL TRIAGE"]));
+
+  if (e.error && e.unread == null) {
+    root.appendChild(
+      el("div", { class: "empty" }, [
+        "Gmail unavailable — try the refresh button.",
+      ])
+    );
+    return root;
+  }
+
+  const unread = Number(e.unread || 0);
+  const urgent = Array.isArray(e.urgent) ? e.urgent : [];
+
+  const headline = `${unread} unread${unread === 1 ? "" : ""}, ${urgent.length} flagged urgent.`;
+  const headlineRow = el("button", {
+    class: "today-row clickable",
+    type: "button",
+  }, [
+    el("div", { class: "today-row-main" }, [
+      el("div", { class: "today-row-title" }, [headline]),
+      el("div", { class: "today-row-meta" }, [
+        "Click to open Gmail",
+      ]),
+    ]),
+  ]);
+  headlineRow.addEventListener("click", () =>
+    dispatch("today:open-url", { url: "https://mail.google.com/mail/u/0/#inbox" })
+  );
+
+  const list = el("div", { class: "today-list" });
+  list.appendChild(headlineRow);
+  urgent.slice(0, 5).forEach((t) => list.appendChild(renderEmailRow(t)));
+  root.appendChild(list);
+  return root;
+}
+
+function renderEmailRow(t) {
+  const row = el("button", {
+    class: "today-row today-row-email",
+    type: "button",
+    "data-thread-id": t.id || "",
+  });
+  row.addEventListener("click", () =>
+    dispatch("today:open-url", { url: t.web_link })
+  );
+  // Sender display: take just the name portion if the From header is
+  // "Name <addr>", else show the bare address.
+  const senderDisplay = (t.from || "").replace(/<.*?>/, "").trim() || t.from || "";
+  const left = el("div", { class: "today-row-main" }, [
+    el("div", { class: "today-row-title" }, [t.subject || "(no subject)"]),
+    el("div", { class: "today-row-meta" }, [
+      senderDisplay,
+      ...(t.snippet ? [` · ${t.snippet.slice(0, 100)}`] : []),
+    ]),
+  ]);
+  const right = el("div", { class: "today-row-side" });
+  if (t.starred) {
+    right.appendChild(el("span", { class: "client-status-pill status-warn" }, ["★"]));
+  }
+  if (t.unread) {
+    right.appendChild(el("span", { class: "client-status-pill status-active" }, ["unread"]));
+  }
+  row.appendChild(left);
+  row.appendChild(right);
+  return row;
+}
+
 // ── Section: live status ──────────────────────────────────────────────
 
 function renderLiveStatus(state) {
@@ -619,6 +701,7 @@ export function draw(state) {
     renderCalendar(state),
     renderWorkstreams(state),
     renderDecisions(state),
+    renderEmail(state),
     renderLiveStatus(state),
     renderReceiptsPending(state),
     renderMorningBriefing(state),

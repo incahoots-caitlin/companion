@@ -280,6 +280,51 @@ export async function loadCalendar(state) {
   state.last_fetch_at.calendar = Date.now();
 }
 
+// ── Email triage (v0.25) ──────────────────────────────────────────────
+//
+// Two pulls: total unread count and a small urgent-thread list. Both
+// only run when Google is connected with the Gmail scope. The Today
+// render hides the section when status.connected is false or the gmail
+// scope is missing — same hide-on-disconnect pattern as the calendar
+// block.
+
+export async function loadEmail(state) {
+  const email = state.email || (state.email = { unread: null, urgent: null, error: null });
+  // Reuse the calendar-fetched status when fresh; otherwise read.
+  let status = state.calendar?.status;
+  if (!status) {
+    try { status = await safeInvoke("get_google_status"); }
+    catch { status = { connected: false, scopes: [] }; }
+  }
+  const scopes = Array.isArray(status?.scopes) ? status.scopes : [];
+  const hasGmail = scopes.includes("gmail");
+  if (!status?.connected || !hasGmail) {
+    email.unread = null;
+    email.urgent = null;
+    email.error = null;
+    state.last_fetch_at.email = Date.now();
+    return;
+  }
+  const [unreadRes, urgentRes] = await Promise.allSettled([
+    safeInvoke("gmail_unread_count"),
+    safeInvoke("list_gmail_urgent"),
+  ]);
+  if (unreadRes.status === "fulfilled") {
+    email.unread = Number(unreadRes.value) || 0;
+  } else {
+    email.unread = null;
+    email.error = String(unreadRes.reason);
+  }
+  if (urgentRes.status === "fulfilled") {
+    try { email.urgent = JSON.parse(urgentRes.value) || []; }
+    catch { email.urgent = []; }
+  } else {
+    email.urgent = [];
+    if (!email.error) email.error = String(urgentRes.reason);
+  }
+  state.last_fetch_at.email = Date.now();
+}
+
 // ── Live status ───────────────────────────────────────────────────────
 
 export async function loadLiveStatus(state) {
@@ -365,6 +410,9 @@ export async function loadAll(state) {
     loadDrift(state, { force: true }),
     loadCalendar(state),
   ]);
+  // Email runs after calendar so it can reuse the freshly-fetched
+  // Google status without a second Keychain hit.
+  await loadEmail(state);
   return state;
 }
 
@@ -396,6 +444,9 @@ export async function refreshStale(state) {
   tasks.push(loadDrift(state));
   if ((state.last_fetch_at.calendar || 0) + STALE_MS < now) {
     tasks.push(loadCalendar(state));
+  }
+  if ((state.last_fetch_at.email || 0) + STALE_MS < now) {
+    tasks.push(loadEmail(state));
   }
   await Promise.allSettled(tasks);
 }

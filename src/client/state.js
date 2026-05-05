@@ -11,13 +11,16 @@
 //   code: 'NCT',
 //   recordId: 'recXXX',
 //   header: { name, status, primary_contact_name, primary_contact_email,
-//             abn, dropbox_folder, last_touch, gmail_thread_filter },
+//             abn, dropbox_folder, last_touch, gmail_thread_filter,
+//             drive_folder_id },
 //   workstreams: [],   // status in (active, blocked) AND client = recordId
 //   decisions: [],     // status = open AND client = recordId
 //   commitments: [],   // status = open AND client = recordId
 //   projects: [],      // client = recordId, sorted by start_date desc
 //   receipts: [],      // last 10 for this client
 //   meetings: [],      // upcoming Calendar events that mention this client
+//   emails: [],        // last 3 Gmail threads matching the client filter
+//   drive_files: [],   // Drive files modified in last 14 days for client folder
 //   last_fetch_at: { ...section keys -> ms timestamp }
 // }
 //
@@ -35,6 +38,8 @@ export function emptyClientState() {
     projects: null,
     receipts: null,
     meetings: null,
+    emails: null,
+    drive_files: null,
     last_fetch_at: {},
   };
 }

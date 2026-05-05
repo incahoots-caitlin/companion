@@ -20,9 +20,16 @@
 //   receipts_pending: [ { id, title, ticked, total, client_code } ],
 //   morning_briefing: { text, generated_at, path } | null,
 //   calendar: {
-//     status: { connected: bool, has_client_id: bool, last_sync_at },
+//     status: { connected: bool, has_client_id: bool, last_sync_at, scopes },
 //     today: [ ...CalendarEvent ] | null,
 //     week:  [ ...CalendarEvent ] | null,
+//     error: string | null,
+//   },
+//   email: {
+//     // v0.25 — only filled in when Google is connected with the gmail
+//     // scope. Hidden entirely otherwise.
+//     unread: number | null,
+//     urgent: [ ...EmailThread ] | null,
 //     error: string | null,
 //   },
 //   last_fetch_at:        { all section keys } -> ms timestamp
@@ -51,6 +58,11 @@ export function emptyTodayState() {
       status: null,
       today: null,
       week: null,
+      error: null,
+    },
+    email: {
+      unread: null,
+      urgent: null,
       error: null,
     },
     last_fetch_at: {},
