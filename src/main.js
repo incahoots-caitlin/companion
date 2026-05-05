@@ -6,11 +6,17 @@
 import * as todayFetch from "./today/fetch.js";
 import * as todayRender from "./today/render.js";
 import { emptyTodayState } from "./today/state.js";
+import * as clientFetch from "./client/fetch.js";
+import * as clientRender from "./client/render.js";
+import * as clientWorkflows from "./client/workflows.js";
+import * as clientSidebar from "./client/sidebar.js";
+import { emptyClientState } from "./client/state.js";
 
-// Global state container used by the Today dashboard. Other views can read
-// from here too, but they own their own slots.
+// Global state container. Today dashboard owns _state.today; per-client
+// view owns _state.client. Switching clients overwrites _state.client.
 const _state = {
   today: emptyTodayState(),
+  client: emptyClientState(),
 };
 
 // 60s timer for live-status row, reset on each Today mount.
@@ -486,47 +492,20 @@ async function showSettingsModal() {
 }
 
 // ─── Sidebar dynamic load (Airtable Clients) ─────────────────────────
+//
+// Delegates to client/sidebar.js which handles the 60s in-memory cache.
+// Called on app launch, after Airtable creds are saved, and after a new
+// client is created via the New Client Onboarding receipt.
 async function loadStudioSidebar() {
-  if (!isTauri) return;
-  const studioSection = document.querySelector(".sidebar-section[data-section='studio']");
-  if (!studioSection) return;
-
-  let configured = false;
-  try { configured = await invoke("get_airtable_status"); } catch {}
-  if (!configured) return; // keep static placeholders
-
-  let raw;
-  try {
-    raw = await invoke("list_airtable_clients");
-  } catch (e) {
-    console.warn("list_airtable_clients failed:", e);
-    return;
-  }
-  const data = JSON.parse(raw);
-  const records = data.records || [];
-
-  // Replace static client items, keep the "Studio" label and Pipeline link.
-  // Click handling is delegated globally — items just need data-client-code
-  // and data-view attributes set correctly.
-  studioSection.innerHTML = "";
-  studioSection.appendChild(el("div", { class: "sidebar-label" }, ["Studio"]));
-  records.forEach((r) => {
-    const f = r.fields || {};
-    const code = (f.code || "").toUpperCase();
-    if (!code) return;
-    const label = `${code} — ${f.name || code}`;
-    const item = el("a", {
-      class: "sidebar-item",
-      "data-view": `client-${code}`,
-      "data-client-code": code,
-    }, [label]);
-    studioSection.appendChild(item);
-  });
-  studioSection.appendChild(el("a", { class: "sidebar-item", "data-view": "pipeline" }, ["Pipeline"]));
+  clientSidebar.clearCache();
+  await clientSidebar.loadClients();
 }
 
 // ─── Strategic Thinking modal ────────────────────────────────────────
-function showStrategicThinkingModal() {
+// Accepts an optional client_code for parity with the other workflow
+// modals (per-client workflow grid passes it). Strategic Thinking is
+// not client-scoped so the value is ignored.
+function showStrategicThinkingModal(_prefillClientCode) {
   if (document.getElementById("st-modal")) return;
   const overlay = el("div", { id: "st-modal", class: "modal-overlay" });
   const modal = el("div", { class: "modal" });
@@ -631,7 +610,9 @@ async function handleCreateClientFromReceipt(receiptEl) {
 }
 
 // ─── New Client Onboarding modal ─────────────────────────────────────
-function showNewClientOnboardingModal() {
+// Accepts an optional client_code for parity with other workflow modals.
+// Onboarding *creates* the client row, so the value is ignored.
+function showNewClientOnboardingModal(_prefillClientCode) {
   if (document.getElementById("nco-modal")) return;
   const overlay = el("div", { id: "nco-modal", class: "modal-overlay" });
   const modal = el("div", { class: "modal" });
@@ -910,7 +891,10 @@ async function handleCreateProjectFromReceipt(receiptEl) {
 }
 
 // ─── Subcontractor Onboarding modal ──────────────────────────────────
-function showSubcontractorOnboardingModal() {
+// Accepts an optional client_code for parity with other workflow modals.
+// Subcontractor onboarding isn't client-scoped (subs work across clients)
+// so the value is ignored.
+function showSubcontractorOnboardingModal(_prefillClientCode) {
   if (document.getElementById("sub-modal")) return;
   const overlay = el("div", { id: "sub-modal", class: "modal-overlay" });
   const modal = el("div", { class: "modal" });
@@ -1370,6 +1354,196 @@ function showDecisionCaptureModal(decision) {
   });
 }
 
+// ─── Workstream detail modal ─────────────────────────────────────────
+//
+// Small modal: title, code, description, last_touch, next_action, blocker.
+// Single action: mark done (sets status='done' and bumps last_touch_at).
+function showWorkstreamDetailModal(workstream) {
+  if (!workstream) return;
+  if (document.getElementById("ws-detail-modal")) return;
+  const overlay = el("div", { id: "ws-detail-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, [workstream.title || "Workstream"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+
+  const metaParts = [];
+  if (workstream.code) metaParts.push(workstream.code);
+  if (workstream.phase) metaParts.push(`Phase: ${workstream.phase}`);
+  if (workstream.status) metaParts.push(`Status: ${workstream.status}`);
+  if (workstream.last_touch_at) metaParts.push(`Last touch: ${workstream.last_touch_at}`);
+  if (metaParts.length) {
+    modal.appendChild(el("div", { class: "modal-meta" }, [metaParts.join(" · ")]));
+  }
+
+  if (workstream.description) {
+    modal.appendChild(el("div", { class: "modal-pad" }, [
+      el("div", { class: "settings-meta" }, [workstream.description]),
+    ]));
+  }
+  if (workstream.next_action) {
+    modal.appendChild(el("div", { class: "modal-pad", style: "margin-top: 12px;" }, [
+      el("div", { class: "settings-label" }, ["Next action"]),
+      el("div", { class: "settings-meta" }, [workstream.next_action]),
+    ]));
+  }
+  if (workstream.blocker) {
+    modal.appendChild(el("div", { class: "modal-pad", style: "margin-top: 12px;" }, [
+      el("div", { class: "settings-label" }, ["Blocker"]),
+      el("div", { class: "settings-meta" }, [workstream.blocker]),
+    ]));
+  }
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Close"]);
+  const doneBtn = el("button", { class: "button" }, ["Mark done"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, doneBtn]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  doneBtn.addEventListener("click", async () => {
+    if (!isTauri) {
+      showToast("Open the Studio app to update Airtable from here.");
+      return;
+    }
+    doneBtn.disabled = true;
+    doneBtn.textContent = "Saving...";
+    try {
+      await invoke("update_airtable_record", {
+        args: {
+          table: "Workstreams",
+          record_id: workstream.id,
+          fields: {
+            status: "done",
+            last_touch_at: new Date().toISOString(),
+          },
+        },
+      });
+      showToast("Workstream marked done");
+      close();
+      // Refresh both surfaces — the workstream may show up on either.
+      if (_state.client?.code) {
+        await clientFetch.loadWorkstreams(_state.client);
+        clientRender.draw(_state.client);
+      }
+      await todayFetch.loadWorkstreams(_state.today, await rebuildClientLookup());
+      todayRender.draw(_state.today);
+    } catch (e) {
+      doneBtn.disabled = false;
+      doneBtn.textContent = "Mark done";
+      showToast(`Update failed: ${e}`);
+    }
+  });
+}
+
+// ─── Project detail modal ────────────────────────────────────────────
+//
+// Read-only summary: code, name, type, status, dates, budget, brief link.
+// Editing ships in v0.20.
+function showProjectDetailModal(project) {
+  if (!project) return;
+  if (document.getElementById("project-detail-modal")) return;
+  const overlay = el("div", { id: "project-detail-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, [project.name || project.code || "Project"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+
+  const meta = [];
+  if (project.code) meta.push(project.code);
+  if (project.campaign_type) meta.push(project.campaign_type);
+  if (project.status) meta.push(project.status);
+  if (meta.length) {
+    modal.appendChild(el("div", { class: "modal-meta" }, [meta.join(" · ")]));
+  }
+
+  const grid = el("div", { class: "modal-pad" });
+  function row(label, value) {
+    if (!value) return null;
+    return el("div", { class: "settings-row", style: "margin-bottom: 6px;" }, [
+      el("div", { class: "settings-label", style: "min-width: 120px;" }, [label]),
+      el("div", { class: "settings-meta" }, [String(value)]),
+    ]);
+  }
+  [
+    row("Start", project.start_date),
+    row("End", project.end_date),
+    row("Budget", project.budget_total),
+    row("Notes", project.notes),
+  ].forEach((r) => { if (r) grid.appendChild(r); });
+  modal.appendChild(grid);
+
+  if (project.brief_link) {
+    modal.appendChild(el("div", { class: "modal-pad" }, [
+      el("a", {
+        href: project.brief_link,
+        target: "_blank",
+        rel: "noopener",
+      }, ["Open brief"]),
+    ]));
+  }
+
+  const closeBtn = el("button", { class: "button" }, ["Close"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [closeBtn]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  closeBtn.addEventListener("click", close);
+}
+
+// ─── Receipt JSON viewer modal ───────────────────────────────────────
+//
+// Used by the per-client view's recent receipts list. Receipts table rows
+// include the raw JSON payload — show it in a pre block so Caitlin can
+// inspect the receipt without leaving Studio.
+function showReceiptJsonModal(receipt) {
+  if (!receipt) return;
+  if (document.getElementById("receipt-json-modal")) return;
+  const overlay = el("div", { id: "receipt-json-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal modal-wide" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, [receipt.title || "Receipt"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+
+  const meta = [];
+  if (receipt.workflow) meta.push(receipt.workflow);
+  if (receipt.date) meta.push(receipt.date);
+  meta.push(`${receipt.ticked} of ${receipt.total} ticked`);
+  modal.appendChild(el("div", { class: "modal-meta" }, [meta.join(" · ")]));
+
+  let pretty = receipt.json || "(no payload)";
+  try {
+    if (receipt.json) pretty = JSON.stringify(JSON.parse(receipt.json), null, 2);
+  } catch {
+    // leave as-is
+  }
+  const pre = el("pre", { class: "modal-pre" }, [pretty]);
+  modal.appendChild(pre);
+
+  const closeBtn = el("button", { class: "button" }, ["Close"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [closeBtn]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  closeBtn.addEventListener("click", close);
+}
+
 // Rebuild the client-id → code lookup. Kept tiny so post-mutation refreshes
 // don't pay a full reload cost.
 async function rebuildClientLookup() {
@@ -1436,155 +1610,29 @@ async function loadClientView(clientCode) {
   const clientEl = document.getElementById("client-view");
   if (!clientEl) return;
 
+  // Stop the live-status interval — it only matters on the Today view.
+  clearLiveStatusTimer();
+
   todayEl?.setAttribute("hidden", "");
   clientEl.removeAttribute("hidden");
-  clientEl.innerHTML = "";
-  clientEl.appendChild(el("div", { class: "client-empty" }, [`Loading ${clientCode}...`]));
 
-  // Pull client metadata, projects, and local receipts in parallel.
-  let clientFields = {};
-  let projects = [];
-  let localReceipts = [];
-
-  if (isTauri) {
-    const tasks = [
-      invoke("list_airtable_clients").then((raw) => {
-        const data = JSON.parse(raw);
-        const match = (data.records || []).find((r) => r.fields?.code === clientCode);
-        if (match) clientFields = match.fields;
-      }).catch((e) => console.warn("client lookup failed:", e)),
-
-      invoke("list_airtable_projects").then((raw) => {
-        const data = JSON.parse(raw);
-        projects = (data.records || [])
-          .map((r) => r.fields || {})
-          .filter((f) => (f.code || "").toUpperCase().startsWith(`${clientCode}-`));
-      }).catch((e) => console.warn("projects lookup failed:", e)),
-
-      invoke("list_receipts", { limit: 200 }).then((rows) => {
-        const all = rows.map((j) => {
-          try { return JSON.parse(j); } catch { return null; }
-        }).filter(Boolean);
-        localReceipts = all.filter((r) => {
-          const proj = (r.project || "").toUpperCase();
-          return proj === clientCode || proj.startsWith(`${clientCode}-`);
-        });
-      }).catch((e) => console.warn("local receipts lookup failed:", e)),
-    ];
-    await Promise.all(tasks);
-  }
-
-  const clientName = clientFields.name || clientCode;
-  const status = clientFields.status || "active";
-
-  // Re-render the view.
-  clientEl.innerHTML = "";
-  clientEl.appendChild(renderClientHeader(clientCode, clientName, status, clientFields));
-  clientEl.appendChild(el("div", { class: "section-label" }, ["Run for this client"]));
-  clientEl.appendChild(renderClientShortcuts(clientCode));
-
-  clientEl.appendChild(el("div", { class: "section-label" }, ["Active projects"]));
-  if (projects.length === 0) {
-    clientEl.appendChild(el("div", { class: "client-empty" }, [
-      `No projects in Airtable yet for ${clientCode}. Run New Campaign Scope to create one.`,
-    ]));
-  } else {
-    const list = el("div", { class: "client-projects" });
-    projects.forEach((p) => {
-      list.appendChild(el("div", { class: "client-project" }, [
-        el("div", {}, [
-          el("div", { class: "client-project-code" }, [p.code || ""]),
-          el("div", { class: "client-project-name" }, [p.name || ""]),
-        ]),
-        el("div", { class: "client-project-status" }, [p.status || ""]),
-      ]));
-    });
-    clientEl.appendChild(list);
-  }
-
-  clientEl.appendChild(el("div", { class: "section-label" }, [`Receipts for ${clientCode}`]));
-  if (localReceipts.length === 0) {
-    clientEl.appendChild(el("div", { class: "client-empty" }, [
-      "No receipts for this client yet. Run a workflow above to generate the first one.",
-    ]));
-  } else {
-    const feed = el("section", { class: "feed" });
-    localReceipts.forEach((r) => feed.appendChild(renderReceipt(r)));
-    clientEl.appendChild(feed);
-  }
+  // Brand-new client view: blow away state and show a loading placeholder.
+  _state.client = emptyClientState();
+  _state.client.code = (clientCode || "").toUpperCase();
+  clientRender.drawLoading(_state.client.code);
 
   const titleEl = document.querySelector(".main-title");
-  if (titleEl) titleEl.textContent = clientName;
-}
+  if (titleEl) titleEl.textContent = _state.client.code;
 
-function renderClientHeader(code, name, status, fields) {
-  const header = el("div", { class: "client-header" });
-  header.appendChild(el("div", { class: "client-code" }, [code]));
-  header.appendChild(el("div", { class: "client-name" }, [name]));
+  // Fetch + render. fetch.loadAll never throws — it logs and writes empty
+  // arrays into the slots so render always has something to read.
+  await clientFetch.loadAll(_state.client, _state.client.code);
+  clientRender.draw(_state.client);
 
-  const meta = el("div", { class: "client-meta" });
-  meta.appendChild(el("span", { class: `client-status-pill status-${status}` }, [status]));
-  if (fields.primary_contact_email) {
-    meta.appendChild(el("a", { href: `mailto:${fields.primary_contact_email}` }, [fields.primary_contact_email]));
+  // Update title to the resolved client name (loadHeader filled it in).
+  if (titleEl && _state.client.header?.name) {
+    titleEl.textContent = _state.client.header.name;
   }
-  if (fields.abn) {
-    meta.appendChild(el("span", {}, [`ABN ${fields.abn}`]));
-  }
-  if (fields.dropbox_folder) {
-    meta.appendChild(el("a", { href: fields.dropbox_folder, target: "_blank", rel: "noopener" }, ["Dropbox"]));
-  }
-  header.appendChild(meta);
-  return header;
-}
-
-function renderClientShortcuts(clientCode) {
-  const grid = el("div", { class: "client-shortcut-grid" });
-
-  const shortcuts = [
-    {
-      title: "Strategic Thinking",
-      meta: "Open thinking session, no client lock-in",
-      action: () => showStrategicThinkingModal(),
-    },
-    {
-      title: "Monthly Check-in",
-      meta: "Pre-fill this client",
-      action: () => showMonthlyCheckinModal(clientCode),
-    },
-    {
-      title: "Quarterly Review",
-      meta: "Pre-fill this client",
-      action: () => showQuarterlyReviewModal(clientCode),
-    },
-    {
-      title: "New Campaign Scope",
-      meta: "Pre-fill this client",
-      action: () => showNewCampaignScopeModal(clientCode),
-    },
-  ];
-
-  shortcuts.forEach((s) => {
-    const card = el("button", { class: "client-shortcut" }, [
-      el("div", { class: "client-shortcut-title" }, [s.title]),
-      el("div", { class: "client-shortcut-meta" }, [s.meta]),
-    ]);
-    card.addEventListener("click", async () => {
-      if (!isTauri) {
-        showToast("Open the Studio app to run live workflows. Preview is read-only.");
-        return;
-      }
-      const ready = await invoke("get_api_key_status");
-      if (!ready) {
-        showApiKeyBanner();
-        showToast("Set your Anthropic API key first");
-        return;
-      }
-      s.action();
-    });
-    grid.appendChild(card);
-  });
-
-  return grid;
 }
 
 async function loadFeed() {
@@ -1668,17 +1716,77 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   document.addEventListener("today:workstream-click", (e) => {
-    // Block B3 builds the per-client / workstream view. For now log + toast.
     const w = e.detail?.workstream;
-    console.log("workstream click:", w);
     if (w?._client_codes?.length) {
-      // If the workstream is tagged to a client, jump to that client view.
+      // Tagged to a client — jump to that client view.
       const code = w._client_codes[0];
       activateClientSidebar(code);
       loadClientView(code);
       return;
     }
-    showToast(`Workstream detail view ships in Block B3`);
+    // Untagged workstream — open the detail modal in place.
+    showWorkstreamDetailModal(w);
+  });
+
+  // ─── Per-client view event handlers ─────────────────────────────────
+  document.addEventListener("client:workstream-click", (e) => {
+    showWorkstreamDetailModal(e.detail?.workstream);
+  });
+
+  document.addEventListener("client:decision-click", (e) => {
+    showDecisionCaptureModal(e.detail?.decision);
+  });
+
+  document.addEventListener("client:commitment-click", (e) => {
+    showCommitmentModal(e.detail?.commitment);
+  });
+
+  document.addEventListener("client:project-click", (e) => {
+    showProjectDetailModal(e.detail?.project);
+  });
+
+  document.addEventListener("client:receipt-click", (e) => {
+    showReceiptJsonModal(e.detail?.receipt);
+  });
+
+  document.addEventListener("client:refresh-click", async () => {
+    if (!_state.client?.code) return;
+    await clientFetch.loadAll(_state.client, _state.client.code);
+    clientRender.draw(_state.client);
+  });
+
+  document.addEventListener("client:workflow-click", (e) => {
+    const { key, client_code } = e.detail || {};
+    clientWorkflows.launch(key, client_code, {
+      modals: {
+        showStrategicThinkingModal,
+        showMonthlyCheckinModal,
+        showQuarterlyReviewModal,
+        showNewCampaignScopeModal,
+      },
+      toast: showToast,
+      requireApiKey: async () => {
+        if (!isTauri) {
+          showToast("Open the Studio app to run live workflows. Preview is read-only.");
+          return false;
+        }
+        const ready = await invoke("get_api_key_status");
+        if (!ready) {
+          showApiKeyBanner();
+          showToast("Set your Anthropic API key first");
+          return false;
+        }
+        return true;
+      },
+    });
+  });
+
+  // Refocus refresh on the client view too.
+  window.addEventListener("focus", async () => {
+    if (document.getElementById("client-view")?.hasAttribute("hidden")) return;
+    if (!_state.client?.code) return;
+    await clientFetch.refreshStale(_state.client);
+    clientRender.draw(_state.client);
   });
 
   // Receipt action buttons (currently: reprint).

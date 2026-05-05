@@ -494,9 +494,20 @@ async fn airtable_get(table: &str, query: &str) -> Result<serde_json::Value, Str
 
 #[tauri::command]
 async fn list_airtable_clients() -> Result<String, String> {
+    // Returns active clients with the full set of fields the per-client view
+    // header reads. Kept narrow (status='active') so the sidebar list stays
+    // tidy. Per-client view filters and renders client-by-code from this list.
     let data = airtable_get(
         "Clients",
-        "filterByFormula=%7Bstatus%7D%3D%27active%27&fields%5B%5D=code&fields%5B%5D=name&fields%5B%5D=status",
+        "filterByFormula=%7Bstatus%7D%3D%27active%27\
+&fields%5B%5D=code\
+&fields%5B%5D=name\
+&fields%5B%5D=status\
+&fields%5B%5D=primary_contact_name\
+&fields%5B%5D=primary_contact_email\
+&fields%5B%5D=abn\
+&fields%5B%5D=dropbox_folder\
+&fields%5B%5D=notes",
     )
     .await?;
     serde_json::to_string(&data).map_err(|e| e.to_string())
@@ -504,9 +515,22 @@ async fn list_airtable_clients() -> Result<String, String> {
 
 #[tauri::command]
 async fn list_airtable_projects() -> Result<String, String> {
+    // Returns non-archived projects with the full set of fields the per-client
+    // Projects section reads (code, name, status, type, dates, budget, brief
+    // link). Existing callers that only read code/name/status keep working.
     let data = airtable_get(
         "Projects",
-        "filterByFormula=NOT(%7Bstatus%7D%3D%27archive%27)&fields%5B%5D=code&fields%5B%5D=name&fields%5B%5D=status&fields%5B%5D=client",
+        "filterByFormula=NOT(%7Bstatus%7D%3D%27archive%27)\
+&fields%5B%5D=code\
+&fields%5B%5D=name\
+&fields%5B%5D=status\
+&fields%5B%5D=client\
+&fields%5B%5D=campaign_type\
+&fields%5B%5D=start_date\
+&fields%5B%5D=end_date\
+&fields%5B%5D=budget_total\
+&fields%5B%5D=brief_link\
+&fields%5B%5D=notes",
     )
     .await?;
     serde_json::to_string(&data).map_err(|e| e.to_string())
@@ -1534,6 +1558,33 @@ async fn list_airtable_workstreams() -> Result<String, String> {
     serde_json::to_string(&data).map_err(|e| e.to_string())
 }
 
+// Most recent receipts for a single client (by Airtable record id), capped at
+// `limit` rows. Used by the per-client view's "Recent receipts" panel. Sorts
+// newest first. Pass an empty string for record_id and you'll get an empty
+// page back (no escape needed). Limit is clamped to 1..=50 to keep the call
+// cheap.
+#[tauri::command]
+async fn list_airtable_receipts_for_client(
+    record_id: String,
+    limit: Option<u32>,
+) -> Result<String, String> {
+    if record_id.trim().is_empty() {
+        return Ok("{\"records\":[]}".to_string());
+    }
+    let n = limit.unwrap_or(10).clamp(1, 50);
+    // {client} is a multipleRecordLinks field. FIND() over its rendered
+    // string returns >0 when our record id is one of the linked rows.
+    let escaped = record_id.replace('\'', "");
+    let formula = format!("FIND('{}',ARRAYJOIN({{client}}))", escaped);
+    let qs = format!(
+        "filterByFormula={}&pageSize={}&fields%5B%5D=id&fields%5B%5D=title&fields%5B%5D=date&fields%5B%5D=workflow&fields%5B%5D=client&fields%5B%5D=ticked_count&fields%5B%5D=json&sort%5B0%5D%5Bfield%5D=date&sort%5B0%5D%5Bdirection%5D=desc",
+        urlencode(&formula),
+        n
+    );
+    let data = airtable_get("Receipts", &qs).await?;
+    serde_json::to_string(&data).map_err(|e| e.to_string())
+}
+
 // Receipts where ticked_count is below the total tickable items in the
 // JSON payload. We pull the last 14 days and let the JS layer compute
 // totals from the JSON since Airtable doesn't store a total_count column.
@@ -2068,6 +2119,7 @@ pub fn run() {
             list_airtable_decisions,
             list_airtable_workstreams,
             list_airtable_receipts_recent,
+            list_airtable_receipts_for_client,
             update_airtable_record,
             get_studio_version,
             check_url_up,

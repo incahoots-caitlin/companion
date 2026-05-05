@@ -17,7 +17,7 @@
     <link rel="stylesheet" href="styles/design-system/toasts.css" />
     <link rel="stylesheet" href="styles/design-system/layouts.css" />
     <link rel="stylesheet" href="styles/app.css" />
-    <script type="module" src="/main.js" defer></script>
+    <script type="module" src="/main.js?v=0.19.0" defer></script>
   </head>
   <body>
     <aside class="sidebar" role="navigation" aria-label="Studio navigation">
@@ -38,8 +38,9 @@
 
       <div class="sidebar-section" data-section="studio">
         <div class="sidebar-label">Studio</div>
-        <a class="sidebar-item" data-view="client-NCT" data-client-code="NCT">NCT — Northcote Theatre</a>
-        <a class="sidebar-item" data-view="client-UNT" data-client-code="UNT">UNT — Untitled Group</a>
+        <!-- Client items are rendered by client/sidebar.js on app launch.
+             Airtable-driven, cached 60s. Pipeline link stays under them. -->
+        <div class="sidebar-empty">Loading clients...</div>
         <a class="sidebar-item" data-view="pipeline">Pipeline</a>
       </div>
 
