@@ -1,6 +1,6 @@
 [package]
 name = "studio"
-version = "0.19.0"
+version = "0.20.0"
 description = "In Cahoots Studio — operating system for the studio"
 authors = ["Caitlin Reilly <caitlin@incahoots.marketing>"]
 edition = "2021"
@@ -30,4 +30,5 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "process"] }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
 

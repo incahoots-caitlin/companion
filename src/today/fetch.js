@@ -198,6 +198,20 @@ export async function loadReceiptsPending(state, clientLookup) {
   }
 }
 
+export async function loadDrift(state, { force = false } = {}) {
+  // Drift is a Rust-side composite check (filesystem + Airtable) cached
+  // for an hour. Pass `force: true` to bypass the cache — the dashboard
+  // refresh button uses that, normal load uses the cached value.
+  try {
+    const raw = await safeInvoke("check_drift", { force });
+    state.drift = JSON.parse(raw) || [];
+    state.last_fetch_at.drift = Date.now();
+  } catch (e) {
+    console.warn("loadDrift failed:", e);
+    state.drift = state.drift || [];
+  }
+}
+
 export async function loadMorningBriefing(state) {
   try {
     const raw = await safeInvoke("read_morning_briefing");
@@ -295,6 +309,7 @@ export async function loadAll(state) {
     loadReceiptsPending(state, lookup),
     loadMorningBriefing(state),
     loadLiveStatus(state),
+    loadDrift(state, { force: true }),
   ]);
   return state;
 }
@@ -322,6 +337,9 @@ export async function refreshStale(state) {
   if ((state.last_fetch_at.live_status || 0) + LIVE_STALE_MS < now) {
     tasks.push(loadLiveStatus(state));
   }
+  // Drift TTL is on the Rust side (1hr); pulling on every refreshStale
+  // is cheap because the Rust cache returns immediately when warm.
+  tasks.push(loadDrift(state));
   await Promise.allSettled(tasks);
 }
 

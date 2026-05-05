@@ -10,6 +10,8 @@
 //   delete_receipt(id)            -> Result<(), String>
 //   tick_item(receipt_id, idx)    -> Result<String, String>  (returns updated JSON)
 
+mod drift;
+
 use keyring::Entry;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -72,6 +74,15 @@ const SUBCONTRACTOR_ONBOARDING_PROMPT: &str =
 // ── DB state ───────────────────────────────────────────────────────────
 
 pub struct DbState(pub Mutex<Connection>);
+
+// ── Drift cache ────────────────────────────────────────────────────────
+//
+// Last result of `check_drift` plus the timestamp. 1-hour TTL. The
+// dashboard's manual refresh button passes `force: true` to bypass it.
+
+const DRIFT_TTL: Duration = Duration::from_secs(60 * 60);
+
+pub struct DriftCache(pub Mutex<Option<(Instant, Vec<drift::DriftItem>)>>);
 
 // ── Rate limit state ────────────────────────────────────────────────────
 // Defends against a buggy frontend looping a Claude API call and burning
@@ -1777,6 +1788,83 @@ fn read_morning_briefing() -> Result<String, String> {
     }
 }
 
+// ── Drift checker ──────────────────────────────────────────────────────
+//
+// Runs the ten checks defined in `drift.rs` and returns a JSON-serialised
+// list. Cached in `DriftCache` for one hour. The dashboard reads from
+// the cache on every Today render; the refresh button passes
+// `force: true` to flush.
+//
+// Airtable-bound checks read from the existing list_* helpers so we
+// don't duplicate Keychain / HTTP plumbing. If any of those calls fail
+// (offline, rotated PAT) we log and skip — the rest of the checks
+// still surface.
+
+#[tauri::command]
+async fn check_drift(
+    cache: State<'_, DriftCache>,
+    force: Option<bool>,
+) -> Result<String, String> {
+    let force = force.unwrap_or(false);
+
+    if !force {
+        if let Ok(guard) = cache.0.lock() {
+            if let Some((at, items)) = guard.as_ref() {
+                if at.elapsed() < DRIFT_TTL {
+                    return serde_json::to_string(items)
+                        .map_err(|e| format!("Serialise drift cache: {}", e));
+                }
+            }
+        }
+    }
+
+    let mut items: Vec<drift::DriftItem> = Vec::new();
+
+    // Pure filesystem checks — fast, run inline.
+    items.extend(drift::check_version_stamps());
+    items.extend(drift::check_design_system_sync());
+    items.extend(drift::check_spec_reconciliation());
+    items.extend(drift::check_lumin_references());
+    items.extend(drift::check_tally_references());
+    items.extend(drift::check_team_workflow_retired());
+    items.extend(drift::check_archive_cleanup());
+
+    // Airtable-bound checks — fail soft if any call errors.
+    match list_airtable_workstreams().await {
+        Ok(raw) => {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                items.extend(drift::check_workstreams_stale(&v));
+            }
+        }
+        Err(e) => eprintln!("drift: workstreams fetch failed: {}", e),
+    }
+    match list_airtable_commitments().await {
+        Ok(raw) => {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                items.extend(drift::check_overdue_commitments(&v));
+            }
+        }
+        Err(e) => eprintln!("drift: commitments fetch failed: {}", e),
+    }
+    match list_airtable_decisions().await {
+        Ok(raw) => {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                items.extend(drift::check_overdue_decisions(&v));
+            }
+        }
+        Err(e) => eprintln!("drift: decisions fetch failed: {}", e),
+    }
+
+    let out = serde_json::to_string(&items)
+        .map_err(|e| format!("Serialise drift items: {}", e))?;
+
+    if let Ok(mut guard) = cache.0.lock() {
+        *guard = Some((Instant::now(), items));
+    }
+
+    Ok(out)
+}
+
 // ── Receipt CRUD ───────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -2055,6 +2143,7 @@ pub fn run() {
             init_db(&conn).expect("init schema");
             app.manage(DbState(Mutex::new(conn)));
             app.manage(RateLimit(Mutex::new(None)));
+            app.manage(DriftCache(Mutex::new(None)));
 
             // Warm secrets cache so we hit Keychain once at launch, not
             // per API call. The user clicks "Always Allow" once per
@@ -2125,6 +2214,7 @@ pub fn run() {
             check_url_up,
             check_github_actions,
             read_morning_briefing,
+            check_drift,
             run_strategic_thinking,
             run_new_client_onboarding,
             run_monthly_checkin,

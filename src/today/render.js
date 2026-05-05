@@ -245,6 +245,49 @@ function renderDecisions(state) {
   return root;
 }
 
+// ── Section: drift ────────────────────────────────────────────────────
+
+const DRIFT_ICON = { high: "🔴", medium: "🟡", low: "🟢" };
+const DRIFT_RANK = { high: 0, medium: 1, low: 2 };
+
+function renderDrift(state) {
+  const items = state.drift || [];
+  if (items.length === 0) return null; // hide entire section
+
+  const sorted = items.slice().sort((a, b) => {
+    const ar = DRIFT_RANK[a.severity] ?? 9;
+    const br = DRIFT_RANK[b.severity] ?? 9;
+    return ar - br;
+  });
+
+  const root = el("section", { class: "today-section", "data-section": "drift" });
+  root.appendChild(el("div", { class: "section-label section-label-warn" }, ["⚠ DRIFT"]));
+  const list = el("div", { class: "today-list" });
+  sorted.forEach((d) => {
+    const icon = DRIFT_ICON[d.severity] || "";
+    const sevLabel = (d.severity || "").charAt(0).toUpperCase() + (d.severity || "").slice(1);
+    const row = el("button", {
+      class: "today-row today-row-drift",
+      type: "button",
+      "data-severity": d.severity || "",
+    });
+    row.addEventListener("click", () => {
+      // For now: console log. Future: deep link to fix.
+      console.log("drift:", d);
+    });
+    const left = el("div", { class: "today-row-main" }, [
+      el("div", { class: "today-row-title" }, [
+        `${icon} [${sevLabel}] ${d.title || ""}`,
+      ]),
+      d.action ? el("div", { class: "today-row-meta" }, [`→ ${d.action}`]) : null,
+    ]);
+    row.appendChild(left);
+    list.appendChild(row);
+  });
+  root.appendChild(list);
+  return root;
+}
+
 // ── Section: live status ──────────────────────────────────────────────
 
 function renderLiveStatus(state) {
@@ -420,10 +463,10 @@ export function draw(state) {
   const sections = [
     renderDueToday(state),
     renderOverdue(state),
+    renderDrift(state),
     renderWorkstreams(state),
     renderDecisions(state),
     renderLiveStatus(state),
-    // Drift section deferred to Block B6 — never rendered in v0.18.
     renderReceiptsPending(state),
     renderMorningBriefing(state),
   ];
