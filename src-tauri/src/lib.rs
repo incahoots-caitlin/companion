@@ -1,4 +1,4 @@
-// In Cahoots Studio — Rust backend
+// Companion - Rust backend
 //
 // Tauri commands the frontend invokes:
 //   get_api_key_status()          -> bool
@@ -3009,7 +3009,7 @@ pub fn run() {
             let _ = cached_secret(KEYRING_AIRTABLE_BASE);
 
             // Tray icon with a small menu.
-            let open_item = MenuItem::with_id(app, "open", "Open Studio", true, None::<&str>)?;
+            let open_item = MenuItem::with_id(app, "open", "Open Companion", true, None::<&str>)?;
             let new_thinking = MenuItem::with_id(
                 app,
                 "new-thinking",
@@ -3018,14 +3018,14 @@ pub fn run() {
                 Some("Cmd+Shift+S"),
             )?;
             let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit Studio", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit Companion", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open_item, &new_thinking, &separator, &quit_item])?;
 
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .menu_on_left_click(true)
-                .tooltip("In Cahoots Studio")
+                .tooltip("Companion")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => {
                         if let Some(win) = app.get_webview_window("main") {

@@ -1,4 +1,4 @@
-// Studio drift checker — Block B6.
+// Companion drift checker - Block B6.
 //
 // Compares expected state against actual state across the codebase, the
 // Dropbox docs and Airtable. Surfaces gaps on the Today dashboard so
@@ -162,10 +162,10 @@ pub fn check_design_system_sync() -> Vec<DriftItem> {
     };
 
     if !studio.exists() {
-        // Studio's own design-system folder missing means something is
-        // very wrong — surface it.
+        // Companion's own design-system folder missing means something is
+        // very wrong - surface it.
         return vec![DriftItem {
-            title: "Studio design-system folder missing".to_string(),
+            title: "Companion design-system folder missing".to_string(),
             severity: Severity::Medium,
             action: "Restore src/styles/design-system/".to_string(),
             surface: studio.display().to_string(),
@@ -198,7 +198,7 @@ pub fn check_design_system_sync() -> Vec<DriftItem> {
         }
         let context_file = context.join(&name);
         if !context_file.exists() {
-            differing.push(format!("{} (only in Studio)", name));
+            differing.push(format!("{} (only in Companion)", name));
             continue;
         }
         let a = sha256_file(&path);
@@ -308,7 +308,7 @@ fn parse_reconciled_date(line: &str) -> Option<chrono::NaiveDate> {
     None
 }
 
-// ── Check 4: Lumin references in Studio source ───────────────────────
+// ── Check 4: Lumin references in Companion source ────────────────────
 
 fn grep_recursive(root: &Path, needle_lower: &str) -> Vec<PathBuf> {
     let mut hits = Vec::new();
@@ -386,7 +386,7 @@ pub fn check_lumin_references() -> Vec<DriftItem> {
         format!("{} (+{} more)", names[..3].join(", "), names.len() - 3)
     };
     vec![DriftItem {
-        title: format!("Lumin references in Studio source: {}", preview),
+        title: format!("Lumin references in Companion source: {}", preview),
         severity: Severity::Medium,
         action: "Replace Lumin with Dropbox Sign".to_string(),
         surface: repo.display().to_string(),
@@ -448,7 +448,7 @@ pub fn check_team_workflow_retired() -> Vec<DriftItem> {
     vec![]
 }
 
-// ── Check 10: Studio _archive folder cleanup ─────────────────────────
+// ── Check 10: Companion _archive folder cleanup ──────────────────────
 
 pub fn check_archive_cleanup() -> Vec<DriftItem> {
     let archive = match studio_repo() {

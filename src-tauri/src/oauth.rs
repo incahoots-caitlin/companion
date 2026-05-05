@@ -1,4 +1,4 @@
-// In Cahoots Studio — generic OAuth 2.0 PKCE helper
+// Companion - generic OAuth 2.0 PKCE helper
 //
 // One module, used by every browser-OAuth provider Studio talks to. The
 // pattern is:
@@ -355,13 +355,13 @@ fn accept_oauth_callback(
 
         // Send a friendly response in the browser.
         let body = if code.is_some() && state == expected_state {
-            r#"<!doctype html><html><head><title>Studio connected</title>
+            r#"<!doctype html><html><head><title>Companion connected</title>
 <style>body{font-family:-apple-system,system-ui,sans-serif;background:#f8f5ee;color:#1a1a1a;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}main{max-width:420px;text-align:center;padding:32px}h1{font-size:22px;margin:0 0 12px}p{font-size:15px;line-height:1.5;color:#555;margin:0}</style></head>
-<body><main><h1>Connected.</h1><p>You can close this tab and return to In Cahoots Studio.</p></main></body></html>"#
+<body><main><h1>Connected.</h1><p>You can close this tab and return to Companion.</p></main></body></html>"#
         } else {
-            r#"<!doctype html><html><head><title>Studio — auth failed</title>
+            r#"<!doctype html><html><head><title>Companion - auth failed</title>
 <style>body{font-family:-apple-system,system-ui,sans-serif;background:#f8f5ee;color:#1a1a1a;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}main{max-width:420px;text-align:center;padding:32px}h1{font-size:22px;margin:0 0 12px}p{font-size:15px;line-height:1.5;color:#555;margin:0}</style></head>
-<body><main><h1>Couldn't connect.</h1><p>Studio didn't get a valid auth code back. Open Studio and try again.</p></main></body></html>"#
+<body><main><h1>Couldn't connect.</h1><p>Companion didn't get a valid auth code back. Open Companion and try again.</p></main></body></html>"#
         };
 
         let response_text = format!(

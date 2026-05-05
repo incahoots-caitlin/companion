@@ -1,4 +1,4 @@
-// In Cahoots Studio — v0 spike
+// Companion - v0 spike
 //
 // Renders the Strategic Thinking session receipt as the first
 // item in the feed. AI workflow runner wires up in the next build.
@@ -265,7 +265,7 @@ const isTauri = !!tauri;
 
 async function invoke(cmd, args) {
   if (!isTauri) {
-    throw new Error("Studio backend not available, running in browser preview");
+    throw new Error("Companion backend not available, running in browser preview");
   }
   return tauri.invoke(cmd, args);
 }
@@ -333,7 +333,7 @@ function showUpdateBanner(update) {
   if (document.getElementById("update-banner")) return;
   const banner = el("div", { id: "update-banner", class: "banner banner-info" }, [
     el("div", { class: "banner-text" }, [
-      `Studio ${update.version} is ready. ${update.body || "Click install to update and restart."}`,
+      `Companion ${update.version} is ready. ${update.body || "Click install to update and restart."}`,
     ]),
     el("button", { class: "button banner-button", id: "update-dismiss" }, ["Later"]),
     el("button", { class: "button banner-button", id: "update-install" }, ["Install"]),
@@ -425,7 +425,7 @@ async function showSettingsModal() {
     el("div", { class: "settings-meta" }, [
       airtableSet
         ? "Connected. Sidebar pulls active clients from your base. Paste again to rotate credentials."
-        : "Connect to your 'In Cahoots Ops' base. Personal access token + base ID. Studio's sidebar will pull active clients on launch.",
+        : "Connect to your 'In Cahoots Ops' base. Personal access token + base ID. Companion's sidebar will pull active clients on launch.",
     ]),
     el("div", { class: "settings-row" }, [
       el("input", {
@@ -695,7 +695,7 @@ async function handleCreateClientFromReceipt(receiptEl) {
   if (!code) return showToast("Cancelled — no client created");
 
   const status = "active";
-  const notes = `Onboarded via Studio receipt ${receiptId}`;
+  const notes = `Onboarded via Companion receipt ${receiptId}`;
 
   try {
     const recordId = await invoke("create_airtable_client", {
@@ -987,7 +987,7 @@ async function handleCreateProjectFromReceipt(receiptEl) {
         start_date: null,
         end_date: null,
         budget_total: null,
-        notes: `Filed via Studio receipt ${receiptId}`,
+        notes: `Filed via Companion receipt ${receiptId}`,
       },
     });
     showToast(`${confirmCode} created in Airtable Projects (${recordId})`, { ttl: 4000 });
@@ -1122,7 +1122,7 @@ async function handleCreateSubcontractorFromReceipt(receiptEl) {
         start_date: null,
         hourly_rate: null,
         email: null,
-        notes: `Filed via Studio receipt ${receiptId}`,
+        notes: `Filed via Companion receipt ${receiptId}`,
       },
     });
     showToast(`${code.toUpperCase()} created in Subcontractors (${recordId})`, { ttl: 4000 });
@@ -1257,7 +1257,7 @@ async function showClientPickerReviewModal({
     const pullBtn = document.getElementById(`${modalId}-pull-granola`);
     pullBtn.addEventListener("click", async () => {
       if (!isTauri) {
-        showToast("Granola pull only works in the Studio app");
+        showToast("Granola pull only works in the Companion app");
         return;
       }
       const code = clientPicker.value;
@@ -1323,7 +1323,7 @@ async function showMonthlyCheckinModal(prefillClientCode) {
   return showClientPickerReviewModal({
     modalId: "mc-modal",
     title: "Monthly Check-in",
-    meta: "Pick a client. Studio pulls their last 30 days of receipts as context, Claude returns a check-in receipt with what's done, what's open, what's next, and action items.",
+    meta: "Pick a client. Companion pulls their last 30 days of receipts as context, Claude returns a check-in receipt with what's done, what's open, what's next, and action items.",
     command: "run_monthly_checkin",
     runningLabel: "Reading the month...",
     successToast: "Check-in receipt ready",
@@ -1337,7 +1337,7 @@ async function showQuarterlyReviewModal(prefillClientCode) {
   return showClientPickerReviewModal({
     modalId: "qr-modal",
     title: "Quarterly Review",
-    meta: "Pick a client. Studio pulls their last 90 days of receipts, Claude returns a QBR receipt with what worked, what didn't, and proposed next-quarter shape. Use this to drive the QBR call.",
+    meta: "Pick a client. Companion pulls their last 90 days of receipts, Claude returns a QBR receipt with what worked, what didn't, and proposed next-quarter shape. Use this to drive the QBR call.",
     command: "run_quarterly_review",
     runningLabel: "Reading the quarter...",
     successToast: "QBR receipt ready",
@@ -1598,7 +1598,7 @@ function showWorkstreamDetailModal(workstream) {
 
   doneBtn.addEventListener("click", async () => {
     if (!isTauri) {
-      showToast("Open the Studio app to update Airtable from here.");
+      showToast("Open the Companion app to update Airtable from here.");
       return;
     }
     doneBtn.disabled = true;
@@ -1881,7 +1881,7 @@ async function showScheduleSocialPostModal(prefillClientCode) {
 
   runBtn.addEventListener("click", async () => {
     if (!isTauri) {
-      showToast("Open the Studio app to file workflows. Preview is read-only.");
+      showToast("Open the Companion app to file workflows. Preview is read-only.");
       return;
     }
     const copyText = copy.value.trim();
@@ -2085,7 +2085,7 @@ async function showLogTimeModal(prefillClientCode) {
 
   runBtn.addEventListener("click", async () => {
     if (!isTauri) {
-      showToast("Open the Studio app to file workflows. Preview is read-only.");
+      showToast("Open the Companion app to file workflows. Preview is read-only.");
       return;
     }
     const hoursVal = parseFloat(hours.value);
@@ -2238,7 +2238,7 @@ async function showEditProjectModal(prefillClientCode) {
 
   runBtn.addEventListener("click", async () => {
     if (!isTauri) {
-      showToast("Open the Studio app to file workflows. Preview is read-only.");
+      showToast("Open the Companion app to file workflows. Preview is read-only.");
       return;
     }
     const recordId = picker.value;
@@ -2541,7 +2541,7 @@ document.addEventListener("DOMContentLoaded", () => {
       toast: showToast,
       requireApiKey: async () => {
         if (!isTauri) {
-          showToast("Open the Studio app to run live workflows. Preview is read-only.");
+          showToast("Open the Companion app to run live workflows. Preview is read-only.");
           return false;
         }
         const ready = await invoke("get_api_key_status");
@@ -2568,7 +2568,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const btn = e.target.closest('.receipt-action-btn[data-action="reprint"]');
     if (!btn) return;
     if (!isTauri) {
-      showToast("Reprint runs in the Studio app, not the browser preview.");
+      showToast("Reprint runs in the Companion app, not the browser preview.");
       return;
     }
     const receiptEl = btn.closest(".receipt");
@@ -2687,7 +2687,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function openStrategicThinking() {
     if (!isTauri) {
-      showToast("Open the Studio app (DMG) to run live workflows. Preview is read-only.");
+      showToast("Open the Companion app (DMG) to run live workflows. Preview is read-only.");
       return;
     }
     const ready = await invoke("get_api_key_status");
@@ -2702,7 +2702,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Workflow cards: route by title to the right modal.
   async function openNewClientOnboarding() {
     if (!isTauri) {
-      showToast("Open the Studio app to run live workflows. Preview is read-only.");
+      showToast("Open the Companion app to run live workflows. Preview is read-only.");
       return;
     }
     const ready = await invoke("get_api_key_status");
@@ -2716,7 +2716,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function openNewCampaignScope() {
     if (!isTauri) {
-      showToast("Open the Studio app to run live workflows. Preview is read-only.");
+      showToast("Open the Companion app to run live workflows. Preview is read-only.");
       return;
     }
     const ready = await invoke("get_api_key_status");
@@ -2730,7 +2730,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function openMonthlyCheckin() {
     if (!isTauri) {
-      showToast("Open the Studio app to run live workflows. Preview is read-only.");
+      showToast("Open the Companion app to run live workflows. Preview is read-only.");
       return;
     }
     const ready = await invoke("get_api_key_status");
@@ -2744,7 +2744,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function openSubcontractorOnboarding() {
     if (!isTauri) {
-      showToast("Open the Studio app to run live workflows. Preview is read-only.");
+      showToast("Open the Companion app to run live workflows. Preview is read-only.");
       return;
     }
     const ready = await invoke("get_api_key_status");
@@ -2758,7 +2758,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function openQuarterlyReview() {
     if (!isTauri) {
-      showToast("Open the Studio app to run live workflows. Preview is read-only.");
+      showToast("Open the Companion app to run live workflows. Preview is read-only.");
       return;
     }
     const ready = await invoke("get_api_key_status");
@@ -2788,19 +2788,19 @@ document.addEventListener("DOMContentLoaded", () => {
       } else if (name === "Schedule social post") {
         // Pure-Airtable workflows — no Anthropic key needed.
         if (!isTauri) {
-          showToast("Open the Studio app to file workflows. Preview is read-only.");
+          showToast("Open the Companion app to file workflows. Preview is read-only.");
           return;
         }
         showScheduleSocialPostModal();
       } else if (name === "Log time") {
         if (!isTauri) {
-          showToast("Open the Studio app to file workflows. Preview is read-only.");
+          showToast("Open the Companion app to file workflows. Preview is read-only.");
           return;
         }
         showLogTimeModal();
       } else if (name === "Edit project") {
         if (!isTauri) {
-          showToast("Open the Studio app to file workflows. Preview is read-only.");
+          showToast("Open the Companion app to file workflows. Preview is read-only.");
           return;
         }
         showEditProjectModal();

@@ -304,12 +304,12 @@ function renderLiveStatus(state) {
     type: "button",
     "data-action": "open-studio-release",
   }, [
-    el("span", { class: "live-status-label" }, ["Studio"]),
+    el("span", { class: "live-status-label" }, ["Companion"]),
     el("span", { class: "live-status-value" }, [`v${v}`]),
   ]);
   studioLine.addEventListener("click", () =>
     dispatch("today:open-url", {
-      url: `https://github.com/incahoots-caitlin/studio/releases/tag/v${v}`,
+      url: `https://github.com/incahoots-caitlin/companion/releases/tag/v${v}`,
     })
   );
   grid.appendChild(studioLine);

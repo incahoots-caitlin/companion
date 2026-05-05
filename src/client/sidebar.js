@@ -1,7 +1,7 @@
 // Per-client view — sidebar client list.
 //
 // On app launch (and at most once every 60s), pull the active Clients list
-// from Airtable and replace the Studio sidebar's client items. Falls back
+// from Airtable and replace the Companion sidebar's client items. Falls back
 // to whatever's already in the DOM if the bridge or Airtable isn't ready.
 //
 // The 60s cache is in-memory — switching views inside one session doesn't
@@ -88,7 +88,7 @@ export async function loadClients() {
     // Airtable not configured yet — replace the static "Loading..."
     // with a real placeholder so it doesn't read as a stuck spinner.
     studioSection.innerHTML = "";
-    studioSection.appendChild(el("div", { class: "sidebar-label" }, ["Studio"]));
+    studioSection.appendChild(el("div", { class: "sidebar-label" }, ["Companion"]));
     studioSection.appendChild(
       el("div", { class: "sidebar-empty" }, [
         "Connect Airtable in Settings to see clients",
@@ -108,7 +108,7 @@ export async function loadClients() {
   });
 
   studioSection.innerHTML = "";
-  studioSection.appendChild(el("div", { class: "sidebar-label" }, ["Studio"]));
+  studioSection.appendChild(el("div", { class: "sidebar-label" }, ["Companion"]));
 
   if (records.length === 0) {
     studioSection.appendChild(

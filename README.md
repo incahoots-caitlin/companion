@@ -1,8 +1,8 @@
-# In Cahoots Studio
+# Companion
 
 A mini operating system for In Cahoots. Local Mac app, powered by Claude Agent SDK, reading and writing the Dropbox templates folder, printing to the Munbyn, posting to Slack on tick.
 
-Spec lives at [`IN CAHOOTS/STUDIO/spec.md`](https://www.dropbox.com/home/IN%20CAHOOTS/STUDIO).
+Spec lives at [`IN CAHOOTS/COMPANION/spec.md`](https://www.dropbox.com/home/IN%20CAHOOTS/COMPANION).
 
 ## Stack
 
@@ -33,4 +33,4 @@ cargo tauri build
 
 ## Status
 
-v0 spike. Renders the receipt feed using Context's design tokens. AI workflow runner, SQLite store, MCP server, Slack hooks, Munbyn reprint, and folder-watcher all wire up in subsequent builds per the spec.
+v0.23. User-facing rename from Studio to Companion. Bundle identifier and Keychain service name remain `marketing.incahoots.studio` for auto-update and stored-secret continuity. Renders the receipt feed using Context's design tokens. AI workflow runner, SQLite store, MCP server, Slack hooks, Munbyn reprint, and folder-watcher all wire up in subsequent builds per the spec.

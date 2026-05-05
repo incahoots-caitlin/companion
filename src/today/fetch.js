@@ -254,7 +254,7 @@ async function loadStudioVersion(state) {
 async function loadGithubActions(state) {
   try {
     const raw = await safeInvoke("check_github_actions", {
-      repo: "incahoots-caitlin/studio",
+      repo: "incahoots-caitlin/companion",
     });
     state.live_status.github_actions = JSON.parse(raw);
   } catch (e) {
