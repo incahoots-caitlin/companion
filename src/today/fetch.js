@@ -227,6 +227,59 @@ export async function loadMorningBriefing(state) {
   }
 }
 
+// ── Calendar (v0.24) ──────────────────────────────────────────────────
+//
+// Two pulls: today's events and the next 7 days. Both come from the
+// same Google session. Status check is cheap (one Keychain read on the
+// Rust side) so we always read it — render uses it to decide whether
+// to show "Connect Google in Settings" instead of an empty list.
+
+export async function loadCalendar(state) {
+  const cal = state.calendar || (state.calendar = {
+    status: null,
+    today: null,
+    week: null,
+    error: null,
+  });
+  try {
+    cal.status = await safeInvoke("get_google_status");
+  } catch (e) {
+    cal.status = { connected: false, has_client_id: false, last_sync_at: null };
+  }
+  if (!cal.status?.connected) {
+    cal.today = [];
+    cal.week = [];
+    cal.error = null;
+    state.last_fetch_at.calendar = Date.now();
+    return;
+  }
+  const [todayRes, weekRes] = await Promise.allSettled([
+    safeInvoke("list_calendar_today"),
+    safeInvoke("list_calendar_week"),
+  ]);
+  if (todayRes.status === "fulfilled") {
+    try { cal.today = JSON.parse(todayRes.value) || []; }
+    catch { cal.today = []; }
+  } else {
+    cal.today = [];
+    cal.error = String(todayRes.reason);
+  }
+  if (weekRes.status === "fulfilled") {
+    try { cal.week = JSON.parse(weekRes.value) || []; }
+    catch { cal.week = []; }
+  } else {
+    cal.week = [];
+    if (!cal.error) cal.error = String(weekRes.reason);
+  }
+  // If both calls succeeded, refresh the status (last_sync_at may have
+  // moved). Cheap second call but keeps the Settings-meta line fresh.
+  if (todayRes.status === "fulfilled" && weekRes.status === "fulfilled") {
+    cal.error = null;
+    try { cal.status = await safeInvoke("get_google_status"); } catch {}
+  }
+  state.last_fetch_at.calendar = Date.now();
+}
+
 // ── Live status ───────────────────────────────────────────────────────
 
 export async function loadLiveStatus(state) {
@@ -310,6 +363,7 @@ export async function loadAll(state) {
     loadMorningBriefing(state),
     loadLiveStatus(state),
     loadDrift(state, { force: true }),
+    loadCalendar(state),
   ]);
   return state;
 }
@@ -340,6 +394,9 @@ export async function refreshStale(state) {
   // Drift TTL is on the Rust side (1hr); pulling on every refreshStale
   // is cheap because the Rust cache returns immediately when warm.
   tasks.push(loadDrift(state));
+  if ((state.last_fetch_at.calendar || 0) + STALE_MS < now) {
+    tasks.push(loadCalendar(state));
+  }
   await Promise.allSettled(tasks);
 }
 

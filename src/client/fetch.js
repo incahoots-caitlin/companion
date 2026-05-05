@@ -67,6 +67,7 @@ export async function loadHeader(state, code) {
       primary_contact_email: match.fields?.primary_contact_email || null,
       abn: match.fields?.abn || null,
       dropbox_folder: match.fields?.dropbox_folder || null,
+      gmail_thread_filter: match.fields?.gmail_thread_filter || null,
       notes: match.fields?.notes || null,
       // last_touch is filled in by loadReceipts once receipts arrive.
       last_touch: null,
@@ -246,6 +247,44 @@ export async function loadReceipts(state) {
   }
 }
 
+// ── Meetings (v0.24) ──────────────────────────────────────────────────
+//
+// Calls the Rust-side calendar matcher. Skips silently when Google
+// isn't connected — the section hides cleanly via render's empty check.
+
+export async function loadMeetings(state) {
+  try {
+    if (!state.code || !state.header) {
+      state.meetings = [];
+      return;
+    }
+    // Quick status check first. If not connected we skip the network
+    // call entirely.
+    let status = null;
+    try { status = await safeInvoke("get_google_status"); } catch {}
+    if (!status?.connected) {
+      state.meetings = [];
+      return;
+    }
+    const aliases = state.header.gmail_thread_filter
+      ? [state.header.gmail_thread_filter]
+      : [];
+    const raw = await safeInvoke("list_calendar_for_client", {
+      input: {
+        client_code: state.code,
+        client_name: state.header.name || null,
+        aliases,
+      },
+    });
+    const events = JSON.parse(raw || "[]");
+    state.meetings = Array.isArray(events) ? events : [];
+    state.last_fetch_at.meetings = Date.now();
+  } catch (e) {
+    console.warn("loadMeetings failed:", e);
+    state.meetings = [];
+  }
+}
+
 // ── Top-level loaders ─────────────────────────────────────────────────
 
 export async function loadAll(state, code) {
@@ -260,6 +299,7 @@ export async function loadAll(state, code) {
     loadCommitments(state),
     loadProjects(state),
     loadReceipts(state),
+    loadMeetings(state),
   ]);
   return state;
 }
@@ -282,6 +322,9 @@ export async function refreshStale(state) {
   }
   if ((state.last_fetch_at.receipts || 0) + STALE_MS < now) {
     tasks.push(loadReceipts(state));
+  }
+  if ((state.last_fetch_at.meetings || 0) + STALE_MS < now) {
+    tasks.push(loadMeetings(state));
   }
   await Promise.allSettled(tasks);
 }

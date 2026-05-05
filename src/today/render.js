@@ -428,6 +428,158 @@ function renderReceiptsPending(state) {
   return root;
 }
 
+// ── Section: calendar (v0.24) ─────────────────────────────────────────
+//
+// Today's events on top, week-ahead summary collapsible underneath.
+// Events render with start time, summary, location/attendees one-liner,
+// and a Meet link when present.
+
+function fmtEventTime(ev) {
+  if (ev.all_day) return "All day";
+  return fmtTime(ev.start);
+}
+
+function fmtEventDayHeader(s) {
+  // s is RFC3339 or YYYY-MM-DD. Normalise to a display string like
+  // "Tue 6 May".
+  if (!s) return "";
+  const d = new Date(s.length === 10 ? `${s}T00:00:00` : s);
+  if (Number.isNaN(d.getTime())) return s;
+  return d.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" });
+}
+
+function eventDayKey(s) {
+  // Group week events by their start date in local time. RFC3339 with
+  // a timezone is already date-bearing; for all-day YYYY-MM-DD strings
+  // we keep them as-is.
+  if (!s) return "";
+  if (s.length === 10) return s;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function renderEventRow(ev) {
+  const row = el("button", {
+    class: "today-row today-row-event",
+    type: "button",
+    "data-event-id": ev.id || "",
+  });
+  if (ev.html_link) {
+    row.addEventListener("click", () =>
+      dispatch("today:open-url", { url: ev.html_link })
+    );
+  }
+
+  const titleParts = [];
+  if (ev.summary) titleParts.push(ev.summary);
+  const left = el("div", { class: "today-row-main" }, [
+    el("div", { class: "today-row-title" }, [ev.summary || "(no title)"]),
+  ]);
+  const metaBits = [];
+  if (ev.location && !/^https?:\/\//i.test(ev.location)) metaBits.push(ev.location);
+  if (ev.attendees && ev.attendees.length) {
+    const n = ev.attendees.length;
+    metaBits.push(`${n} attendee${n === 1 ? "" : "s"}`);
+  }
+  if (ev.calendar_name && ev.calendar_name !== "primary") {
+    metaBits.push(ev.calendar_name);
+  }
+  if (metaBits.length) {
+    left.appendChild(el("div", { class: "today-row-meta" }, [metaBits.join(" · ")]));
+  }
+
+  const right = el("div", { class: "today-row-side" });
+  if (ev.hangout_link) {
+    const meetBtn = el("a", {
+      class: "client-status-pill status-active",
+      href: ev.hangout_link,
+      target: "_blank",
+      rel: "noopener",
+    }, ["Meet"]);
+    meetBtn.addEventListener("click", (e) => {
+      // Stop the row's open-html-link bubble.
+      e.stopPropagation();
+    });
+    right.appendChild(meetBtn);
+  }
+  right.appendChild(el("span", { class: "today-row-time" }, [fmtEventTime(ev)]));
+
+  row.appendChild(left);
+  row.appendChild(right);
+  return row;
+}
+
+function renderCalendar(state) {
+  const cal = state.calendar || {};
+  const root = el("section", { class: "today-section", "data-section": "calendar" });
+  root.appendChild(el("div", { class: "section-label" }, ["📅 CALENDAR"]));
+
+  if (!cal.status?.connected) {
+    root.appendChild(
+      el("div", { class: "empty" }, ["Connect Google in Settings to see calendar."])
+    );
+    return root;
+  }
+
+  if (cal.error && (!cal.today || cal.today.length === 0)) {
+    root.appendChild(
+      el("div", { class: "empty" }, [
+        "Calendar unavailable — try the refresh button. (",
+        String(cal.error).slice(0, 200),
+        ")",
+      ])
+    );
+    return root;
+  }
+
+  const today = cal.today || [];
+  const list = el("div", { class: "today-list" });
+  if (today.length === 0) {
+    list.appendChild(el("div", { class: "empty" }, ["Nothing on today."]));
+  } else {
+    today.forEach((ev) => list.appendChild(renderEventRow(ev)));
+  }
+  root.appendChild(list);
+
+  // Week-ahead summary. We exclude today's events (already shown above)
+  // and group the remaining events by day so it stays scannable.
+  const todayKey = eventDayKey(new Date().toISOString());
+  const weekFuture = (cal.week || []).filter((ev) => eventDayKey(ev.start) !== todayKey);
+
+  const details = el("details", { class: "today-week-ahead" });
+  const summary = el("summary", { class: "today-week-ahead-summary" }, [
+    weekFuture.length === 0
+      ? "Clear week ahead."
+      : `Week ahead — ${weekFuture.length} event${weekFuture.length === 1 ? "" : "s"}`,
+  ]);
+  details.appendChild(summary);
+
+  if (weekFuture.length > 0) {
+    const grouped = new Map();
+    weekFuture.forEach((ev) => {
+      const k = eventDayKey(ev.start);
+      if (!grouped.has(k)) grouped.set(k, []);
+      grouped.get(k).push(ev);
+    });
+    const sortedKeys = Array.from(grouped.keys()).sort();
+    const weekList = el("div", { class: "today-list" });
+    sortedKeys.forEach((k) => {
+      weekList.appendChild(
+        el("div", { class: "today-week-day-label" }, [fmtEventDayHeader(k)])
+      );
+      grouped.get(k).forEach((ev) => weekList.appendChild(renderEventRow(ev)));
+    });
+    details.appendChild(weekList);
+  }
+  root.appendChild(details);
+
+  return root;
+}
+
 // ── Section: morning briefing ─────────────────────────────────────────
 
 function renderMorningBriefing(state) {
@@ -464,6 +616,7 @@ export function draw(state) {
     renderDueToday(state),
     renderOverdue(state),
     renderDrift(state),
+    renderCalendar(state),
     renderWorkstreams(state),
     renderDecisions(state),
     renderLiveStatus(state),

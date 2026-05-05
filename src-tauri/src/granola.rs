@@ -47,6 +47,7 @@ pub const GRANOLA: ProviderConfig = ProviderConfig {
     access_token_key: "granola-access-token",
     refresh_token_key: "granola-refresh-token",
     expires_at_key: "granola-expires-at",
+    auth_extra_params: &[],
 };
 
 // Convenience: tools to allowlist when running Monthly Check-in /

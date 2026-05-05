@@ -19,6 +19,12 @@
 //   drift: [],                              // hidden until Block B6
 //   receipts_pending: [ { id, title, ticked, total, client_code } ],
 //   morning_briefing: { text, generated_at, path } | null,
+//   calendar: {
+//     status: { connected: bool, has_client_id: bool, last_sync_at },
+//     today: [ ...CalendarEvent ] | null,
+//     week:  [ ...CalendarEvent ] | null,
+//     error: string | null,
+//   },
 //   last_fetch_at:        { all section keys } -> ms timestamp
 // }
 //
@@ -41,6 +47,12 @@ export function emptyTodayState() {
     drift: null,
     receipts_pending: null,
     morning_briefing: null,
+    calendar: {
+      status: null,
+      today: null,
+      week: null,
+      error: null,
+    },
     last_fetch_at: {},
   };
 }

@@ -21,6 +21,8 @@ const _state = {
 
 // 60s timer for live-status row, reset on each Today mount.
 let _liveStatusTimer = null;
+// 5-min timer for calendar pulls, reset on each Today mount (v0.24).
+let _calendarTimer = null;
 
 function clearLiveStatusTimer() {
   if (_liveStatusTimer) {
@@ -37,6 +39,23 @@ function startLiveStatusTimer() {
     await todayFetch.loadLiveStatus(_state.today);
     todayRender.drawLiveStatusOnly(_state.today);
   }, 60_000);
+}
+
+function clearCalendarTimer() {
+  if (_calendarTimer) {
+    clearInterval(_calendarTimer);
+    _calendarTimer = null;
+  }
+}
+
+function startCalendarTimer() {
+  clearCalendarTimer();
+  _calendarTimer = setInterval(async () => {
+    if (document.hidden) return;
+    if (document.getElementById("today-view")?.hasAttribute("hidden")) return;
+    await todayFetch.loadCalendar(_state.today);
+    todayRender.draw(_state.today);
+  }, 5 * 60_000);
 }
 
 const STRATEGIC_THINKING = {
@@ -374,11 +393,13 @@ async function showSettingsModal() {
   let slackSet = false;
   let airtableSet = false;
   let granolaStatus = { connected: false, has_client_id: false, last_pull_at: null };
+  let googleStatus = { connected: false, has_client_id: false, last_sync_at: null };
   if (isTauri) {
     try { apiSet = await invoke("get_api_key_status"); } catch {}
     try { slackSet = await invoke("get_slack_status"); } catch {}
     try { airtableSet = await invoke("get_airtable_status"); } catch {}
     try { granolaStatus = await invoke("get_granola_status"); } catch {}
+    try { googleStatus = await invoke("get_google_status"); } catch {}
   }
 
   const body = el("div", { class: "settings-body" });
@@ -486,6 +507,46 @@ async function showSettingsModal() {
     granolaActions,
   ]));
 
+  // Google integration (v0.24 Block C). Same two-step setup as Granola:
+  // paste OAuth client ID issued by Google Cloud Console (Desktop app
+  // type, redirect URI http://localhost:53682/callback), then click
+  // Connect Google to run the browser PKCE flow. Calendar read-only is
+  // the v0.24 scope; Gmail and Drive get added in v0.25 by re-authing.
+  const googleMeta = googleStatus.connected
+    ? `Connected. Calendar shows on Today and per-client views.${googleStatus.last_sync_at ? ` Last sync: ${formatGranolaTimestamp(googleStatus.last_sync_at)}.` : ""}`
+    : googleStatus.has_client_id
+      ? "Client ID saved. Click Connect to authorise in your browser."
+      : "Optional. Paste a Google OAuth client ID (Desktop app type, redirect URI http://localhost:53682/callback), then click Connect.";
+
+  const googleActions = el("div", { class: "settings-row", style: "margin-top: 8px;" });
+  if (googleStatus.connected) {
+    googleActions.appendChild(
+      el("button", { class: "button button-secondary", id: "settings-google-disconnect" }, ["Disconnect"]),
+    );
+    googleActions.appendChild(
+      el("button", { class: "button", id: "settings-google-reconnect" }, ["Re-authorise"]),
+    );
+  } else {
+    googleActions.appendChild(
+      el("button", { class: "button", id: "settings-google-connect" }, ["Connect Google"]),
+    );
+  }
+
+  body.appendChild(el("div", { class: "settings-section" }, [
+    el("div", { class: "settings-label" }, ["Google integration"]),
+    el("div", { class: "settings-meta" }, [googleMeta]),
+    el("div", { class: "settings-row" }, [
+      el("input", {
+        id: "settings-google-client-id",
+        type: "text",
+        placeholder: googleStatus.has_client_id ? "(client ID set — paste again to overwrite)" : "Google OAuth client ID",
+        class: "settings-input",
+      }),
+      el("button", { class: "button button-secondary", id: "settings-google-save-id" }, ["Save ID"]),
+    ]),
+    googleActions,
+  ]));
+
   modal.appendChild(body);
   modal.appendChild(el("div", { class: "modal-actions" }, [
     el("button", { class: "button button-secondary", id: "settings-close" }, ["Done"]),
@@ -573,6 +634,51 @@ async function showSettingsModal() {
       try {
         await invoke("disconnect_granola");
         showToast("Granola disconnected");
+        reopenSettings();
+      } catch (e) { showToast(`Disconnect failed: ${e}`); }
+    });
+  }
+
+  // Google handlers (v0.24). Same shape as Granola — save client ID,
+  // run the OAuth flow, or disconnect. Re-renders the modal in place
+  // so the connect/disconnect button swap and the meta line update
+  // without requiring a manual reopen.
+  document.getElementById("settings-google-save-id").addEventListener("click", async () => {
+    const clientId = document.getElementById("settings-google-client-id").value.trim();
+    if (!clientId) return showToast("Paste a client ID first");
+    try {
+      await invoke("save_google_client_id", { clientId });
+      showToast("Google client ID saved");
+      reopenSettings();
+    } catch (e) { showToast(`Save failed: ${e}`); }
+  });
+
+  const googleConnectBtn = document.getElementById("settings-google-connect");
+  const googleReconnectBtn = document.getElementById("settings-google-reconnect");
+  const runGoogleConnect = async (btn) => {
+    if (!btn) return;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Authorising...";
+    try {
+      await invoke("connect_google");
+      showToast("Google connected");
+      reopenSettings();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = original;
+      showToast(`Connect failed: ${e.message || e}`, { ttl: 7000 });
+    }
+  };
+  if (googleConnectBtn) googleConnectBtn.addEventListener("click", () => runGoogleConnect(googleConnectBtn));
+  if (googleReconnectBtn) googleReconnectBtn.addEventListener("click", () => runGoogleConnect(googleReconnectBtn));
+
+  const googleDisconnectBtn = document.getElementById("settings-google-disconnect");
+  if (googleDisconnectBtn) {
+    googleDisconnectBtn.addEventListener("click", async () => {
+      try {
+        await invoke("disconnect_google");
+        showToast("Google disconnected");
         reopenSettings();
       } catch (e) { showToast(`Disconnect failed: ${e}`); }
     });
@@ -2374,6 +2480,7 @@ function showTodayView() {
   todayRender.draw(_state.today);
   todayFetch.refreshStale(_state.today).then(() => todayRender.draw(_state.today));
   startLiveStatusTimer();
+  startCalendarTimer();
 }
 
 async function loadClientView(clientCode) {
@@ -2381,8 +2488,9 @@ async function loadClientView(clientCode) {
   const clientEl = document.getElementById("client-view");
   if (!clientEl) return;
 
-  // Stop the live-status interval — it only matters on the Today view.
+  // Stop the live-status + calendar intervals — they only matter on the Today view.
   clearLiveStatusTimer();
+  clearCalendarTimer();
 
   todayEl?.setAttribute("hidden", "");
   clientEl.removeAttribute("hidden");
@@ -2441,6 +2549,7 @@ document.addEventListener("DOMContentLoaded", () => {
   todayRender.draw(_state.today);
   todayFetch.loadAll(_state.today).then(() => todayRender.draw(_state.today));
   startLiveStatusTimer();
+  startCalendarTimer();
 
   document.getElementById("today-refresh-btn")?.addEventListener("click", async () => {
     const btn = document.getElementById("today-refresh-btn");

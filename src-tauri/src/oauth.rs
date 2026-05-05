@@ -59,6 +59,11 @@ pub struct ProviderConfig {
     pub access_token_key: &'static str,    // e.g. "granola-access-token"
     pub refresh_token_key: &'static str,   // e.g. "granola-refresh-token"
     pub expires_at_key: &'static str,      // e.g. "granola-expires-at"
+    // Extra (key, value) params appended to the authorisation URL only.
+    // Google needs `access_type=offline&prompt=consent` to issue a
+    // refresh token. Granola and other RFC-vanilla providers leave this
+    // empty.
+    pub auth_extra_params: &'static [(&'static str, &'static str)],
 }
 
 #[derive(Deserialize, Debug)]
@@ -175,7 +180,7 @@ pub async fn start_oauth_flow(provider: &ProviderConfig) -> Result<(), String> {
 
     // Build the auth URL.
     let scope = provider.scopes.join(" ");
-    let auth_url = format!(
+    let mut auth_url = format!(
         "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
         provider.auth_url,
         urlencode(&client_id),
@@ -184,6 +189,12 @@ pub async fn start_oauth_flow(provider: &ProviderConfig) -> Result<(), String> {
         urlencode(&challenge),
         urlencode(&state),
     );
+    for (k, v) in provider.auth_extra_params {
+        auth_url.push('&');
+        auth_url.push_str(&urlencode(k));
+        auth_url.push('=');
+        auth_url.push_str(&urlencode(v));
+    }
 
     // Stand up the localhost listener BEFORE opening the browser.
     // Otherwise there's a race where the user hits "Authorise" before

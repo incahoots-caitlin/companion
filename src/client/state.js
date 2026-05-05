@@ -11,12 +11,13 @@
 //   code: 'NCT',
 //   recordId: 'recXXX',
 //   header: { name, status, primary_contact_name, primary_contact_email,
-//             abn, dropbox_folder, last_touch },
+//             abn, dropbox_folder, last_touch, gmail_thread_filter },
 //   workstreams: [],   // status in (active, blocked) AND client = recordId
 //   decisions: [],     // status = open AND client = recordId
 //   commitments: [],   // status = open AND client = recordId
 //   projects: [],      // client = recordId, sorted by start_date desc
 //   receipts: [],      // last 10 for this client
+//   meetings: [],      // upcoming Calendar events that mention this client
 //   last_fetch_at: { ...section keys -> ms timestamp }
 // }
 //
@@ -33,6 +34,7 @@ export function emptyClientState() {
     commitments: null,
     projects: null,
     receipts: null,
+    meetings: null,
     last_fetch_at: {},
   };
 }

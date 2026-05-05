@@ -274,6 +274,80 @@ function renderProjectRow(p) {
   return row;
 }
 
+// ── Meetings (v0.24) ──────────────────────────────────────────────────
+//
+// Hidden if no events match — Google's empty result is the same as "not
+// connected" from the user's POV here. The brief specifies hide-on-empty
+// for the per-client section.
+
+function fmtMeetingTime(ev) {
+  if (ev.all_day) return "All day";
+  const d = new Date(ev.start);
+  if (Number.isNaN(d.getTime())) return ev.start || "";
+  return d
+    .toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit", hour12: true })
+    .replace(/\s/g, "")
+    .toLowerCase();
+}
+
+function renderMeetings(state) {
+  const items = state.meetings || [];
+  if (items.length === 0) return null; // hide section
+  const root = el("section", { class: "client-section", "data-section": "meetings" });
+  root.appendChild(el("div", { class: "section-label" }, ["📅 UPCOMING MEETINGS"]));
+  const list = el("div", { class: "today-list" });
+  items.forEach((ev) => list.appendChild(renderMeetingRow(ev)));
+  root.appendChild(list);
+  return root;
+}
+
+function renderMeetingRow(ev) {
+  const row = el("button", {
+    class: "today-row today-row-event",
+    type: "button",
+    "data-event-id": ev.id || "",
+  });
+  if (ev.html_link) {
+    row.addEventListener("click", () => {
+      if (window.__TAURI__?.opener?.openUrl) {
+        window.__TAURI__.opener.openUrl(ev.html_link).catch(() => window.open(ev.html_link, "_blank"));
+      } else {
+        window.open(ev.html_link, "_blank");
+      }
+    });
+  }
+
+  const left = el("div", { class: "today-row-main" }, [
+    el("div", { class: "today-row-title" }, [ev.summary || "(no title)"]),
+  ]);
+  const metaBits = [];
+  metaBits.push(fmtDate(ev.start));
+  if (ev.location && !/^https?:\/\//i.test(ev.location)) metaBits.push(ev.location);
+  if (ev.attendees && ev.attendees.length) {
+    metaBits.push(`${ev.attendees.length} attendee${ev.attendees.length === 1 ? "" : "s"}`);
+  }
+  if (metaBits.length) {
+    left.appendChild(el("div", { class: "today-row-meta" }, [metaBits.join(" · ")]));
+  }
+
+  const right = el("div", { class: "today-row-side" });
+  if (ev.hangout_link) {
+    const meetBtn = el("a", {
+      class: "client-status-pill status-active",
+      href: ev.hangout_link,
+      target: "_blank",
+      rel: "noopener",
+    }, ["Meet"]);
+    meetBtn.addEventListener("click", (e) => e.stopPropagation());
+    right.appendChild(meetBtn);
+  }
+  right.appendChild(el("span", { class: "today-row-time" }, [fmtMeetingTime(ev)]));
+
+  row.appendChild(left);
+  row.appendChild(right);
+  return row;
+}
+
 // ── Receipts ──────────────────────────────────────────────────────────
 
 function renderReceipts(state) {
@@ -401,6 +475,7 @@ export function draw(state) {
     renderWorkstreams(state),
     renderDecisions(state),
     renderCommitments(state),
+    renderMeetings(state),
     renderProjects(state),
     renderReceipts(state),
     renderWorkflows(state),

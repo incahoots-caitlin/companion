@@ -560,6 +560,41 @@ button.today-row {
   color: var(--text-muted);
 }
 
+/* Calendar — collapsible week-ahead block under today's events. */
+.today-week-ahead {
+  margin-top: var(--space-sm);
+}
+
+.today-week-ahead-summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: var(--space-xs) 0;
+  list-style: none;
+}
+
+.today-week-ahead-summary::-webkit-details-marker {
+  display: none;
+}
+
+.today-week-ahead[open] .today-week-ahead-summary {
+  color: var(--text);
+}
+
+.today-week-ahead .today-list {
+  margin-top: var(--space-xs);
+}
+
+.today-week-day-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding-top: var(--space-sm);
+  padding-bottom: 2px;
+}
+
 /* Status pill modifiers — phase colours from Logan's framework. */
 .client-status-pill.status-sprint {
   background: rgba(234, 88, 12, 0.12);

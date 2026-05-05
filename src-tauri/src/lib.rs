@@ -10,7 +10,9 @@
 //   delete_receipt(id)            -> Result<(), String>
 //   tick_item(receipt_id, idx)    -> Result<String, String>  (returns updated JSON)
 
+mod calendar;
 mod drift;
+mod google;
 mod granola;
 mod oauth;
 
@@ -46,6 +48,11 @@ const ANTHROPIC_MCP_BETA: &str = "mcp-client-2025-11-20";
 // for the Settings "Last pull" indicator. Survives restarts via
 // Keychain.
 const KEYRING_GRANOLA_LAST_PULL: &str = "granola-last-pull-at";
+
+// Same idea, for the Google Calendar pull (v0.24). Stamped on every
+// successful list_calendar_today / list_calendar_week so the Settings
+// "Last sync" line knows when calendar data was last freshened.
+const KEYRING_GOOGLE_LAST_SYNC: &str = "google-last-sync-at";
 
 // Munbyn reprint paths. Both live in the team-shared Dropbox so Rose
 // also has them, but only Caitlin's Mac has the printer queue named
@@ -531,6 +538,7 @@ async fn list_airtable_clients() -> Result<String, String> {
 &fields%5B%5D=primary_contact_email\
 &fields%5B%5D=abn\
 &fields%5B%5D=dropbox_folder\
+&fields%5B%5D=gmail_thread_filter\
 &fields%5B%5D=notes",
     )
     .await?;
@@ -2954,6 +2962,137 @@ async fn pull_granola_transcripts(
     Ok(trimmed.to_string())
 }
 
+// ── Google Calendar integration (v0.24, Block C) ───────────────────────
+//
+// Same OAuth + Keychain pattern as Granola. Calendar reads run direct
+// against Google's REST API from Rust — Anthropic's MCP connector is
+// reserved for v0.25+ workflows that need calendar reasoning, not for
+// the dashboard's raw event list.
+//
+// Commands exposed to the frontend:
+//
+//   - get_google_status()        -> { connected, has_client_id, last_sync_at }
+//   - save_google_client_id(id)  -> ()
+//   - connect_google()           -> () — runs the browser PKCE flow.
+//   - disconnect_google()        -> () — wipes Keychain entries.
+//   - list_calendar_today()      -> JSON array of CalendarEvent
+//   - list_calendar_week()       -> JSON array of CalendarEvent
+//   - list_calendar_for_client(client_code) -> JSON array of CalendarEvent
+//
+// All three list_* commands return a JSON-stringified array so the
+// frontend can `JSON.parse` it into an array of plain objects without
+// needing to mirror the Rust struct shape. Empty arrays come back when
+// nothing matches — render layer handles empty-state messaging.
+
+#[derive(Serialize)]
+struct GoogleStatus {
+    connected: bool,
+    has_client_id: bool,
+    last_sync_at: Option<String>,
+}
+
+#[tauri::command]
+fn get_google_status() -> GoogleStatus {
+    GoogleStatus {
+        connected: oauth::is_connected(&google::GOOGLE),
+        has_client_id: oauth::read_keychain(google::GOOGLE.client_id_keychain_key)
+            .is_some(),
+        last_sync_at: oauth::read_keychain(KEYRING_GOOGLE_LAST_SYNC),
+    }
+}
+
+#[tauri::command]
+fn save_google_client_id(client_id: String) -> Result<(), String> {
+    let trimmed = client_id.trim();
+    if trimmed.is_empty() {
+        return Err("Empty client ID".to_string());
+    }
+    oauth::write_keychain(google::GOOGLE.client_id_keychain_key, trimmed)
+}
+
+#[tauri::command]
+async fn connect_google() -> Result<(), String> {
+    oauth::start_oauth_flow(&google::GOOGLE).await
+}
+
+#[tauri::command]
+fn disconnect_google() -> Result<(), String> {
+    oauth::disconnect(&google::GOOGLE)?;
+    let _ = oauth::delete_keychain(KEYRING_GOOGLE_LAST_SYNC);
+    Ok(())
+}
+
+fn stamp_google_last_sync() {
+    let _ = oauth::write_keychain(
+        KEYRING_GOOGLE_LAST_SYNC,
+        &chrono::Utc::now().to_rfc3339(),
+    );
+}
+
+#[tauri::command]
+async fn list_calendar_today() -> Result<String, String> {
+    let events = calendar::list_events_today().await?;
+    stamp_google_last_sync();
+    serde_json::to_string(&events).map_err(|e| format!("Serialise: {}", e))
+}
+
+#[tauri::command]
+async fn list_calendar_week() -> Result<String, String> {
+    let events = calendar::list_events_week().await?;
+    stamp_google_last_sync();
+    serde_json::to_string(&events).map_err(|e| format!("Serialise: {}", e))
+}
+
+#[derive(Deserialize, Debug)]
+struct ListCalendarForClientInput {
+    client_code: String,
+    #[serde(default)]
+    client_name: Option<String>,
+    // Optional override of the matching aliases. When None, the Rust
+    // side reads `gmail_thread_filter` off the Clients table for this
+    // client code.
+    #[serde(default)]
+    aliases: Option<Vec<String>>,
+}
+
+#[tauri::command]
+async fn list_calendar_for_client(input: serde_json::Value) -> Result<String, String> {
+    let parsed: ListCalendarForClientInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    let code = parsed.client_code.trim().to_uppercase();
+    if code.is_empty() {
+        return Err("Pick a client first".to_string());
+    }
+
+    // Resolve client name + alias hints. Best-effort — if Airtable is
+    // down we fall back to the code as the only needle.
+    let (name, alias_hint) = match parsed.client_name {
+        Some(ref n) if !n.trim().is_empty() => (n.trim().to_string(), parsed.aliases.clone()),
+        _ => {
+            let qs = format!(
+                "filterByFormula={}&maxRecords=1&fields%5B%5D=name&fields%5B%5D=gmail_thread_filter",
+                urlencode(&format!("{{code}}='{}'", code))
+            );
+            let data = airtable_get("Clients", &qs)
+                .await
+                .unwrap_or(serde_json::Value::Null);
+            let n = data["records"][0]["fields"]["name"]
+                .as_str()
+                .unwrap_or(&code)
+                .to_string();
+            let alias = data["records"][0]["fields"]["gmail_thread_filter"]
+                .as_str()
+                .map(|s| vec![s.to_string()]);
+            (n, parsed.aliases.or(alias))
+        }
+    };
+
+    let aliases = alias_hint.unwrap_or_default();
+    let events = calendar::list_events_for_client(&name, &aliases).await?;
+    stamp_google_last_sync();
+    serde_json::to_string(&events).map_err(|e| format!("Serialise: {}", e))
+}
+
 // ── Tauri entry ─────────────────────────────────────────────────────────
 
 fn toggle_main_window(app: &tauri::AppHandle) {
@@ -3092,7 +3231,15 @@ pub fn run() {
             save_granola_client_id,
             connect_granola,
             disconnect_granola,
-            pull_granola_transcripts
+            pull_granola_transcripts,
+            // v0.24 Block C — Google Calendar
+            get_google_status,
+            save_google_client_id,
+            connect_google,
+            disconnect_google,
+            list_calendar_today,
+            list_calendar_week,
+            list_calendar_for_client
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
