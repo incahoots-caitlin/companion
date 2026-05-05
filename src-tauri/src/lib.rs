@@ -1490,6 +1490,242 @@ async fn create_airtable_client(args: serde_json::Value) -> Result<String, Strin
     airtable_create_record("Clients", fields).await
 }
 
+// ── Today dashboard reads (v0.18) ──────────────────────────────────────
+//
+// The Today view is the chief-of-staff dashboard. These commands expose
+// raw Airtable list payloads so the JS layer can render whatever shape it
+// wants. Filtering / sorting happens here in Rust so we ship Airtable's
+// formula language (server-side filtering) rather than pulling everything
+// then filtering on the client.
+
+// All commitments where status is open or overdue. Fetches a wide window
+// (latest 100 rows by created time) and lets the JS slice into "due today"
+// vs "overdue" buckets. Cheap because the Commitments table is small.
+#[tauri::command]
+async fn list_airtable_commitments() -> Result<String, String> {
+    let formula = "OR({status}='open',{status}='overdue')";
+    let qs = format!(
+        "filterByFormula={}&pageSize=100&fields%5B%5D=id&fields%5B%5D=title&fields%5B%5D=made_at&fields%5B%5D=due_at&fields%5B%5D=next_check_at&fields%5B%5D=status&fields%5B%5D=surface&fields%5B%5D=priority&fields%5B%5D=client&fields%5B%5D=project&fields%5B%5D=notes",
+        urlencode(formula)
+    );
+    let data = airtable_get("Commitments", &qs).await?;
+    serde_json::to_string(&data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_airtable_decisions() -> Result<String, String> {
+    let formula = "{status}='open'";
+    let qs = format!(
+        "filterByFormula={}&pageSize=100&fields%5B%5D=id&fields%5B%5D=title&fields%5B%5D=surfaced_at&fields%5B%5D=due_date&fields%5B%5D=status&fields%5B%5D=decision_type&fields%5B%5D=decision&fields%5B%5D=reasoning&fields%5B%5D=client&fields%5B%5D=project",
+        urlencode(formula)
+    );
+    let data = airtable_get("Decisions", &qs).await?;
+    serde_json::to_string(&data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_airtable_workstreams() -> Result<String, String> {
+    let formula = "OR({status}='active',{status}='blocked')";
+    let qs = format!(
+        "filterByFormula={}&pageSize=100&fields%5B%5D=code&fields%5B%5D=title&fields%5B%5D=description&fields%5B%5D=status&fields%5B%5D=phase&fields%5B%5D=last_touch_at&fields%5B%5D=next_action&fields%5B%5D=blocker&fields%5B%5D=target_completion&fields%5B%5D=client&fields%5B%5D=project",
+        urlencode(formula)
+    );
+    let data = airtable_get("Workstreams", &qs).await?;
+    serde_json::to_string(&data).map_err(|e| e.to_string())
+}
+
+// Receipts where ticked_count is below the total tickable items in the
+// JSON payload. We pull the last 14 days and let the JS layer compute
+// totals from the JSON since Airtable doesn't store a total_count column.
+#[tauri::command]
+async fn list_airtable_receipts_recent() -> Result<String, String> {
+    // Airtable's IS_AFTER + DATEADD(NOW(), -14, 'days') is a stable filter.
+    let formula = "IS_AFTER({date},DATEADD(TODAY(),-14,'days'))";
+    let qs = format!(
+        "filterByFormula={}&pageSize=100&fields%5B%5D=id&fields%5B%5D=title&fields%5B%5D=date&fields%5B%5D=workflow&fields%5B%5D=client&fields%5B%5D=ticked_count&fields%5B%5D=json&sort%5B0%5D%5Bfield%5D=date&sort%5B0%5D%5Bdirection%5D=desc",
+        urlencode(formula)
+    );
+    let data = airtable_get("Receipts", &qs).await?;
+    serde_json::to_string(&data).map_err(|e| e.to_string())
+}
+
+// Generic Airtable record patch from JS. Used by the commitment-detail and
+// decision-capture modals. JS sends table name + record id + fields object,
+// we relay to Airtable. Restricts table names to the four chief-of-staff
+// tables to keep the surface narrow.
+#[derive(Deserialize)]
+struct UpdateAirtableArgs {
+    table: String,
+    record_id: String,
+    fields: serde_json::Value,
+}
+
+#[tauri::command]
+async fn update_airtable_record(args: UpdateAirtableArgs) -> Result<(), String> {
+    let allowed = ["Commitments", "Decisions", "Workstreams"];
+    if !allowed.contains(&args.table.as_str()) {
+        return Err(format!("Table not allowed for update: {}", args.table));
+    }
+    if args.record_id.is_empty() {
+        return Err("Missing record_id".to_string());
+    }
+    airtable_update_record(&args.table, &args.record_id, args.fields).await
+}
+
+// Studio version comes from Cargo's CARGO_PKG_VERSION (single source of
+// truth — bumped via Cargo.toml + tauri.conf.json + package.json each
+// release). Returning it from the backend means JS doesn't need to fetch
+// the conf file at runtime.
+#[tauri::command]
+fn get_studio_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+// HEAD request to a URL, returns 200 if OK or "down" otherwise. Used for
+// contextfor.me uptime check from JS without CSP wrangling. Only allows
+// https URLs so this isn't a generic SSRF tool.
+#[tauri::command]
+async fn check_url_up(url: String) -> Result<bool, String> {
+    if !url.starts_with("https://") {
+        return Err("Only https URLs allowed".to_string());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    match client.head(&url).send().await {
+        Ok(resp) => Ok(resp.status().is_success()),
+        Err(_) => Ok(false),
+    }
+}
+
+// GitHub Actions latest run on main. Returns conclusion + status + url.
+// Reads GITHUB_TOKEN env var if available so we don't hit anonymous
+// rate limits, otherwise unauthenticated (60/hr is fine for a desktop app).
+#[tauri::command]
+async fn check_github_actions(repo: String) -> Result<String, String> {
+    if !repo.contains('/') || repo.contains("..") {
+        return Err("Invalid repo (expected owner/name)".to_string());
+    }
+    let url = format!(
+        "https://api.github.com/repos/{}/actions/runs?branch=main&per_page=1",
+        repo
+    );
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent("in-cahoots-studio")
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let mut req = client.get(&url).header("Accept", "application/vnd.github+json");
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        if !token.is_empty() {
+            req = req.bearer_auth(token);
+        }
+    }
+    let resp = req.send().await.map_err(|e| format!("Network: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("GitHub {}: {}", resp.status().as_u16(), repo));
+    }
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Parse: {}", e))?;
+    let run = &data["workflow_runs"][0];
+    let conclusion = run["conclusion"].as_str().unwrap_or("none").to_string();
+    let status = run["status"].as_str().unwrap_or("none").to_string();
+    let html_url = run["html_url"].as_str().unwrap_or("").to_string();
+    let updated_at = run["updated_at"].as_str().unwrap_or("").to_string();
+    let out = serde_json::json!({
+        "conclusion": conclusion,
+        "status": status,
+        "url": html_url,
+        "updated_at": updated_at,
+    });
+    serde_json::to_string(&out).map_err(|e| e.to_string())
+}
+
+// Read the latest morning briefing log. Looks under
+// ~/.claude/scheduled-tasks/ for any subdir whose name contains
+// "morning-briefing" then reads the newest log file. Returns the body or
+// an empty string if there's nothing yet.
+#[tauri::command]
+fn read_morning_briefing() -> Result<String, String> {
+    let home = home_dir()?;
+    let root = format!("{}/.claude/scheduled-tasks", home);
+    let dir = match std::fs::read_dir(&root) {
+        Ok(d) => d,
+        Err(_) => return Ok(String::new()),
+    };
+    let mut briefing_dirs: Vec<std::path::PathBuf> = Vec::new();
+    for entry in dir.flatten() {
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if name.contains("morning") && name.contains("briefing") {
+            briefing_dirs.push(entry.path());
+        }
+    }
+    let mut latest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    for d in briefing_dirs {
+        // Look for files inside (logs, runs, output.txt, etc).
+        let inner = match std::fs::read_dir(&d) {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+        let mut stack: Vec<std::path::PathBuf> = inner.flatten().map(|e| e.path()).collect();
+        while let Some(p) = stack.pop() {
+            if p.is_dir() {
+                if let Ok(sub) = std::fs::read_dir(&p) {
+                    for e in sub.flatten() {
+                        stack.push(e.path());
+                    }
+                }
+                continue;
+            }
+            // Only consider text-ish files.
+            let ext = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if !ext.is_empty()
+                && ext != "log"
+                && ext != "txt"
+                && ext != "md"
+                && ext != "json"
+                && ext != "out"
+            {
+                continue;
+            }
+            let modified = std::fs::metadata(&p)
+                .and_then(|m| m.modified())
+                .ok();
+            if let Some(m) = modified {
+                if latest.as_ref().map(|(t, _)| m > *t).unwrap_or(true) {
+                    latest = Some((m, p));
+                }
+            }
+        }
+    }
+    match latest {
+        Some((m, p)) => {
+            let body = std::fs::read_to_string(&p).map_err(|e| format!("Read briefing: {}", e))?;
+            // Cap at 8KB so a runaway log doesn't stuff the dashboard.
+            let trimmed = if body.len() > 8192 {
+                format!("{}\n\n... (truncated)", &body[..8192])
+            } else {
+                body
+            };
+            let ts = m
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let out = serde_json::json!({
+                "text": trimmed,
+                "generated_at": ts,
+                "path": p.to_string_lossy().to_string(),
+            });
+            Ok(out.to_string())
+        }
+        None => Ok(String::new()),
+    }
+}
+
 // ── Receipt CRUD ───────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1828,6 +2064,15 @@ pub fn run() {
             save_airtable_credentials,
             list_airtable_clients,
             list_airtable_projects,
+            list_airtable_commitments,
+            list_airtable_decisions,
+            list_airtable_workstreams,
+            list_airtable_receipts_recent,
+            update_airtable_record,
+            get_studio_version,
+            check_url_up,
+            check_github_actions,
+            read_morning_briefing,
             run_strategic_thinking,
             run_new_client_onboarding,
             run_monthly_checkin,

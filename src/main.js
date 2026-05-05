@@ -3,6 +3,36 @@
 // Renders the Strategic Thinking session receipt as the first
 // item in the feed. AI workflow runner wires up in the next build.
 
+import * as todayFetch from "./today/fetch.js";
+import * as todayRender from "./today/render.js";
+import { emptyTodayState } from "./today/state.js";
+
+// Global state container used by the Today dashboard. Other views can read
+// from here too, but they own their own slots.
+const _state = {
+  today: emptyTodayState(),
+};
+
+// 60s timer for live-status row, reset on each Today mount.
+let _liveStatusTimer = null;
+
+function clearLiveStatusTimer() {
+  if (_liveStatusTimer) {
+    clearInterval(_liveStatusTimer);
+    _liveStatusTimer = null;
+  }
+}
+
+function startLiveStatusTimer() {
+  clearLiveStatusTimer();
+  _liveStatusTimer = setInterval(async () => {
+    if (document.hidden) return; // pause while tab not visible
+    if (document.getElementById("today-view")?.hasAttribute("hidden")) return;
+    await todayFetch.loadLiveStatus(_state.today);
+    todayRender.drawLiveStatusOnly(_state.today);
+  }, 60_000);
+}
+
 const STRATEGIC_THINKING = {
   id: "rcpt_2026-05-02_07-45-12",
   project: "in-cahoots-studio",
@@ -1144,6 +1174,232 @@ async function showQuarterlyReviewModal(prefillClientCode) {
   });
 }
 
+// ─── Today: commitment detail modal ──────────────────────────────────
+//
+// Shown when a commitment row in Today is clicked. Two actions: tick-done
+// (set status='done') and push-to-time (bump next_check_at by 4 hours so
+// the hourly scheduled-task ping shifts).
+function showCommitmentModal(commitment) {
+  if (!commitment) return;
+  if (document.getElementById("today-cmt-modal")) return;
+  const overlay = el("div", { id: "today-cmt-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, [commitment.title || "Commitment"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+
+  const meta = [];
+  if (commitment.due_at) meta.push(`Due: ${commitment.due_at}`);
+  if (commitment.priority) meta.push(`Priority: ${commitment.priority}`);
+  if (commitment.surface) meta.push(`Captured from: ${commitment.surface}`);
+  if (meta.length) {
+    modal.appendChild(el("div", { class: "modal-meta" }, [meta.join(" · ")]));
+  }
+  if (commitment.notes) {
+    modal.appendChild(el("div", { class: "modal-pad" }, [
+      el("div", { class: "settings-meta" }, [commitment.notes]),
+    ]));
+  }
+
+  const tickBtn = el("button", { class: "button" }, ["Mark done"]);
+  const pushBtn = el("button", { class: "button button-secondary" }, ["Push 4 hours"]);
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Close"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, pushBtn, tickBtn]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  tickBtn.addEventListener("click", async () => {
+    tickBtn.disabled = true;
+    tickBtn.textContent = "Saving...";
+    try {
+      await invoke("update_airtable_record", {
+        args: {
+          table: "Commitments",
+          record_id: commitment.id, // commitment.id is the Airtable record id
+          fields: { status: "done" },
+        },
+      });
+      showToast("Commitment ticked");
+      close();
+      // Refresh commitments slot.
+      await todayFetch.loadCommitments(_state.today, await rebuildClientLookup());
+      todayRender.draw(_state.today);
+    } catch (e) {
+      tickBtn.disabled = false;
+      tickBtn.textContent = "Mark done";
+      showToast(`Update failed: ${e}`);
+    }
+  });
+
+  pushBtn.addEventListener("click", async () => {
+    pushBtn.disabled = true;
+    pushBtn.textContent = "Saving...";
+    try {
+      const next = new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
+      await invoke("update_airtable_record", {
+        args: {
+          table: "Commitments",
+          record_id: commitment.id,
+          fields: { next_check_at: next },
+        },
+      });
+      showToast("Pushed 4 hours");
+      close();
+    } catch (e) {
+      pushBtn.disabled = false;
+      pushBtn.textContent = "Push 4 hours";
+      showToast(`Update failed: ${e}`);
+    }
+  });
+}
+
+// ─── Today: decision capture modal ───────────────────────────────────
+//
+// Lets Caitlin convert an open decision to a made decision in two clicks
+// and capture the decision text + reasoning at the same time.
+function showDecisionCaptureModal(decision) {
+  if (!decision) return;
+  if (document.getElementById("today-dec-modal")) return;
+  const overlay = el("div", { id: "today-dec-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, [decision.title || "Decision"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+
+  if (decision.due_date || decision.decision_type) {
+    const meta = [];
+    if (decision.due_date) meta.push(`Due ${decision.due_date}`);
+    if (decision.decision_type) meta.push(`Type: ${decision.decision_type}`);
+    modal.appendChild(el("div", { class: "modal-meta" }, [meta.join(" · ")]));
+  }
+
+  const decisionPad = el("div", { class: "modal-pad" }, [
+    el("div", { class: "settings-label" }, ["Decision"]),
+  ]);
+  const decisionInput = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "What did you decide?",
+    rows: 3,
+  });
+  if (decision.decision) decisionInput.value = decision.decision;
+  decisionPad.appendChild(decisionInput);
+  modal.appendChild(decisionPad);
+
+  const reasoningPad = el("div", { class: "modal-pad", style: "margin-top: 12px;" }, [
+    el("div", { class: "settings-label" }, ["Reasoning"]),
+  ]);
+  const reasoningInput = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "Why? What scenario does this assume?",
+    rows: 4,
+  });
+  if (decision.reasoning) reasoningInput.value = decision.reasoning;
+  reasoningPad.appendChild(reasoningInput);
+  modal.appendChild(reasoningPad);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const deferBtn = el("button", { class: "button button-secondary" }, ["Defer"]);
+  const saveBtn = el("button", { class: "button" }, ["Mark made"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, deferBtn, saveBtn]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+  decisionInput.focus();
+
+  saveBtn.addEventListener("click", async () => {
+    const fields = {
+      status: "made",
+      decided_at: new Date().toISOString(),
+      decision: decisionInput.value.trim(),
+      reasoning: reasoningInput.value.trim(),
+    };
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Saving...";
+    try {
+      await invoke("update_airtable_record", {
+        args: {
+          table: "Decisions",
+          record_id: decision.id,
+          fields,
+        },
+      });
+      showToast("Decision filed");
+      close();
+      await todayFetch.loadDecisions(_state.today, await rebuildClientLookup());
+      todayRender.draw(_state.today);
+    } catch (e) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = "Mark made";
+      showToast(`Update failed: ${e}`);
+    }
+  });
+
+  deferBtn.addEventListener("click", async () => {
+    deferBtn.disabled = true;
+    deferBtn.textContent = "Saving...";
+    try {
+      await invoke("update_airtable_record", {
+        args: {
+          table: "Decisions",
+          record_id: decision.id,
+          fields: { status: "deferred" },
+        },
+      });
+      showToast("Deferred");
+      close();
+      await todayFetch.loadDecisions(_state.today, await rebuildClientLookup());
+      todayRender.draw(_state.today);
+    } catch (e) {
+      deferBtn.disabled = false;
+      deferBtn.textContent = "Defer";
+      showToast(`Update failed: ${e}`);
+    }
+  });
+}
+
+// Rebuild the client-id → code lookup. Kept tiny so post-mutation refreshes
+// don't pay a full reload cost.
+async function rebuildClientLookup() {
+  if (!isTauri) return {};
+  try {
+    const raw = await invoke("list_airtable_clients");
+    const data = JSON.parse(raw);
+    const lookup = {};
+    (data.records || []).forEach((r) => {
+      const code = r.fields?.code;
+      if (code) lookup[r.id] = code;
+    });
+    return lookup;
+  } catch {
+    return {};
+  }
+}
+
+function activateClientSidebar(clientCode) {
+  document.querySelectorAll(".sidebar-item").forEach((i) => {
+    i.classList.remove("active");
+    i.removeAttribute("aria-current");
+  });
+  const target = document.querySelector(`.sidebar-item[data-client-code="${clientCode}"]`);
+  if (target) {
+    target.classList.add("active");
+    target.setAttribute("aria-current", "page");
+  }
+}
+
 // Inline toast (replaces alert()).
 function showToast(message, opts = {}) {
   let root = document.getElementById("toast-root");
@@ -1169,6 +1425,10 @@ function showTodayView() {
   document.getElementById("client-view")?.setAttribute("hidden", "");
   const titleEl = document.querySelector(".main-title");
   if (titleEl) titleEl.textContent = "Today";
+  // Re-render with whatever's already in state, then refresh stale slices.
+  todayRender.draw(_state.today);
+  todayFetch.refreshStale(_state.today).then(() => todayRender.draw(_state.today));
+  startLiveStatusTimer();
 }
 
 async function loadClientView(clientCode) {
@@ -1354,6 +1614,72 @@ async function loadFeed() {
 document.addEventListener("DOMContentLoaded", () => {
   const feed = document.getElementById("feed");
   loadFeed();
+
+  // ── Today dashboard: initial mount + handlers ──────────────────────
+  // Render an empty skeleton immediately so the user sees structure, then
+  // populate as fetchers resolve. Each fetcher updates _state.today and
+  // we redraw once everything settles.
+  todayRender.draw(_state.today);
+  todayFetch.loadAll(_state.today).then(() => todayRender.draw(_state.today));
+  startLiveStatusTimer();
+
+  document.getElementById("today-refresh-btn")?.addEventListener("click", async () => {
+    const btn = document.getElementById("today-refresh-btn");
+    btn.disabled = true;
+    const prev = btn.innerHTML;
+    btn.innerHTML = "<span aria-hidden=\"true\">…</span>";
+    try {
+      await todayFetch.loadAll(_state.today);
+      todayRender.draw(_state.today);
+      showToast("Today refreshed");
+    } catch (e) {
+      showToast(`Refresh failed: ${e}`);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = prev;
+    }
+  });
+
+  // Refocus refresh: if the user comes back after >5min, refresh stale
+  // slices. Cheap because each fetcher only fires when stale.
+  window.addEventListener("focus", async () => {
+    if (document.getElementById("today-view")?.hasAttribute("hidden")) return;
+    await todayFetch.refreshStale(_state.today);
+    todayRender.draw(_state.today);
+  });
+
+  // Click handlers dispatched by the Today render layer.
+  document.addEventListener("today:open-url", (e) => {
+    const url = e.detail?.url;
+    if (!url) return;
+    if (window.__TAURI__?.opener?.openUrl) {
+      window.__TAURI__.opener.openUrl(url).catch(() => window.open(url, "_blank"));
+    } else {
+      window.open(url, "_blank");
+    }
+  });
+
+  document.addEventListener("today:commitment-click", (e) => {
+    showCommitmentModal(e.detail?.commitment);
+  });
+
+  document.addEventListener("today:decision-click", (e) => {
+    showDecisionCaptureModal(e.detail?.decision);
+  });
+
+  document.addEventListener("today:workstream-click", (e) => {
+    // Block B3 builds the per-client / workstream view. For now log + toast.
+    const w = e.detail?.workstream;
+    console.log("workstream click:", w);
+    if (w?._client_codes?.length) {
+      // If the workstream is tagged to a client, jump to that client view.
+      const code = w._client_codes[0];
+      activateClientSidebar(code);
+      loadClientView(code);
+      return;
+    }
+    showToast(`Workstream detail view ships in Block B3`);
+  });
 
   // Receipt action buttons (currently: reprint).
   feed?.addEventListener("click", async (e) => {

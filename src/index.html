@@ -59,13 +59,18 @@
         <header class="main-header">
           <div class="main-title">Today</div>
           <div class="header-actions">
+            <button class="button-icon" id="today-refresh-btn" title="Refresh dashboard" aria-label="Refresh dashboard">
+              <span aria-hidden="true">↻</span>
+            </button>
             <button class="button button-secondary" id="workflows-btn">Workflows</button>
             <button class="button" id="strategic-thinking-btn">Start Strategic Thinking</button>
           </div>
         </header>
 
-        <div class="section-label">Start a workflow</div>
-        <section class="workflow-starters">
+        <div id="today-sections" class="today-sections"></div>
+
+        <div class="section-label today-workflows-label">Start a workflow</div>
+        <section class="workflow-starters workflow-starters-compact">
           <div class="workflow-card">
             <div class="workflow-card-title">New Client Onboarding</div>
             <div class="workflow-card-meta">Discovery → scope → CSA → handoff</div>
@@ -92,8 +97,8 @@
           </div>
         </section>
 
-        <div class="section-label">Recent receipts</div>
-        <section class="feed" id="feed"></section>
+        <div class="section-label" hidden>Recent receipts</div>
+        <section class="feed" id="feed" hidden></section>
       </section>
 
       <section id="client-view" hidden></section>
