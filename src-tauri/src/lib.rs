@@ -13,7 +13,8 @@
 use keyring::Entry;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -129,6 +130,46 @@ fn persist_receipt(conn: &Connection, json: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ── Secrets cache ──────────────────────────────────────────────────────
+//
+// Process-global cache of Keychain values keyed by account name. We hit
+// macOS Keychain once at app launch (warmed in the Tauri setup hook), then
+// serve every API call from memory. Without this, each Anthropic, Slack
+// or Airtable call re-prompts the user with "Studio wants to use your
+// confidential information stored in 'X'" until they tick "Always Allow"
+// for every binary rebuild.
+//
+// Save handlers refresh the cache so a rotated key takes effect
+// immediately without an app restart.
+
+fn secrets_cache() -> &'static Mutex<HashMap<String, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_secret(account: &str) -> Option<String> {
+    {
+        let guard = secrets_cache().lock().ok()?;
+        if let Some(v) = guard.get(account) {
+            return Some(v.clone());
+        }
+    }
+    let v = Entry::new(KEYRING_SERVICE, account)
+        .ok()?
+        .get_password()
+        .ok()?;
+    if let Ok(mut guard) = secrets_cache().lock() {
+        guard.insert(account.to_string(), v.clone());
+    }
+    Some(v)
+}
+
+fn cache_secret(account: &str, value: &str) {
+    if let Ok(mut guard) = secrets_cache().lock() {
+        guard.insert(account.to_string(), value.to_string());
+    }
+}
+
 // ── Auth ────────────────────────────────────────────────────────────────
 
 fn read_anthropic_key() -> Option<String> {
@@ -139,10 +180,8 @@ fn read_anthropic_key() -> Option<String> {
             return Some(trimmed.to_string());
         }
     }
-    // 2. macOS Keychain.
-    Entry::new(KEYRING_SERVICE, KEYRING_USER)
-        .ok()
-        .and_then(|e| e.get_password().ok())
+    // 2. macOS Keychain (cached after first hit).
+    cached_secret(KEYRING_USER)
 }
 
 #[tauri::command]
@@ -161,13 +200,12 @@ fn save_api_key(key: String) -> Result<(), String> {
     entry
         .set_password(trimmed)
         .map_err(|e| format!("Keychain write error: {}", e))?;
+    cache_secret(KEYRING_USER, trimmed);
     Ok(())
 }
 
 fn read_slack_webhook() -> Option<String> {
-    Entry::new(KEYRING_SERVICE, KEYRING_SLACK)
-        .ok()
-        .and_then(|e| e.get_password().ok())
+    cached_secret(KEYRING_SLACK)
 }
 
 #[tauri::command]
@@ -189,20 +227,15 @@ fn save_slack_webhook(url: String) -> Result<(), String> {
     entry
         .set_password(trimmed)
         .map_err(|e| format!("Keychain write error: {}", e))?;
+    cache_secret(KEYRING_SLACK, trimmed);
     Ok(())
 }
 
 // ── Airtable ───────────────────────────────────────────────────────────
 
 fn read_airtable_creds() -> Option<(String, String)> {
-    let key = Entry::new(KEYRING_SERVICE, KEYRING_AIRTABLE_KEY)
-        .ok()?
-        .get_password()
-        .ok()?;
-    let base = Entry::new(KEYRING_SERVICE, KEYRING_AIRTABLE_BASE)
-        .ok()?
-        .get_password()
-        .ok()?;
+    let key = cached_secret(KEYRING_AIRTABLE_KEY)?;
+    let base = cached_secret(KEYRING_AIRTABLE_BASE)?;
     Some((key, base))
 }
 
@@ -229,6 +262,8 @@ fn save_airtable_credentials(api_key: String, base_id: String) -> Result<(), Str
         .map_err(|e| format!("Keychain: {}", e))?
         .set_password(base)
         .map_err(|e| format!("Save base: {}", e))?;
+    cache_secret(KEYRING_AIRTABLE_KEY, key);
+    cache_secret(KEYRING_AIRTABLE_BASE, base);
     Ok(())
 }
 
@@ -1733,6 +1768,15 @@ pub fn run() {
             init_db(&conn).expect("init schema");
             app.manage(DbState(Mutex::new(conn)));
             app.manage(RateLimit(Mutex::new(None)));
+
+            // Warm secrets cache so we hit Keychain once at launch, not
+            // per API call. The user clicks "Always Allow" once per
+            // Keychain entry on first run; afterwards every call serves
+            // from memory.
+            let _ = cached_secret(KEYRING_USER);
+            let _ = cached_secret(KEYRING_SLACK);
+            let _ = cached_secret(KEYRING_AIRTABLE_KEY);
+            let _ = cached_secret(KEYRING_AIRTABLE_BASE);
 
             // Tray icon with a small menu.
             let open_item = MenuItem::with_id(app, "open", "Open Studio", true, None::<&str>)?;

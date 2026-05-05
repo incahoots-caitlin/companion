@@ -1,0 +1,112 @@
+/* ══════════════════════════════════════════════════
+ *  Design system — Buttons
+ * ══════════════════════════════════════════════════
+ * Two button languages live in Context today: the
+ * primitive .btn (rounded pill, JBM, blue accent on
+ * hover, used through main.css) and Studio's cleaner
+ * .button (8px radius, sans, dark fill). This file
+ * canonicalises Studio's .button as the design system
+ * default. Context's older .btn pill style stays in
+ * main.css for legacy surfaces; new Context surfaces
+ * should reach for .button instead.
+ *
+ * Variants:
+ *   .button                — primary (dark fill, white)
+ *   .button.button-secondary — secondary (white, outline)
+ *   .button.button-ghost   — no border, subtle hover
+ *   .button.button-danger  — destructive (red fill)
+ *   .button.button-sm      — smaller padding / type
+ *
+ * Use:
+ *   <button class="button">Save</button>
+ *   <button class="button button-secondary">Cancel</button>
+ */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font: var(--type-body-sm);
+  font-weight: 500;
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  background: var(--text);
+  color: var(--surface);
+  border: 1px solid var(--text);
+  cursor: pointer;
+  transition:
+    transform var(--transition-fast),
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    box-shadow var(--transition-fast);
+  white-space: nowrap;
+  user-select: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--text-mid);
+  border-color: var(--text-mid);
+  transform: var(--hover-lift);
+}
+
+.button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.button:disabled,
+.button[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ── Secondary ────────────────────────────────────── */
+.button.button-secondary {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border-soft);
+}
+
+.button.button-secondary:hover:not(:disabled) {
+  background: var(--surface2);
+  border-color: var(--border);
+}
+
+/* ── Ghost ────────────────────────────────────────── */
+.button.button-ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: transparent;
+}
+
+.button.button-ghost:hover:not(:disabled) {
+  background: var(--surface2);
+  color: var(--text);
+}
+
+/* ── Danger ───────────────────────────────────────── */
+.button.button-danger {
+  background: var(--red);
+  color: var(--surface);
+  border-color: var(--red);
+}
+
+.button.button-danger:hover:not(:disabled) {
+  background: #b91c1c;
+  border-color: #b91c1c;
+}
+
+/* ── Small ────────────────────────────────────────── */
+.button.button-sm {
+  padding: 5px 10px;
+  font-size: 12px;
+}

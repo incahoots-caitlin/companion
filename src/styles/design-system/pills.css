@@ -1,0 +1,61 @@
+/* ══════════════════════════════════════════════════
+ *  Design system — Pills and status chips
+ * ══════════════════════════════════════════════════
+ * Status pills (active / wrap / archive / lead) and a
+ * generic .pill primitive other surfaces can build on.
+ *
+ * Classes:
+ *   .pill            — neutral pill (mono, uppercase)
+ *   .pill.pill-active   — green
+ *   .pill.pill-wrap     — amber
+ *   .pill.pill-archive  — neutral grey
+ *   .pill.pill-lead     — blue
+ *   .pill.pill-warn     — red
+ *
+ * Studio aliases at the bottom keep .client-status-pill +
+ * .status-* working without renames.
+ *
+ * Use:
+ *   <span class="pill pill-active">Active</span>
+ */
+
+.pill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--surface2);
+  color: var(--text-mid);
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.pill.pill-active  { background: rgba(34, 197, 94, 0.12);  color: rgb(20, 120, 60); }
+.pill.pill-wrap    { background: rgba(234, 179, 8, 0.12);  color: rgb(140, 100, 0); }
+.pill.pill-archive { background: rgba(100, 100, 100, 0.12); color: var(--text-muted); }
+.pill.pill-lead    { background: rgba(59, 130, 246, 0.12); color: rgb(30, 80, 200); }
+.pill.pill-warn    { background: rgba(220, 38, 38, 0.10);  color: var(--red); }
+
+/* ── Studio aliases ───────────────────────────────────
+ * Keep .client-status-pill markup working. */
+.client-status-pill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--surface2);
+  color: var(--text-mid);
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.client-status-pill.status-active  { background: rgba(34, 197, 94, 0.12);  color: rgb(20, 120, 60); }
+.client-status-pill.status-wrap    { background: rgba(234, 179, 8, 0.12);  color: rgb(140, 100, 0); }
+.client-status-pill.status-archive { background: rgba(100, 100, 100, 0.12); color: var(--text-muted); }
+.client-status-pill.status-lead    { background: rgba(59, 130, 246, 0.12); color: rgb(30, 80, 200); }

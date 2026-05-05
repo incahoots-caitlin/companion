@@ -1,51 +1,49 @@
 /* ══════════════════════════════════════════════════
- *  Context Design Tokens — built on Open Props
+ *  Design system — Tokens (polish layer)
  * ══════════════════════════════════════════════════
- * Context's polish layer. Maps Open Props primitives to
- * Context-named tokens so the rest of the app uses our
- * vocabulary, not Open Props's. If we swap the primitive
- * library later, only this file needs to change.
+ * Loads Geist Sans + Geist Mono and maps Open Props
+ * primitives to Context-named tokens (spacing, card
+ * chrome, easing, type rhythm).
  *
- * Open Props is loaded BEFORE this file (build.js order),
- * giving us --size-1..15, --shadow-1..6, --radius-1..6,
- * --ease-out-1..5, --font-size-1..8 etc.
+ * Order in build.js / index.html:
+ *   1. open-props.min.css
+ *   2. primitives.css
+ *   3. tokens.css   ← this file
+ *   4. forms / buttons / modals / pills / banners /
+ *      toasts / layouts (any order)
+ *   5. main.css (Context) or app.css (Studio)
+ *   6. polish-*.css (Context only)
  *
- * Type system: Geist Sans + Geist Mono v1.8.0 (Vercel's
- * open-source faces, OFL-licensed). Self-hosted from /fonts/
- * as variable WOFF2 — one file per family covers every weight
- * via font-variation-settings. Total payload ~140KB, no
- * third-party dependency, no Google Fonts roundtrip on first
- * paint.
- *
- * Inter / JetBrains Mono stay as fallbacks for the brief window
- * before Geist arrives + for any surface that hasn't been
- * upgraded to call var(--font-sans) yet.
+ * Studio note: Geist files live at fonts/Geist-Variable.woff2
+ * relative to index.html. Context serves them at /fonts/
+ * (root-absolute). Both src declarations below resolve in
+ * each app because the @font-face declaration is parsed
+ * relative to the CSS file's location.
  */
 
 @font-face {
   font-family: 'Geist';
-  src: url('/fonts/Geist-Variable.woff2') format('woff2-variations');
+  src: url('../../fonts/Geist-Variable.woff2') format('woff2-variations'),
+       url('/fonts/Geist-Variable.woff2') format('woff2-variations');
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
   font-family: 'Geist Mono';
-  src: url('/fonts/GeistMono-Variable.woff2') format('woff2-variations');
+  src: url('../../fonts/GeistMono-Variable.woff2') format('woff2-variations'),
+       url('/fonts/GeistMono-Variable.woff2') format('woff2-variations');
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
 }
 
 :root {
-  /* Override the Inter/JBM defaults from main.css so every
-     surface using var(--font-sans) / var(--font-mono) picks
-     up Geist. main.css declares its values at :root with
-     specificity 0,1,0; this :root block is loaded LATER in
-     the bundle so it wins on cascade order. */
+  /* Geist wins on cascade order — primitives.css declares
+     the Inter/JBM fallbacks, this :root block redeclares
+     with Geist prepended. */
   --font-sans: 'Geist', 'Inter', system-ui, -apple-system, sans-serif;
   --font-mono: 'Geist Mono', 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
-  /* Geist's stylistic set 1 + tighter spacing alternate */
   font-feature-settings: 'ss01', 'cv11';
   font-optical-sizing: auto;
 }
@@ -75,16 +73,16 @@
   --card-shadow-focus: 0 0 0 3px rgba(37, 99, 235, 0.15), 0 1px 3px rgba(31, 35, 40, 0.06);
 
   /* ── Easing — Linear's signature feel ─────────── */
-  --ease-snap: var(--ease-out-4);    /* fast in, glassy stop */
-  --ease-flow: var(--ease-out-3);    /* smooth, default */
-  --ease-soft: var(--ease-out-2);    /* gentle */
+  --ease-snap: var(--ease-out-4);
+  --ease-flow: var(--ease-out-3);
+  --ease-soft: var(--ease-out-2);
 
   /* ── Section rhythm ───────────────────────────── */
   --section-padding-x: var(--space-lg);
   --section-padding-y: var(--space-xl);
   --section-gap: var(--space-2xl);
 
-  /* ── Typography rhythm — Inter-led, breathing ── */
+  /* ── Typography rhythm — Geist-led ────────────── */
   --type-display:    600 30px/1.15  var(--font-sans);
   --type-h1:         600 22px/1.3   var(--font-sans);
   --type-h2:         600 18px/1.35  var(--font-sans);

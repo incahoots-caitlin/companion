@@ -1,0 +1,225 @@
+/* ══════════════════════════════════════════════════
+ *  Design system — Modals
+ * ══════════════════════════════════════════════════
+ * The modal pattern Studio's six workflows use today.
+ * Cleaner and lighter than Context's older .modal-box
+ * (which stays in main.css for legacy surfaces).
+ *
+ * Anatomy:
+ *   .modal-overlay         — full-screen backdrop
+ *     .modal               — the dialog box
+ *       .modal-header      — title row + close button
+ *         .modal-title
+ *         .modal-close
+ *       .modal-meta        — description text under header
+ *       .modal-body        — scroll body for free content
+ *       .modal-textarea    — full-width textarea for note-style modals
+ *       .modal-field-grid  — two-column field layout (NOTE: this
+ *                            container provides its own horizontal
+ *                            padding; bare labels/inputs appended
+ *                            directly to .modal need .modal-pad
+ *                            wrapper or sit inside .modal-body).
+ *       .modal-actions     — footer with Cancel / Run buttons
+ *
+ * Padding rule (the bug Studio's NCO modal hit):
+ *   - .modal-header / .modal-meta / .modal-body / .modal-actions
+ *     all carry their own horizontal padding.
+ *   - .modal-field-grid carries its own padding.
+ *   - Anything else appended directly to .modal MUST be wrapped
+ *     in .modal-pad (or use .modal-body) to stay aligned with the
+ *     header. A bare <label> appended to .modal sits flush against
+ *     the modal edge — that's what produced the "First-call notes"
+ *     bug in Studio's New Client Onboarding modal.
+ *
+ * Use:
+ *   <div class="modal-overlay">
+ *     <div class="modal" role="dialog">
+ *       <div class="modal-header">
+ *         <div class="modal-title">New Client</div>
+ *         <button class="modal-close" aria-label="Close">×</button>
+ *       </div>
+ *       <div class="modal-meta">Drop the first-call notes in.</div>
+ *       <div class="modal-field-grid">...</div>
+ *       <div class="modal-pad">
+ *         <label class="form-label">First-call notes</label>
+ *         <textarea class="modal-textarea"></textarea>
+ *       </div>
+ *       <div class="modal-actions">
+ *         <button class="button button-secondary">Cancel</button>
+ *         <button class="button">Run</button>
+ *       </div>
+ *     </div>
+ *   </div>
+ */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  background: rgba(31, 35, 40, 0.4);
+  backdrop-filter: blur(var(--blur-sm));
+  -webkit-backdrop-filter: blur(var(--blur-sm));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-lg);
+  animation: ds-modal-overlay-in 150ms var(--ease-flow);
+}
+
+@keyframes ds-modal-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    0 24px 64px rgba(31, 35, 40, 0.18),
+    0 4px 12px rgba(31, 35, 40, 0.10);
+  width: 100%;
+  max-width: 640px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: ds-modal-in 200ms var(--ease-flow);
+}
+
+@keyframes ds-modal-in {
+  from { transform: scale(0.96) translateY(8px); opacity: 0; }
+  to   { transform: scale(1) translateY(0); opacity: 1; }
+}
+
+/* ── Header ───────────────────────────────────────── */
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid var(--border-soft);
+  flex-shrink: 0;
+}
+
+.modal-title {
+  font: var(--type-h2);
+  letter-spacing: -0.01em;
+}
+
+.modal-close {
+  background: none;
+  border: 0;
+  font-size: 22px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  transition: color var(--transition-fast);
+}
+
+.modal-close:hover {
+  color: var(--text);
+}
+
+/* ── Meta (description under header) ──────────────── */
+.modal-meta {
+  font: var(--type-body-sm);
+  color: var(--text-muted);
+  padding: var(--space-md) var(--space-lg) var(--space-xs);
+  line-height: 1.55;
+}
+
+/* ── Body (scrolls if content is long) ────────────── */
+.modal-body {
+  padding: var(--space-md) var(--space-lg);
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* ── Pad wrapper (use to align bare children with header) ── */
+.modal-pad {
+  padding: 0 var(--space-lg);
+}
+
+.modal-pad + .modal-pad {
+  margin-top: var(--space-sm);
+}
+
+/* ── Textarea (free-form note input) ──────────────── */
+.modal-textarea {
+  width: 100%;
+  margin: 0;
+  padding: var(--space-sm);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  font: var(--type-body);
+  font-family: var(--font-sans);
+  resize: vertical;
+  min-height: 180px;
+  background: var(--surface-deep);
+  color: var(--text);
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.modal-textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.modal-textarea::placeholder {
+  color: var(--text-dim);
+}
+
+/* When .modal-textarea is appended directly to .modal (not inside
+   .modal-body or .modal-pad), give it the same horizontal margin
+   as the header so it lines up. */
+.modal > .modal-textarea {
+  margin: 0 var(--space-lg);
+  width: calc(100% - var(--space-lg) * 2);
+}
+
+/* ── Two-column field grid ────────────────────────── */
+.modal-field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-sm) var(--space-md);
+  padding: 0 var(--space-lg);
+  margin-bottom: var(--space-sm);
+}
+
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+@media (max-width: 540px) {
+  .modal-field-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Footer actions ───────────────────────────────── */
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+  padding: var(--space-md) var(--space-lg);
+  border-top: 1px solid var(--border-soft);
+  flex-shrink: 0;
+  background: var(--surface);
+}
+
+/* If a child of .modal is a bare <label>, .form-label, .settings-label
+   or text node directly under .modal (not wrapped), give it the
+   header's horizontal padding so it doesn't sit flush. This is the
+   safety net for the NCO bug — but the proper fix is to wrap such
+   children in .modal-pad or .modal-body. */
+.modal > label,
+.modal > .form-label,
+.modal > .settings-label {
+  padding-left: var(--space-lg);
+  padding-right: var(--space-lg);
+  display: block;
+}

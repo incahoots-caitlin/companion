@@ -1,0 +1,215 @@
+/* ══════════════════════════════════════════════════
+ *  Design system — Layouts
+ * ══════════════════════════════════════════════════
+ * Shared scaffolding both apps use:
+ *   - .sidebar with brand mark + items + sections
+ *   - .main pane with sticky .main-header
+ *   - .workflow-starters grid + .workflow-card
+ *   - .section-label + .feed
+ *   - .empty (empty-state placeholder)
+ *
+ * Studio uses these names directly. Context's older
+ * surfaces use namespaced equivalents (.dashboard-*,
+ * .home-*) — those stay in main.css. Net new Context
+ * surfaces should reach for these names.
+ *
+ * Use: see Studio's index.html for the canonical example.
+ */
+
+/* ── Sidebar ──────────────────────────────────────── */
+.sidebar {
+  background: var(--surface);
+  border-right: 1px solid var(--border-soft);
+  padding: var(--space-lg) var(--space-md);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-brand {
+  margin-bottom: var(--space-xl);
+  padding: var(--space-xs);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.brand-mark {
+  width: 100%;
+  max-width: 180px;
+  height: auto;
+  display: block;
+}
+
+.brand-tag {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  padding-left: 2px;
+}
+
+.sidebar-section {
+  margin-bottom: var(--space-lg);
+}
+
+.sidebar-section-bottom {
+  margin-top: auto;
+}
+
+.sidebar-label {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: 0 var(--space-xs);
+  margin-bottom: var(--space-xs);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.sidebar-item {
+  display: block;
+  padding: 6px var(--space-xs);
+  border-radius: var(--radius-md);
+  color: var(--text-mid);
+  text-decoration: none;
+  font: var(--type-body);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.sidebar-item:hover {
+  background: var(--surface2);
+  color: var(--text);
+}
+
+.sidebar-item.active {
+  background: var(--surface2);
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* ── Main pane ────────────────────────────────────── */
+.main {
+  overflow-y: auto;
+  background: var(--bg);
+}
+
+.main-header {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  background: var(--surface-glass);
+  backdrop-filter: blur(var(--blur-sm));
+  -webkit-backdrop-filter: blur(var(--blur-sm));
+  border-bottom: 1px solid var(--border-soft);
+  padding: var(--space-md) var(--section-padding-x);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.main-title {
+  font: var(--type-h1);
+  letter-spacing: -0.01em;
+}
+
+.header-actions {
+  display: flex;
+  gap: var(--space-xs);
+}
+
+/* ── Section label (eyebrow above a list) ─────────── */
+.section-label {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: var(--space-md) var(--section-padding-x) var(--space-xs);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+/* ── Workflow starters (cards grid) ───────────────── */
+.workflow-starters {
+  padding: 0 var(--section-padding-x) var(--space-md);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-sm);
+}
+
+.workflow-card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border-color);
+  border-radius: var(--card-radius);
+  padding: var(--card-padding-tight);
+  cursor: pointer;
+  transition:
+    transform var(--transition-fast),
+    box-shadow var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.workflow-card:hover {
+  transform: var(--hover-lift);
+  box-shadow: var(--card-shadow-hover);
+  border-color: var(--card-border-color-hover);
+}
+
+.workflow-card-title {
+  font: var(--type-h3);
+  margin-bottom: 4px;
+}
+
+.workflow-card-meta {
+  font: var(--type-meta);
+  color: var(--text-muted);
+}
+
+/* ── Feed (list of receipts / cards) ──────────────── */
+.feed {
+  padding: 0 var(--section-padding-x) var(--space-3xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+/* ── Empty state ──────────────────────────────────── */
+.empty {
+  padding: var(--space-md);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  background: var(--surface);
+  border: 1px dashed var(--border-soft);
+  border-radius: var(--radius-md);
+}
+
+/* Studio alias */
+.client-empty {
+  padding: var(--space-md);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  background: var(--surface);
+  border: 1px dashed var(--border-soft);
+  border-radius: var(--radius-md);
+}
+
+/* ── Scrollbar polish ─────────────────────────────── */
+.main::-webkit-scrollbar,
+.sidebar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.main::-webkit-scrollbar-thumb,
+.sidebar::-webkit-scrollbar-thumb {
+  background: var(--border-soft);
+  border-radius: 4px;
+}

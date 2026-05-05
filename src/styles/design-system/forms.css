@@ -1,0 +1,199 @@
+/* ══════════════════════════════════════════════════
+ *  Design system — Forms
+ * ══════════════════════════════════════════════════
+ * Inputs, selects, textareas, labels, and the
+ * settings-style label/input pair that Studio's
+ * workflow modals already use.
+ *
+ * Classes:
+ *   .form-input        — text/date/email/number input
+ *   .form-select       — <select> with chevron icon
+ *   .form-textarea     — <textarea>
+ *   .form-label        — eyebrow label above an input
+ *   .form-meta         — helper/description text
+ *   .form-row          — horizontal group (input + button)
+ *   .form-section      — vertical stack of label + input + meta
+ *
+ * Studio uses .settings-input / .settings-label /
+ * .settings-section / .settings-row / .settings-meta
+ * today. Those are kept as ALIASES at the bottom so
+ * Studio's existing main.js works without renames.
+ *
+ * Use:
+ *   <div class="form-section">
+ *     <label class="form-label">Client</label>
+ *     <select class="form-select">...</select>
+ *     <div class="form-meta">Pick from your roster.</div>
+ *   </div>
+ */
+
+.form-input,
+.form-select,
+.form-textarea {
+  width: 100%;
+  font: var(--type-body-sm);
+  font-family: var(--font-sans);
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-deep);
+  color: var(--text);
+  outline: none;
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.form-input:focus,
+.form-select:focus,
+.form-textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.form-input::placeholder,
+.form-textarea::placeholder {
+  color: var(--text-dim);
+}
+
+.form-input:disabled,
+.form-select:disabled,
+.form-textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background: var(--surface2);
+}
+
+/* ── Select chevron ───────────────────────────────── */
+.form-select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23656D76' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 32px;
+  cursor: pointer;
+}
+
+/* ── Textarea ─────────────────────────────────────── */
+.form-textarea {
+  resize: vertical;
+  min-height: 96px;
+  line-height: 1.55;
+  font-family: var(--font-sans);
+}
+
+/* ── Date input ───────────────────────────────────── */
+.form-input[type="date"] {
+  color-scheme: light;
+  font-family: var(--font-mono);
+}
+
+/* ── Label ────────────────────────────────────────── */
+.form-label {
+  display: block;
+  font: var(--type-body-sm);
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+/* ── Meta (helper text) ───────────────────────────── */
+.form-meta {
+  font: var(--type-meta);
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* ── Row (input + adjacent button) ────────────────── */
+.form-row {
+  display: flex;
+  gap: var(--space-xs);
+  align-items: stretch;
+  margin-top: 4px;
+}
+
+.form-row > .form-input,
+.form-row > .form-select {
+  flex: 1;
+}
+
+/* ── Section (label + input + meta vertical stack) ─ */
+.form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ── Studio aliases ───────────────────────────────────
+ * Keep Studio's existing classnames working without
+ * a rename pass. New surfaces should use .form-* names. */
+.settings-input { }
+.settings-input,
+.settings-input[type="text"],
+.settings-input[type="email"],
+.settings-input[type="number"],
+.settings-input[type="date"],
+.settings-input[type="url"],
+select.settings-input,
+textarea.settings-input {
+  width: 100%;
+  font: var(--type-body-sm);
+  font-family: var(--font-mono);
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-deep);
+  color: var(--text);
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.settings-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+select.settings-input {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23656D76' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 32px;
+  cursor: pointer;
+}
+
+textarea.settings-input {
+  resize: vertical;
+  min-height: 96px;
+  line-height: 1.55;
+  font-family: var(--font-sans);
+}
+
+.settings-label {
+  display: block;
+  font: var(--type-body-sm);
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.settings-meta {
+  font: var(--type-meta);
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.settings-row {
+  display: flex;
+  gap: var(--space-xs);
+  align-items: stretch;
+  margin-top: 4px;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}

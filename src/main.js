@@ -645,14 +645,17 @@ function showNewClientOnboardingModal() {
 
   modal.appendChild(grid);
 
-  modal.appendChild(el("div", { class: "settings-label", style: "margin-top: 16px;" }, ["First-call notes"]));
+  const notesPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+    el("div", { class: "settings-label" }, ["First-call notes"]),
+  ]);
   const notes = el("textarea", {
     id: "nco-notes",
     class: "modal-textarea",
     placeholder: "What they want, what's been tried, who else is involved, what success looks like, what they're worried about. Notes from your discovery call go here verbatim.",
     rows: 8,
   });
-  modal.appendChild(notes);
+  notesPad.appendChild(notes);
+  modal.appendChild(notesPad);
 
   modal.appendChild(el("div", { class: "modal-actions" }, [
     el("button", { class: "button button-secondary", id: "nco-cancel" }, ["Cancel"]),
@@ -775,14 +778,17 @@ async function showNewCampaignScopeModal(prefillClientCode) {
 
   modal.appendChild(grid);
 
-  modal.appendChild(el("div", { class: "settings-label", style: "margin-top: 16px;" }, ["Brief notes"]));
+  const notesPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+    el("div", { class: "settings-label" }, ["Brief notes"]),
+  ]);
   const notes = el("textarea", {
     id: "ncs-notes",
     class: "modal-textarea",
     placeholder: "What the campaign is, what success looks like, what you've already discussed with the client, what you're worried about. Notes from your scoping call go here verbatim.",
     rows: 8,
   });
-  modal.appendChild(notes);
+  notesPad.appendChild(notes);
+  modal.appendChild(notesPad);
 
   modal.appendChild(el("div", { class: "modal-actions" }, [
     el("button", { class: "button button-secondary", id: "ncs-cancel" }, ["Cancel"]),
@@ -911,13 +917,16 @@ function showSubcontractorOnboardingModal() {
 
   modal.appendChild(grid);
 
-  modal.appendChild(el("div", { class: "settings-label", style: "margin-top: 16px;" }, ["Notes"]));
+  const notesPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+    el("div", { class: "settings-label" }, ["Notes"]),
+  ]);
   const notes = el("textarea", {
     class: "modal-textarea",
     placeholder: "Why they're joining, what they're best at, what they're new to, what hours/availability looks like, any context on previous work or interview impressions.",
     rows: 6,
   });
-  modal.appendChild(notes);
+  notesPad.appendChild(notes);
+  modal.appendChild(notesPad);
 
   const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
   const runBtn = el("button", { class: "button" }, ["Run"]);
@@ -1065,13 +1074,16 @@ async function showClientPickerReviewModal({
   ]));
   modal.appendChild(grid);
 
-  modal.appendChild(el("div", { class: "settings-label", style: "margin-top: 16px;" }, ["Anything to flag (optional)"]));
+  const flagsPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+    el("div", { class: "settings-label" }, ["Anything to flag (optional)"]),
+  ]);
   const flags = el("textarea", {
     class: "modal-textarea",
     placeholder: flagsPlaceholder,
     rows: 5,
   });
-  modal.appendChild(flags);
+  flagsPad.appendChild(flags);
+  modal.appendChild(flagsPad);
 
   const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
   const runBtn = el("button", { class: "button" }, ["Run"]);

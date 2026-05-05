@@ -1,0 +1,70 @@
+/* ══════════════════════════════════════════════════
+ *  Design system — Toasts
+ * ══════════════════════════════════════════════════
+ * Stacked bottom-right toasts. Studio uses #toast-root
+ * with .toast children. Context's older toast markup
+ * uses different selectors; new Context surfaces should
+ * adopt this pattern.
+ *
+ * Classes:
+ *   #toast-root          — fixed container (one per page)
+ *   .toast               — single toast (default = info)
+ *   .toast.toast-show    — visible state (added by JS)
+ *   .toast.toast-success — green tint
+ *   .toast.toast-error   — red tint
+ *
+ * Use:
+ *   <div id="toast-root"></div>
+ *
+ *   showToast(msg) {
+ *     const t = document.createElement('div');
+ *     t.className = 'toast';
+ *     t.textContent = msg;
+ *     document.getElementById('toast-root').appendChild(t);
+ *     requestAnimationFrame(() => t.classList.add('toast-show'));
+ *     setTimeout(() => t.remove(), 3000);
+ *   }
+ */
+
+#toast-root,
+.toast-root {
+  position: fixed;
+  bottom: var(--space-md);
+  right: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  z-index: var(--z-toast);
+  pointer-events: none;
+}
+
+.toast {
+  background: var(--text);
+  color: var(--surface);
+  font: var(--type-body-sm);
+  font-weight: 500;
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.18);
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity var(--transition-base),
+    transform var(--transition-base);
+  max-width: 340px;
+  pointer-events: auto;
+  line-height: 1.45;
+}
+
+.toast.toast-show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast.toast-success {
+  background: var(--green);
+}
+
+.toast.toast-error {
+  background: var(--red);
+}
