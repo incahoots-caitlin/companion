@@ -1529,6 +1529,559 @@ async fn create_airtable_client(args: serde_json::Value) -> Result<String, Strin
     airtable_create_record("Clients", fields).await
 }
 
+// ── List Subcontractors (v0.21) ────────────────────────────────────────
+//
+// Used by the Log time picker so we can default the rate by who's logging
+// (Caitlin $110, Rose $66). Active subs only.
+#[tauri::command]
+async fn list_airtable_subcontractors() -> Result<String, String> {
+    let data = airtable_get(
+        "Subcontractors",
+        "filterByFormula=%7Bstatus%7D%3D%27active%27\
+&fields%5B%5D=code\
+&fields%5B%5D=name\
+&fields%5B%5D=role\
+&fields%5B%5D=hourly_rate\
+&fields%5B%5D=status",
+    )
+    .await?;
+    serde_json::to_string(&data).map_err(|e| e.to_string())
+}
+
+// ── Pure-Airtable workflows (v0.21) ────────────────────────────────────
+//
+// Three workflows that don't hit Anthropic — pure forms that write to
+// Airtable and file a Receipt for traceability. Schedule social post,
+// Log time, Edit project.
+
+// Builds a tiny receipt JSON with one section + one task line per field.
+// Used by the v0.21 pure-Airtable workflows so each write leaves a trail
+// in the Receipts table identical to the Anthropic-backed workflows.
+fn build_pure_receipt(
+    receipt_id: &str,
+    workflow: &str,
+    title: &str,
+    project: &str,
+    sections: serde_json::Value,
+) -> String {
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let receipt = serde_json::json!({
+        "id": receipt_id,
+        "project": project,
+        "workflow": workflow,
+        "title": title,
+        "date": date,
+        "sections": sections,
+    });
+    receipt.to_string()
+}
+
+#[derive(Deserialize, Debug)]
+struct SocialPostPayload {
+    title: Option<String>,
+    platform: Option<String>,
+    scheduled_at: Option<String>,
+    status: Option<String>,
+    channel: Option<String>,
+    client_code: Option<String>,
+    copy: String,
+    image_path: Option<String>,
+    approval_status: Option<String>,
+    notes: Option<String>,
+}
+
+#[tauri::command]
+async fn create_social_post(
+    payload: serde_json::Value,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    let parsed: SocialPostPayload = serde_json::from_value(payload)
+        .map_err(|e| format!("Invalid payload: {}", e))?;
+
+    let copy = parsed.copy.trim();
+    if copy.is_empty() {
+        return Err("Copy required".to_string());
+    }
+
+    // Derive a short id + title.
+    let now = chrono::Local::now();
+    let post_id = format!("sp_{}", now.format("%Y-%m-%d_%H-%M-%S"));
+    let title = parsed
+        .title
+        .as_deref()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| {
+            let head: String = copy.chars().take(60).collect();
+            if copy.chars().count() > 60 {
+                format!("{}...", head)
+            } else {
+                head
+            }
+        });
+
+    let mut fields = serde_json::json!({
+        "id": post_id,
+        "title": title,
+        "copy": copy,
+    });
+    if let Some(p) = parsed.platform.as_deref() {
+        if !p.trim().is_empty() {
+            fields["platform"] = serde_json::Value::String(p.trim().to_string());
+        }
+    }
+    if let Some(s) = parsed.scheduled_at.as_deref() {
+        if !s.trim().is_empty() {
+            fields["scheduled_at"] = serde_json::Value::String(s.trim().to_string());
+        }
+    }
+    let status = parsed.status.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("draft");
+    fields["status"] = serde_json::Value::String(status.to_string());
+    if let Some(c) = parsed.channel.as_deref() {
+        if !c.trim().is_empty() {
+            fields["channel"] = serde_json::Value::String(c.trim().to_string());
+        }
+    }
+    let approval = parsed.approval_status.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("pending");
+    fields["approval_status"] = serde_json::Value::String(approval.to_string());
+    if let Some(img) = parsed.image_path.as_deref() {
+        if !img.trim().is_empty() {
+            fields["image_path"] = serde_json::Value::String(img.trim().to_string());
+        }
+    }
+    if let Some(n) = parsed.notes.as_deref() {
+        if !n.trim().is_empty() {
+            fields["notes"] = serde_json::Value::String(n.trim().to_string());
+        }
+    }
+
+    // Link to Clients by code (best-effort).
+    let mut client_code_for_project = String::new();
+    if let Some(code) = parsed.client_code.as_deref() {
+        let upper = code.trim().to_uppercase();
+        if !upper.is_empty() {
+            client_code_for_project = upper.clone();
+            match airtable_find_client_by_code(&upper).await {
+                Ok(Some(record_id)) => {
+                    fields["client"] = serde_json::json!([record_id]);
+                }
+                Ok(None) => {
+                    eprintln!("create_social_post: client {} not found", upper);
+                }
+                Err(e) => {
+                    eprintln!("create_social_post: client lookup failed: {}", e);
+                }
+            }
+        }
+    }
+
+    let record_id = airtable_create_record("SocialPosts", fields).await?;
+
+    // Build + file a Receipt for traceability.
+    let receipt_project = if client_code_for_project.is_empty() {
+        "INC".to_string()
+    } else {
+        client_code_for_project
+    };
+    let receipt_id = format!("rcpt_{}", now.format("%Y-%m-%d_%H-%M-%S"));
+    let mut items = vec![
+        serde_json::json!({ "qty": "✓", "text": format!("Filed to SocialPosts ({})", record_id) }),
+        serde_json::json!({ "qty": "1", "text": format!("Status: {}", status) }),
+        serde_json::json!({ "qty": "1", "text": format!("Approval: {}", approval) }),
+    ];
+    if let Some(p) = parsed.platform.as_deref().filter(|s| !s.trim().is_empty()) {
+        items.push(serde_json::json!({ "qty": "1", "text": format!("Platform: {}", p) }));
+    }
+    if let Some(s) = parsed.scheduled_at.as_deref().filter(|s| !s.trim().is_empty()) {
+        items.push(serde_json::json!({ "qty": "1", "text": format!("Scheduled: {}", s) }));
+    }
+    let sections = serde_json::json!([{ "items": items }]);
+    let receipt_json = build_pure_receipt(
+        &receipt_id,
+        "schedule-social-post",
+        &format!("RECEIPT — SOCIAL POST · {}", title),
+        &receipt_project,
+        sections,
+    );
+
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &receipt_json)?;
+    }
+    file_receipt_to_airtable(&receipt_json).await;
+
+    Ok(record_id)
+}
+
+#[derive(Deserialize, Debug)]
+struct TimeLogPayload {
+    date: Option<String>,
+    hours: f64,
+    subcontractor_code: Option<String>,
+    client_code: Option<String>,
+    project_code: Option<String>,
+    task_description: Option<String>,
+    billable: Option<bool>,
+    rate: Option<f64>,
+    notes: Option<String>,
+}
+
+// Find Subcontractors record by code.
+async fn airtable_find_subcontractor_by_code(code: &str) -> Result<Option<String>, String> {
+    if code.is_empty() {
+        return Ok(None);
+    }
+    let escaped = code.replace('\'', "");
+    let formula = format!("{{code}}='{}'", escaped);
+    let qs = format!(
+        "filterByFormula={}&maxRecords=1&fields%5B%5D=code",
+        urlencode(&formula)
+    );
+    let data = airtable_get("Subcontractors", &qs).await?;
+    Ok(data["records"][0]["id"].as_str().map(String::from))
+}
+
+// Find Projects record by code.
+async fn airtable_find_project_by_code(code: &str) -> Result<Option<String>, String> {
+    if code.is_empty() {
+        return Ok(None);
+    }
+    let escaped = code.replace('\'', "");
+    let formula = format!("{{code}}='{}'", escaped);
+    let qs = format!(
+        "filterByFormula={}&maxRecords=1&fields%5B%5D=code",
+        urlencode(&formula)
+    );
+    let data = airtable_get("Projects", &qs).await?;
+    Ok(data["records"][0]["id"].as_str().map(String::from))
+}
+
+#[tauri::command]
+async fn create_time_log(
+    payload: serde_json::Value,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    let parsed: TimeLogPayload = serde_json::from_value(payload)
+        .map_err(|e| format!("Invalid payload: {}", e))?;
+
+    if parsed.hours <= 0.0 {
+        return Err("Hours must be greater than 0".to_string());
+    }
+    if parsed.hours > 24.0 {
+        return Err("Hours can't exceed 24 in one log".to_string());
+    }
+
+    let now = chrono::Local::now();
+    let log_id = format!("tl_{}", now.format("%Y-%m-%d_%H-%M-%S"));
+    let date = parsed
+        .date
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| now.format("%Y-%m-%d").to_string());
+
+    let mut fields = serde_json::json!({
+        "id": log_id,
+        "date": date,
+        "hours": parsed.hours,
+        "billable": parsed.billable.unwrap_or(true),
+    });
+    if let Some(t) = parsed.task_description.as_deref() {
+        if !t.trim().is_empty() {
+            fields["task_description"] = serde_json::Value::String(t.trim().to_string());
+        }
+    }
+    if let Some(r) = parsed.rate {
+        fields["rate"] = serde_json::json!(r);
+    }
+    if let Some(n) = parsed.notes.as_deref() {
+        if !n.trim().is_empty() {
+            fields["notes"] = serde_json::Value::String(n.trim().to_string());
+        }
+    }
+
+    // Link sub by code.
+    let mut sub_label = String::new();
+    if let Some(code) = parsed.subcontractor_code.as_deref() {
+        let upper = code.trim().to_uppercase();
+        if !upper.is_empty() {
+            sub_label = upper.clone();
+            match airtable_find_subcontractor_by_code(&upper).await {
+                Ok(Some(record_id)) => {
+                    fields["subcontractor"] = serde_json::json!([record_id]);
+                }
+                Ok(None) => {
+                    eprintln!("create_time_log: sub {} not found", upper);
+                }
+                Err(e) => {
+                    eprintln!("create_time_log: sub lookup failed: {}", e);
+                }
+            }
+        }
+    }
+
+    // Link client by code.
+    let mut client_code_for_project = String::new();
+    if let Some(code) = parsed.client_code.as_deref() {
+        let upper = code.trim().to_uppercase();
+        if !upper.is_empty() {
+            client_code_for_project = upper.clone();
+            match airtable_find_client_by_code(&upper).await {
+                Ok(Some(record_id)) => {
+                    fields["client"] = serde_json::json!([record_id]);
+                }
+                Ok(None) => eprintln!("create_time_log: client {} not found", upper),
+                Err(e) => eprintln!("create_time_log: client lookup failed: {}", e),
+            }
+        }
+    }
+
+    // Link project by code (optional).
+    if let Some(pcode) = parsed.project_code.as_deref() {
+        let trimmed = pcode.trim();
+        if !trimmed.is_empty() {
+            match airtable_find_project_by_code(trimmed).await {
+                Ok(Some(record_id)) => {
+                    fields["project"] = serde_json::json!([record_id]);
+                }
+                Ok(None) => eprintln!("create_time_log: project {} not found", trimmed),
+                Err(e) => eprintln!("create_time_log: project lookup failed: {}", e),
+            }
+        }
+    }
+
+    let record_id = airtable_create_record("TimeLogs", fields).await?;
+
+    // Receipt.
+    let receipt_project = if client_code_for_project.is_empty() {
+        "INC".to_string()
+    } else {
+        client_code_for_project
+    };
+    let receipt_id = format!("rcpt_{}", now.format("%Y-%m-%d_%H-%M-%S"));
+    let title = if sub_label.is_empty() {
+        format!("RECEIPT — TIME LOG · {:.2}h", parsed.hours)
+    } else {
+        format!("RECEIPT — TIME LOG · {} · {:.2}h", sub_label, parsed.hours)
+    };
+    let mut items = vec![
+        serde_json::json!({ "qty": "✓", "text": format!("Filed to TimeLogs ({})", record_id) }),
+        serde_json::json!({ "qty": format!("{:.2}", parsed.hours), "text": "Hours logged" }),
+        serde_json::json!({ "qty": "1", "text": format!("Date: {}", date) }),
+    ];
+    if !sub_label.is_empty() {
+        items.push(serde_json::json!({ "qty": "1", "text": format!("Who: {}", sub_label) }));
+    }
+    if let Some(r) = parsed.rate {
+        items.push(serde_json::json!({ "qty": "1", "text": format!("Rate: ${:.2}/hr", r) }));
+    }
+    if let Some(t) = parsed.task_description.as_deref().filter(|s| !s.trim().is_empty()) {
+        items.push(serde_json::json!({ "qty": "1", "text": format!("Task: {}", t) }));
+    }
+    let sections = serde_json::json!([{ "items": items }]);
+    let receipt_json = build_pure_receipt(
+        &receipt_id,
+        "log-time",
+        &title,
+        &receipt_project,
+        sections,
+    );
+
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &receipt_json)?;
+    }
+    file_receipt_to_airtable(&receipt_json).await;
+
+    Ok(record_id)
+}
+
+#[derive(Deserialize, Debug)]
+struct ProjectFields {
+    name: Option<String>,
+    status: Option<String>,
+    campaign_type: Option<String>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+    budget_total: Option<f64>,
+    notes: Option<String>,
+}
+
+// Pull a single Projects row by Airtable record id. Used by update_project
+// so we can capture the before-state for the diff in the receipt.
+async fn airtable_get_project(record_id: &str) -> Result<serde_json::Value, String> {
+    let (api_key, base_id) = read_airtable_creds().ok_or("Airtable not configured")?;
+    let url = format!("{}/{}/Projects/{}", AIRTABLE_API, base_id, record_id);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let resp = client
+        .get(&url)
+        .bearer_auth(&api_key)
+        .send()
+        .await
+        .map_err(|e| format!("Network: {}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Airtable {}: {}", status.as_u16(), body));
+    }
+    resp.json().await.map_err(|e| format!("Parse: {}", e))
+}
+
+#[tauri::command]
+async fn update_project(
+    record_id: String,
+    fields: serde_json::Value,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    if record_id.trim().is_empty() {
+        return Err("Missing record_id".to_string());
+    }
+    let parsed: ProjectFields = serde_json::from_value(fields)
+        .map_err(|e| format!("Invalid fields: {}", e))?;
+
+    // Capture the before-state so we can diff into the receipt.
+    let before = airtable_get_project(&record_id).await?;
+    let before_fields = before["fields"].clone();
+    let project_code = before_fields["code"].as_str().unwrap_or("").to_string();
+
+    // Build the patch payload, only including fields the user supplied.
+    let mut patch = serde_json::Map::new();
+    if let Some(v) = parsed.name.as_deref() {
+        if !v.trim().is_empty() {
+            patch.insert("name".into(), serde_json::Value::String(v.trim().to_string()));
+        }
+    }
+    if let Some(v) = parsed.status.as_deref() {
+        if !v.trim().is_empty() {
+            patch.insert("status".into(), serde_json::Value::String(v.trim().to_string()));
+        }
+    }
+    if let Some(v) = parsed.campaign_type.as_deref() {
+        if !v.trim().is_empty() {
+            patch.insert("type".into(), serde_json::Value::String(v.trim().to_string()));
+        }
+    }
+    if let Some(v) = parsed.start_date.as_deref() {
+        let trimmed = v.trim();
+        // Allow clearing by sending empty string, but Airtable wants null.
+        if trimmed.is_empty() {
+            patch.insert("start_date".into(), serde_json::Value::Null);
+        } else {
+            patch.insert("start_date".into(), serde_json::Value::String(trimmed.to_string()));
+        }
+    }
+    if let Some(v) = parsed.end_date.as_deref() {
+        let trimmed = v.trim();
+        if trimmed.is_empty() {
+            patch.insert("end_date".into(), serde_json::Value::Null);
+        } else {
+            patch.insert("end_date".into(), serde_json::Value::String(trimmed.to_string()));
+        }
+    }
+    if let Some(v) = parsed.budget_total {
+        patch.insert("budget_total".into(), serde_json::json!(v));
+    }
+    if let Some(v) = parsed.notes.as_deref() {
+        let trimmed = v.trim();
+        if trimmed.is_empty() {
+            patch.insert("notes".into(), serde_json::Value::String(String::new()));
+        } else {
+            patch.insert("notes".into(), serde_json::Value::String(trimmed.to_string()));
+        }
+    }
+
+    if patch.is_empty() {
+        return Err("No fields to update".to_string());
+    }
+
+    let patch_value = serde_json::Value::Object(patch.clone());
+    airtable_update_record("Projects", &record_id, patch_value.clone()).await?;
+
+    // Build a diff for the receipt — old → new for each changed field.
+    let now = chrono::Local::now();
+    let receipt_id = format!("rcpt_{}", now.format("%Y-%m-%d_%H-%M-%S"));
+    let receipt_project = if project_code.is_empty() {
+        "INC".to_string()
+    } else {
+        // Project code is like NCT-2026-06-tour-launch — strip to client code.
+        project_code.split('-').next().unwrap_or("INC").to_string()
+    };
+
+    let mut items = vec![serde_json::json!({
+        "qty": "✓",
+        "text": format!("Updated project {}", if project_code.is_empty() { record_id.as_str() } else { project_code.as_str() }),
+    })];
+    for (k, new_v) in patch.iter() {
+        let label = match k.as_str() {
+            "type" => "campaign_type",
+            other => other,
+        };
+        // Look up the before-state by Airtable's actual field name (`type`,
+        // not `campaign_type`).
+        let old_v = before_fields.get(k.as_str()).cloned().unwrap_or(serde_json::Value::Null);
+        let old_disp = json_for_display(&old_v);
+        let new_disp = json_for_display(new_v);
+        if old_disp != new_disp {
+            items.push(serde_json::json!({
+                "qty": "1",
+                "text": format!("{}: {} → {}", label, old_disp, new_disp),
+            }));
+        }
+    }
+
+    let sections = serde_json::json!([{ "items": items }]);
+    let title = if project_code.is_empty() {
+        "RECEIPT — EDIT PROJECT".to_string()
+    } else {
+        format!("RECEIPT — EDIT PROJECT · {}", project_code)
+    };
+
+    // For traceability we also include the raw before/after JSON in the
+    // receipt's notes section so the diff is recoverable later.
+    let diff_payload = serde_json::json!({
+        "record_id": record_id,
+        "before": before_fields,
+        "patch": patch_value,
+    });
+    let date = now.format("%Y-%m-%d").to_string();
+    let receipt_obj = serde_json::json!({
+        "id": receipt_id,
+        "project": receipt_project,
+        "workflow": "edit-project",
+        "title": title,
+        "date": date,
+        "sections": sections,
+        "diff": diff_payload,
+    });
+    let receipt_json = receipt_obj.to_string();
+
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &receipt_json)?;
+    }
+    file_receipt_to_airtable(&receipt_json).await;
+
+    Ok(())
+}
+
+// Pretty-print a JSON value for the diff display. Keeps strings unquoted,
+// nulls as "(empty)", numbers/bools as-is.
+fn json_for_display(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Null => "(empty)".to_string(),
+        serde_json::Value::String(s) => {
+            if s.is_empty() { "(empty)".to_string() } else { s.clone() }
+        }
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        other => other.to_string(),
+    }
+}
+
 // ── Today dashboard reads (v0.18) ──────────────────────────────────────
 //
 // The Today view is the chief-of-staff dashboard. These commands expose
@@ -2236,6 +2789,10 @@ pub fn run() {
             create_airtable_subcontractor,
             create_airtable_client,
             create_airtable_project,
+            list_airtable_subcontractors,
+            create_social_post,
+            create_time_log,
+            update_project,
             save_receipt,
             list_receipts,
             delete_receipt,

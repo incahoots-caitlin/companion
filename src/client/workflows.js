@@ -8,8 +8,8 @@
 // shortcuts shipped in v0.15). New Client Onboarding and Subcontractor
 // Onboarding don't take a client argument because they create the client.
 //
-// Three workflows in the grid are placeholders (Schedule social post, Log
-// time, Edit project) — those show a toast saying they ship in v0.21.
+// v0.21 added three pure-Airtable workflows (Schedule social post, Log
+// time, Edit project) — these don't hit Claude, just file rows + a Receipt.
 
 export function launch(key, clientCode, ctx) {
   // ctx.modals = { showStrategicThinkingModal, showMonthlyCheckinModal, ... }
@@ -17,17 +17,14 @@ export function launch(key, clientCode, ctx) {
   // ctx.requireApiKey = async () => boolean
   if (!ctx?.modals) return;
 
-  const placeholders = ["schedule-social-post", "log-time", "edit-project"];
-  if (placeholders.includes(key)) {
-    ctx.toast?.("Ships in v0.21");
-    return;
-  }
-
   const dispatchTable = {
     "monthly-checkin": () => ctx.modals.showMonthlyCheckinModal(clientCode),
     "new-campaign-scope": () => ctx.modals.showNewCampaignScopeModal(clientCode),
     "quarterly-review": () => ctx.modals.showQuarterlyReviewModal(clientCode),
     "strategic-thinking": () => ctx.modals.showStrategicThinkingModal(),
+    "schedule-social-post": () => ctx.modals.showScheduleSocialPostModal(clientCode),
+    "log-time": () => ctx.modals.showLogTimeModal(clientCode),
+    "edit-project": () => ctx.modals.showEditProjectModal(clientCode),
   };
 
   const fn = dispatchTable[key];
@@ -36,7 +33,8 @@ export function launch(key, clientCode, ctx) {
     return;
   }
 
-  // Workflows that hit Claude need the API key set first.
+  // Workflows that hit Claude need the API key set first. Pure-Airtable
+  // workflows skip the check.
   const needsKey = [
     "monthly-checkin",
     "new-campaign-scope",

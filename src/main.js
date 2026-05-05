@@ -1445,7 +1445,7 @@ function showWorkstreamDetailModal(workstream) {
 // ─── Project detail modal ────────────────────────────────────────────
 //
 // Read-only summary: code, name, type, status, dates, budget, brief link.
-// Editing ships in v0.20.
+// To edit, use the Edit project workflow on the per-client view.
 function showProjectDetailModal(project) {
   if (!project) return;
   if (document.getElementById("project-detail-modal")) return;
@@ -1500,6 +1500,588 @@ function showProjectDetailModal(project) {
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
   modal.querySelector(".modal-close").addEventListener("click", close);
   closeBtn.addEventListener("click", close);
+}
+
+// ─── v0.21 pure-Airtable workflows ──────────────────────────────────
+//
+// Three workflows that don't hit Anthropic — straight forms that file rows
+// to Airtable and leave a Receipt for traceability. Modal shape mirrors
+// showSubcontractorOnboardingModal etc., but the submit handler invokes
+// create_social_post / create_time_log / update_project on the Rust side.
+
+// Pull active clients from Airtable for picker dropdowns.
+async function fetchClientsForPicker() {
+  if (!isTauri) return [];
+  try {
+    const raw = await invoke("list_airtable_clients");
+    const data = JSON.parse(raw);
+    return (data.records || [])
+      .map((r) => ({
+        code: r.fields?.code || "",
+        name: r.fields?.name || r.fields?.code || "Untitled",
+      }))
+      .filter((c) => c.code);
+  } catch (e) {
+    console.warn("list_airtable_clients failed:", e);
+    return [];
+  }
+}
+
+async function fetchProjectsForPicker(clientCode) {
+  if (!isTauri) return [];
+  try {
+    const raw = await invoke("list_airtable_projects");
+    const data = JSON.parse(raw);
+    const all = (data.records || []).map((r) => ({
+      record_id: r.id,
+      code: r.fields?.code || "",
+      name: r.fields?.name || r.fields?.code || "Untitled",
+      status: r.fields?.status || "",
+      campaign_type: r.fields?.campaign_type || "",
+      start_date: r.fields?.start_date || "",
+      end_date: r.fields?.end_date || "",
+      budget_total: r.fields?.budget_total ?? null,
+      notes: r.fields?.notes || "",
+    }));
+    if (!clientCode) return all;
+    const upper = clientCode.toUpperCase();
+    return all.filter((p) => (p.code || "").toUpperCase().startsWith(upper));
+  } catch (e) {
+    console.warn("list_airtable_projects failed:", e);
+    return [];
+  }
+}
+
+async function fetchSubcontractorsForPicker() {
+  if (!isTauri) return [];
+  try {
+    const raw = await invoke("list_airtable_subcontractors");
+    const data = JSON.parse(raw);
+    return (data.records || []).map((r) => ({
+      code: r.fields?.code || "",
+      name: r.fields?.name || r.fields?.code || "Untitled",
+      hourly_rate: r.fields?.hourly_rate ?? null,
+    })).filter((s) => s.code);
+  } catch (e) {
+    console.warn("list_airtable_subcontractors failed:", e);
+    return [];
+  }
+}
+
+// ─── Schedule social post modal (v0.21) ───────────────────────────────
+async function showScheduleSocialPostModal(prefillClientCode) {
+  if (document.getElementById("ssp-modal")) return;
+
+  const clients = await fetchClientsForPicker();
+
+  const overlay = el("div", { id: "ssp-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, ["Schedule social post"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+  modal.appendChild(el("div", { class: "modal-meta" }, [
+    "Drafts a row in SocialPosts. No Claude call — just files the post and a Receipt for the trail.",
+  ]));
+
+  const grid = el("div", { class: "modal-field-grid" });
+
+  const platform = el("select", { class: "settings-input" });
+  ["Instagram", "LinkedIn", "Threads", "Facebook", "TikTok", "X", "Other"].forEach((p) => {
+    const opt = document.createElement("option");
+    opt.value = p;
+    opt.textContent = p;
+    platform.appendChild(opt);
+  });
+
+  const channel = el("select", { class: "settings-input" });
+  ["incahoots-marketing", "personal", "client"].forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c;
+    opt.textContent = c;
+    channel.appendChild(opt);
+  });
+  if (prefillClientCode) channel.value = "client";
+
+  const scheduledAt = el("input", { type: "datetime-local", class: "settings-input" });
+  const status = el("select", { class: "settings-input" });
+  ["draft", "scheduled", "published", "cancelled"].forEach((s) => {
+    const opt = document.createElement("option");
+    opt.value = s;
+    opt.textContent = s;
+    status.appendChild(opt);
+  });
+  status.value = "draft";
+
+  const approval = el("select", { class: "settings-input" });
+  ["pending", "approved", "rejected"].forEach((s) => {
+    const opt = document.createElement("option");
+    opt.value = s;
+    opt.textContent = s;
+    approval.appendChild(opt);
+  });
+
+  const clientPicker = el("select", { class: "settings-input" });
+  const noClient = document.createElement("option");
+  noClient.value = "";
+  noClient.textContent = "(none)";
+  clientPicker.appendChild(noClient);
+  clients.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c.code;
+    opt.textContent = `${c.code} — ${c.name}`;
+    clientPicker.appendChild(opt);
+  });
+  if (prefillClientCode && clients.some((c) => c.code === prefillClientCode)) {
+    clientPicker.value = prefillClientCode;
+  }
+
+  const imagePath = el("input", {
+    type: "url",
+    class: "settings-input",
+    placeholder: "https://... or Dropbox link (optional)",
+  });
+
+  [
+    ["Platform", platform],
+    ["Channel", channel],
+    ["Scheduled at", scheduledAt],
+    ["Status", status],
+    ["Approval", approval],
+    ["Client (optional)", clientPicker],
+    ["Image path (optional)", imagePath],
+  ].forEach(([label, input]) => {
+    grid.appendChild(el("label", { class: "modal-field" }, [
+      el("div", { class: "settings-label" }, [label]),
+      input,
+    ]));
+  });
+  modal.appendChild(grid);
+
+  const copyPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+    el("div", { class: "settings-label" }, ["Copy"]),
+  ]);
+  const copy = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "Full caption. First 60 chars become the title if you don't set one.",
+    rows: 6,
+  });
+  copyPad.appendChild(copy);
+  modal.appendChild(copyPad);
+
+  const notesPad = el("div", { class: "modal-pad", style: "margin-top: 12px;" }, [
+    el("div", { class: "settings-label" }, ["Notes (optional)"]),
+  ]);
+  const notes = el("textarea", { class: "modal-textarea", rows: 3 });
+  notesPad.appendChild(notes);
+  modal.appendChild(notesPad);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Schedule"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  copy.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    if (!isTauri) {
+      showToast("Open the Studio app to file workflows. Preview is read-only.");
+      return;
+    }
+    const copyText = copy.value.trim();
+    if (!copyText) return showToast("Copy required");
+
+    const payload = {
+      title: null,
+      platform: platform.value,
+      // datetime-local is ISO without timezone — Airtable accepts it as
+      // the configured (Australia/Melbourne) zone.
+      scheduled_at: scheduledAt.value || null,
+      status: status.value,
+      channel: channel.value,
+      client_code: clientPicker.value || null,
+      copy: copyText,
+      image_path: imagePath.value.trim() || null,
+      approval_status: approval.value,
+      notes: notes.value.trim() || null,
+    };
+
+    runBtn.disabled = true;
+    runBtn.textContent = "Filing...";
+    try {
+      const recordId = await invoke("create_social_post", { payload });
+      close();
+      showToast(`Filed to SocialPosts (${recordId})`, { ttl: 4000 });
+      // Refresh receipts on whichever surface is visible.
+      if (_state.client?.code) {
+        await clientFetch.loadReceipts(_state.client);
+        clientRender.draw(_state.client);
+      }
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Schedule";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
+// ─── Log time modal (v0.21) ──────────────────────────────────────────
+async function showLogTimeModal(prefillClientCode) {
+  if (document.getElementById("logtime-modal")) return;
+
+  const [clients, subs, allProjects] = await Promise.all([
+    fetchClientsForPicker(),
+    fetchSubcontractorsForPicker(),
+    fetchProjectsForPicker(null),
+  ]);
+
+  const overlay = el("div", { id: "logtime-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, ["Log time"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+  modal.appendChild(el("div", { class: "modal-meta" }, [
+    "Hours worked → TimeLogs. Used for billing reconciliation.",
+  ]));
+
+  const grid = el("div", { class: "modal-field-grid" });
+
+  const today = new Date();
+  const isoToday = today.toISOString().slice(0, 10);
+  const dateInput = el("input", { type: "date", class: "settings-input", value: isoToday });
+  const hours = el("input", {
+    type: "number",
+    step: "0.25",
+    min: "0",
+    max: "24",
+    class: "settings-input",
+    placeholder: "e.g. 1.5",
+  });
+
+  const subPicker = el("select", { class: "settings-input" });
+  const noSub = document.createElement("option");
+  noSub.value = "";
+  noSub.textContent = "(none)";
+  subPicker.appendChild(noSub);
+  subs.forEach((s) => {
+    const opt = document.createElement("option");
+    opt.value = s.code;
+    opt.textContent = `${s.code} — ${s.name}`;
+    if (s.hourly_rate != null) opt.dataset.rate = String(s.hourly_rate);
+    subPicker.appendChild(opt);
+  });
+  // Default to Caitlin if she's in the list (any code starting with CR or CAI).
+  const caitlinSub = subs.find((s) => /^(CR|CAI)/i.test(s.code));
+  if (caitlinSub) subPicker.value = caitlinSub.code;
+
+  const clientPicker = el("select", { class: "settings-input" });
+  const noClient = document.createElement("option");
+  noClient.value = "";
+  noClient.textContent = "(none)";
+  clientPicker.appendChild(noClient);
+  clients.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c.code;
+    opt.textContent = `${c.code} — ${c.name}`;
+    clientPicker.appendChild(opt);
+  });
+  if (prefillClientCode && clients.some((c) => c.code === prefillClientCode)) {
+    clientPicker.value = prefillClientCode;
+  }
+
+  const projectPicker = el("select", { class: "settings-input" });
+  function refreshProjects() {
+    projectPicker.innerHTML = "";
+    const noProj = document.createElement("option");
+    noProj.value = "";
+    noProj.textContent = "(none)";
+    projectPicker.appendChild(noProj);
+    const code = clientPicker.value;
+    const filtered = code
+      ? allProjects.filter((p) => (p.code || "").toUpperCase().startsWith(code.toUpperCase()))
+      : allProjects;
+    filtered.forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.code;
+      opt.textContent = `${p.code} — ${p.name}`;
+      projectPicker.appendChild(opt);
+    });
+  }
+  refreshProjects();
+  clientPicker.addEventListener("change", refreshProjects);
+
+  const billable = el("input", { type: "checkbox", checked: true });
+  const billableWrap = el("label", { style: "display:flex;align-items:center;gap:8px;" }, [
+    billable,
+    el("span", {}, ["Billable"]),
+  ]);
+
+  const rate = el("input", {
+    type: "number",
+    step: "0.01",
+    min: "0",
+    class: "settings-input",
+    placeholder: "auto from picker",
+  });
+
+  function setRateFromSub() {
+    const opt = subPicker.options[subPicker.selectedIndex];
+    if (!opt) return;
+    if (opt.dataset.rate) {
+      rate.value = opt.dataset.rate;
+    } else if (/^(CR|CAI)/i.test(opt.value)) {
+      rate.value = "110";
+    } else if (/^(ROS|RG)/i.test(opt.value)) {
+      rate.value = "66";
+    }
+  }
+  setRateFromSub();
+  subPicker.addEventListener("change", setRateFromSub);
+
+  [
+    ["Date", dateInput],
+    ["Hours", hours],
+    ["Who", subPicker],
+    ["Client", clientPicker],
+    ["Project (optional)", projectPicker],
+    ["Rate ($AUD/hr)", rate],
+    ["", billableWrap],
+  ].forEach(([label, input]) => {
+    grid.appendChild(el("label", { class: "modal-field" }, [
+      el("div", { class: "settings-label" }, [label || " "]),
+      input,
+    ]));
+  });
+  modal.appendChild(grid);
+
+  const taskPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+    el("div", { class: "settings-label" }, ["Task description"]),
+  ]);
+  const task = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "What you did. Bullet points are fine.",
+    rows: 4,
+  });
+  taskPad.appendChild(task);
+  modal.appendChild(taskPad);
+
+  const notesPad = el("div", { class: "modal-pad", style: "margin-top: 12px;" }, [
+    el("div", { class: "settings-label" }, ["Notes (optional)"]),
+  ]);
+  const notes = el("textarea", { class: "modal-textarea", rows: 2 });
+  notesPad.appendChild(notes);
+  modal.appendChild(notesPad);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Log"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  hours.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    if (!isTauri) {
+      showToast("Open the Studio app to file workflows. Preview is read-only.");
+      return;
+    }
+    const hoursVal = parseFloat(hours.value);
+    if (!hoursVal || hoursVal <= 0) return showToast("Hours required (> 0)");
+
+    const payload = {
+      date: dateInput.value || null,
+      hours: hoursVal,
+      subcontractor_code: subPicker.value || null,
+      client_code: clientPicker.value || null,
+      project_code: projectPicker.value || null,
+      task_description: task.value.trim() || null,
+      billable: billable.checked,
+      rate: rate.value ? parseFloat(rate.value) : null,
+      notes: notes.value.trim() || null,
+    };
+
+    runBtn.disabled = true;
+    runBtn.textContent = "Filing...";
+    try {
+      const recordId = await invoke("create_time_log", { payload });
+      close();
+      showToast(`Filed ${hoursVal}h to TimeLogs (${recordId})`, { ttl: 4000 });
+      if (_state.client?.code) {
+        await clientFetch.loadReceipts(_state.client);
+        clientRender.draw(_state.client);
+      }
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Log";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
+// ─── Edit project modal (v0.21) ──────────────────────────────────────
+//
+// Two-step flow: first pick a project, then edit fields. The diff is
+// captured into the Receipt so a future audit can replay what changed.
+async function showEditProjectModal(prefillClientCode) {
+  if (document.getElementById("editproj-modal")) return;
+
+  const projects = await fetchProjectsForPicker(prefillClientCode);
+  if (projects.length === 0) {
+    showToast(
+      prefillClientCode
+        ? `No projects on ${prefillClientCode}. Create one first.`
+        : "No projects in Airtable yet.",
+      { ttl: 5000 }
+    );
+    return;
+  }
+
+  const overlay = el("div", { id: "editproj-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, ["Edit project"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+  modal.appendChild(el("div", { class: "modal-meta" }, [
+    "Pick a project, change what's changed. Diff is captured into a Receipt.",
+  ]));
+
+  // Step 1 container: project picker.
+  const pickerWrap = el("div", { class: "modal-pad" });
+  pickerWrap.appendChild(el("div", { class: "settings-label" }, ["Project"]));
+  const picker = el("select", { class: "settings-input" });
+  projects.forEach((p) => {
+    const opt = document.createElement("option");
+    opt.value = p.record_id;
+    opt.textContent = `${p.code} — ${p.name}`;
+    picker.appendChild(opt);
+  });
+  pickerWrap.appendChild(picker);
+  modal.appendChild(pickerWrap);
+
+  // Step 2 container: editable fields. Populated by repopulate().
+  const editWrap = el("div", { class: "modal-pad", style: "margin-top: 12px;" });
+  modal.appendChild(editWrap);
+
+  const nameInput = el("input", { type: "text", class: "settings-input" });
+  const statusSel = el("select", { class: "settings-input" });
+  ["scoping", "active", "paused", "complete", "archive"].forEach((s) => {
+    const opt = document.createElement("option");
+    opt.value = s;
+    opt.textContent = s;
+    statusSel.appendChild(opt);
+  });
+  const typeSel = el("select", { class: "settings-input" });
+  ["", "festival", "venue", "touring", "label", "artist", "PR", "comedy", "capability"].forEach((t) => {
+    const opt = document.createElement("option");
+    opt.value = t;
+    opt.textContent = t || "(unset)";
+    typeSel.appendChild(opt);
+  });
+  const startInput = el("input", { type: "date", class: "settings-input" });
+  const endInput = el("input", { type: "date", class: "settings-input" });
+  const budgetInput = el("input", { type: "number", step: "0.01", min: "0", class: "settings-input" });
+  const notesInput = el("textarea", { class: "modal-textarea", rows: 4 });
+
+  const grid = el("div", { class: "modal-field-grid" });
+  [
+    ["Name", nameInput],
+    ["Status", statusSel],
+    ["Campaign type", typeSel],
+    ["Start date", startInput],
+    ["End date", endInput],
+    ["Budget total", budgetInput],
+  ].forEach(([label, input]) => {
+    grid.appendChild(el("label", { class: "modal-field" }, [
+      el("div", { class: "settings-label" }, [label]),
+      input,
+    ]));
+  });
+  editWrap.appendChild(grid);
+
+  const notesPad = el("div", { style: "margin-top: 12px;" }, [
+    el("div", { class: "settings-label" }, ["Notes"]),
+    notesInput,
+  ]);
+  editWrap.appendChild(notesPad);
+
+  function repopulate() {
+    const project = projects.find((p) => p.record_id === picker.value);
+    if (!project) return;
+    nameInput.value = project.name || "";
+    statusSel.value = project.status || "scoping";
+    typeSel.value = project.campaign_type || "";
+    startInput.value = project.start_date || "";
+    endInput.value = project.end_date || "";
+    budgetInput.value = project.budget_total != null ? project.budget_total : "";
+    notesInput.value = project.notes || "";
+  }
+  repopulate();
+  picker.addEventListener("change", repopulate);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Save"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  picker.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    if (!isTauri) {
+      showToast("Open the Studio app to file workflows. Preview is read-only.");
+      return;
+    }
+    const recordId = picker.value;
+    if (!recordId) return showToast("Pick a project first");
+
+    const fields = {
+      name: nameInput.value.trim(),
+      status: statusSel.value,
+      campaign_type: typeSel.value,
+      start_date: startInput.value,
+      end_date: endInput.value,
+      budget_total: budgetInput.value ? parseFloat(budgetInput.value) : null,
+      notes: notesInput.value,
+    };
+
+    runBtn.disabled = true;
+    runBtn.textContent = "Saving...";
+    try {
+      await invoke("update_project", { recordId, fields });
+      close();
+      showToast("Project updated, diff filed", { ttl: 4000 });
+      if (_state.client?.code) {
+        await clientFetch.loadProjects(_state.client);
+        await clientFetch.loadReceipts(_state.client);
+        clientRender.draw(_state.client);
+      }
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Save";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
 }
 
 // ─── Receipt JSON viewer modal ───────────────────────────────────────
@@ -1763,6 +2345,9 @@ document.addEventListener("DOMContentLoaded", () => {
         showMonthlyCheckinModal,
         showQuarterlyReviewModal,
         showNewCampaignScopeModal,
+        showScheduleSocialPostModal,
+        showLogTimeModal,
+        showEditProjectModal,
       },
       toast: showToast,
       requireApiKey: async () => {
@@ -2011,8 +2596,27 @@ document.addEventListener("DOMContentLoaded", () => {
         openQuarterlyReview();
       } else if (name === "Subcontractor Onboarding") {
         openSubcontractorOnboarding();
+      } else if (name === "Schedule social post") {
+        // Pure-Airtable workflows — no Anthropic key needed.
+        if (!isTauri) {
+          showToast("Open the Studio app to file workflows. Preview is read-only.");
+          return;
+        }
+        showScheduleSocialPostModal();
+      } else if (name === "Log time") {
+        if (!isTauri) {
+          showToast("Open the Studio app to file workflows. Preview is read-only.");
+          return;
+        }
+        showLogTimeModal();
+      } else if (name === "Edit project") {
+        if (!isTauri) {
+          showToast("Open the Studio app to file workflows. Preview is read-only.");
+          return;
+        }
+        showEditProjectModal();
       } else {
-        showToast(`${name}: workflow runner lands next build.`);
+        showToast(`${name}: not wired yet.`);
       }
     });
   });
