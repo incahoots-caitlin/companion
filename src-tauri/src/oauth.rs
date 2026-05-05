@@ -28,6 +28,15 @@
 // Fixed callback port: 53682 (matches `gh`, `rclone`). Means the user
 // has to register `http://localhost:53682/callback` as the redirect URI
 // when setting up the OAuth client in the provider's console.
+//
+// Slack note (v0.26): Slack's OAuth v2 still requires a client secret
+// even for desktop apps and doesn't support PKCE. The flow has the same
+// shape (browser auth → code → token exchange) but skips the PKCE
+// challenge and posts the secret with the code-for-token swap. The
+// `pkce` flag on `ProviderConfig` toggles that behaviour. Slack also
+// returns user tokens under `authed_user.access_token` rather than the
+// top-level `access_token`, so a small post-parse adapter handles that
+// difference.
 
 use keyring::Entry;
 use serde::Deserialize;
@@ -47,6 +56,17 @@ const REDIRECT_URI: &str = "http://localhost:53682/callback";
 // it as expired and refresh proactively to avoid in-flight 401s.
 const REFRESH_LEEWAY_SECS: i64 = 30;
 
+// How the provider expects scopes to be passed on the authorisation URL.
+// RFC 6749 says space-separated under the `scope` param. Slack's v2 OAuth
+// uses `scope=channels:read,channels:history,...` (commas) and a separate
+// `user_scope` param when requesting user-token scopes. Most providers
+// match RFC; only Slack diverges in our set today.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScopeStyle {
+    SpaceSeparated, // Google, Granola, anything RFC-vanilla.
+    SlackV2,        // Slack: comma-separated, treats as user-token scopes.
+}
+
 #[derive(Clone, Debug)]
 pub struct ProviderConfig {
     pub name: &'static str,             // "granola", "google", "slack"
@@ -64,12 +84,41 @@ pub struct ProviderConfig {
     // refresh token. Granola and other RFC-vanilla providers leave this
     // empty.
     pub auth_extra_params: &'static [(&'static str, &'static str)],
+    // Whether to run PKCE on this provider. Public clients (Google
+    // Desktop, Granola) use PKCE; Slack v2 OAuth still requires a client
+    // secret and doesn't support PKCE. False for Slack, true elsewhere.
+    pub pkce: bool,
+    pub scope_style: ScopeStyle,
 }
 
 #[derive(Deserialize, Debug)]
 struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
+    expires_in: Option<i64>,
+}
+
+// Slack's v2 OAuth response is shaped differently from RFC: the token
+// the workspace user holds lives under `authed_user.access_token`. We
+// parse it loosely and adapt to a TokenResponse before persisting.
+#[derive(Deserialize, Debug)]
+struct SlackTokenResponse {
+    ok: bool,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    access_token: Option<String>, // bot token (when bot scopes were requested)
+    #[serde(default)]
+    authed_user: Option<SlackAuthedUser>,
+}
+
+#[derive(Deserialize, Debug)]
+struct SlackAuthedUser {
+    #[serde(default)]
+    access_token: Option<String>,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
     expires_in: Option<i64>,
 }
 
@@ -157,13 +206,18 @@ pub async fn ensure_fresh_token(provider: &ProviderConfig) -> Result<String, Str
         params.push(("client_secret", secret));
     }
 
-    let token = post_token_request(provider.token_url, &params).await?;
+    let token = match provider.scope_style {
+        ScopeStyle::SlackV2 => post_slack_token_request(provider.token_url, &params).await?,
+        ScopeStyle::SpaceSeparated => post_token_request(provider.token_url, &params).await?,
+    };
     persist_token(provider, &token)?;
     Ok(token.access_token)
 }
 
-// Runs the full browser OAuth + PKCE flow and stores the resulting token.
-// Blocks the calling task until the user authorises (or 5 min timeout).
+// Runs the full browser OAuth flow and stores the resulting token. Uses
+// PKCE when `provider.pkce` is true, otherwise relies on the client
+// secret. Blocks the calling task until the user authorises (or 5 min
+// timeout).
 pub async fn start_oauth_flow(provider: &ProviderConfig) -> Result<(), String> {
     let client_id = read_keychain(provider.client_id_keychain_key)
         .ok_or_else(|| format!(
@@ -171,24 +225,46 @@ pub async fn start_oauth_flow(provider: &ProviderConfig) -> Result<(), String> {
             provider.name
         ))?;
 
-    // PKCE.
+    // PKCE — generated up-front so the verifier is in scope for the
+    // token exchange, but only sent on the wire when pkce is true.
     let verifier = generate_code_verifier();
     let challenge = code_challenge(&verifier);
 
     // CSRF state.
     let state = random_url_safe(16);
 
-    // Build the auth URL.
-    let scope = provider.scopes.join(" ");
+    // Build the auth URL. Scope param formatting depends on provider:
+    // RFC says space-separated; Slack v2 uses commas under `scope` and
+    // expects user-token scopes there too.
+    let scope = match provider.scope_style {
+        ScopeStyle::SpaceSeparated => provider.scopes.join(" "),
+        ScopeStyle::SlackV2 => provider.scopes.join(","),
+    };
     let mut auth_url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
+        "{}?response_type=code&client_id={}&redirect_uri={}&state={}",
         provider.auth_url,
         urlencode(&client_id),
         urlencode(REDIRECT_URI),
-        urlencode(&scope),
-        urlencode(&challenge),
         urlencode(&state),
     );
+    // Slack reads user-token scopes off `user_scope`, not `scope` — bot
+    // scopes go on `scope`. Companion only needs user-token reads, so we
+    // put the entire scope list under `user_scope` for Slack.
+    match provider.scope_style {
+        ScopeStyle::SpaceSeparated => {
+            auth_url.push_str("&scope=");
+            auth_url.push_str(&urlencode(&scope));
+        }
+        ScopeStyle::SlackV2 => {
+            auth_url.push_str("&user_scope=");
+            auth_url.push_str(&urlencode(&scope));
+        }
+    }
+    if provider.pkce {
+        auth_url.push_str("&code_challenge=");
+        auth_url.push_str(&urlencode(&challenge));
+        auth_url.push_str("&code_challenge_method=S256");
+    }
     for (k, v) in provider.auth_extra_params {
         auth_url.push('&');
         auth_url.push_str(&urlencode(k));
@@ -232,19 +308,30 @@ pub async fn start_oauth_flow(provider: &ProviderConfig) -> Result<(), String> {
     let client_secret = provider
         .client_secret_keychain_key
         .and_then(read_keychain);
+    if !provider.pkce && client_secret.is_none() {
+        return Err(format!(
+            "{} client secret not set. Add it in Settings before connecting.",
+            provider.name
+        ));
+    }
 
     let mut params: Vec<(&str, String)> = vec![
         ("grant_type", "authorization_code".to_string()),
         ("code", code),
         ("redirect_uri", REDIRECT_URI.to_string()),
         ("client_id", client_id),
-        ("code_verifier", verifier),
     ];
+    if provider.pkce {
+        params.push(("code_verifier", verifier));
+    }
     if let Some(secret) = client_secret {
         params.push(("client_secret", secret));
     }
 
-    let token = post_token_request(provider.token_url, &params).await?;
+    let token = match provider.scope_style {
+        ScopeStyle::SlackV2 => post_slack_token_request(provider.token_url, &params).await?,
+        ScopeStyle::SpaceSeparated => post_token_request(provider.token_url, &params).await?,
+    };
     persist_token(provider, &token)?;
     Ok(())
 }
@@ -261,6 +348,70 @@ fn persist_token(provider: &ProviderConfig, token: &TokenResponse) -> Result<(),
         write_keychain(provider.expires_at_key, &expires_at.to_string())?;
     }
     Ok(())
+}
+
+// Slack's token endpoint always returns 200 with `ok: false` on failure
+// (rather than a 4xx). We parse the body as Slack's shape, surface the
+// `error` field on failure, and adapt the success case to the same
+// TokenResponse the rest of this module uses.
+async fn post_slack_token_request(
+    url: &str,
+    params: &[(&str, String)],
+) -> Result<TokenResponse, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("HTTP client: {}", e))?;
+
+    let form: HashMap<&str, String> = params
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+
+    let response = client
+        .post(url)
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| format!("Token request network error: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Slack token endpoint {}: {}", status.as_u16(), text));
+    }
+
+    let parsed: SlackTokenResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Slack token parse: {}", e))?;
+
+    if !parsed.ok {
+        return Err(format!(
+            "Slack OAuth: {}",
+            parsed.error.unwrap_or_else(|| "unknown error".to_string())
+        ));
+    }
+
+    // User token first (Companion uses user-token scopes for reads),
+    // fall back to bot token for completeness.
+    let (access, refresh, expires_in) = match parsed.authed_user {
+        Some(u) if u.access_token.is_some() => {
+            (u.access_token.unwrap(), u.refresh_token, u.expires_in)
+        }
+        _ => match parsed.access_token {
+            Some(t) => (t, None, None),
+            None => {
+                return Err("Slack OAuth: response missing access_token".to_string());
+            }
+        },
+    };
+
+    Ok(TokenResponse {
+        access_token: access,
+        refresh_token: refresh,
+        expires_in,
+    })
 }
 
 async fn post_token_request(

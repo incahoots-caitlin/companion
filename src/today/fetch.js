@@ -325,6 +325,41 @@ export async function loadEmail(state) {
   state.last_fetch_at.email = Date.now();
 }
 
+// ── Slack activity (v0.26) ────────────────────────────────────────────
+//
+// Reads the OAuth status first; bails early when not connected so we
+// don't make network calls. When connected, pulls the unreads-per-channel
+// summary and writes into _state.today.slack. Render hides the section
+// entirely when status.connected is false.
+
+export async function loadSlack(state) {
+  const slack = state.slack || (state.slack = {
+    status: null,
+    unreads: null,
+    error: null,
+  });
+  try {
+    slack.status = await safeInvoke("get_slack_oauth_status");
+  } catch (e) {
+    slack.status = { connected: false, has_client_id: false, has_client_secret: false, last_sync_at: null };
+  }
+  if (!slack.status?.connected) {
+    slack.unreads = [];
+    slack.error = null;
+    state.last_fetch_at.slack = Date.now();
+    return;
+  }
+  try {
+    const raw = await safeInvoke("list_slack_unreads");
+    slack.unreads = JSON.parse(raw) || [];
+    slack.error = null;
+  } catch (e) {
+    slack.unreads = [];
+    slack.error = String(e);
+  }
+  state.last_fetch_at.slack = Date.now();
+}
+
 // ── Live status ───────────────────────────────────────────────────────
 
 export async function loadLiveStatus(state) {
@@ -409,6 +444,7 @@ export async function loadAll(state) {
     loadLiveStatus(state),
     loadDrift(state, { force: true }),
     loadCalendar(state),
+    loadSlack(state),
   ]);
   // Email runs after calendar so it can reuse the freshly-fetched
   // Google status without a second Keychain hit.
@@ -447,6 +483,9 @@ export async function refreshStale(state) {
   }
   if ((state.last_fetch_at.email || 0) + STALE_MS < now) {
     tasks.push(loadEmail(state));
+  }
+  if ((state.last_fetch_at.slack || 0) + STALE_MS < now) {
+    tasks.push(loadSlack(state));
   }
   await Promise.allSettled(tasks);
 }

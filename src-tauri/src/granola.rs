@@ -29,7 +29,7 @@
 //   - Tools we allowlist for Monthly Check-in / Quarterly Review:
 //     `list_meetings`, `get_meeting_transcript`.
 
-use crate::oauth::ProviderConfig;
+use crate::oauth::{ProviderConfig, ScopeStyle};
 
 pub const GRANOLA_MCP_URL: &str = "https://mcp.granola.ai/mcp";
 
@@ -48,6 +48,8 @@ pub const GRANOLA: ProviderConfig = ProviderConfig {
     refresh_token_key: "granola-refresh-token",
     expires_at_key: "granola-expires-at",
     auth_extra_params: &[],
+    pkce: true,
+    scope_style: ScopeStyle::SpaceSeparated,
 };
 
 // Convenience: tools to allowlist when running Monthly Check-in /

@@ -17,6 +17,7 @@ mod gmail;
 mod google;
 mod granola;
 mod oauth;
+mod slack;
 
 use keyring::Entry;
 use rusqlite::{params, Connection};
@@ -63,6 +64,11 @@ const KEYRING_GOOGLE_LAST_SYNC: &str = "google-last-sync-at";
 // future versions may grant fewer when the user opts out of some
 // surfaces. Settings reads this to render the connected-scope summary.
 const KEYRING_GOOGLE_GRANTED_SCOPES: &str = "google-granted-scopes";
+
+// v0.26: timestamp of the last successful Slack read API call. Same
+// pattern as KEYRING_GOOGLE_LAST_SYNC — Settings UI reads this to render
+// the "Last sync" line under the Slack row.
+const KEYRING_SLACK_LAST_SYNC: &str = "slack-oauth-last-sync-at";
 
 // Munbyn reprint paths. Both live in the team-shared Dropbox so Rose
 // also has them, but only Caitlin's Mac has the printer queue named
@@ -3301,6 +3307,164 @@ async fn list_drive_recent_for_client(input: serde_json::Value) -> Result<String
     serde_json::to_string(&files).map_err(|e| format!("Serialise: {}", e))
 }
 
+// ── Slack read integration (v0.26, Block C) ────────────────────────────
+//
+// Mirrors the Granola + Google patterns. The existing Slack webhook
+// (KEYRING_SLACK / save_slack_webhook / get_slack_status) is left alone
+// — that's still the outbound write path the receipt-tick on_done hook
+// uses. v0.26 adds a *separate* OAuth-driven read path:
+//
+//   - get_slack_oauth_status()       -> { connected, has_client_id, has_client_secret, last_sync_at }
+//   - save_slack_oauth_credentials(client_id, client_secret) -> ()
+//   - connect_slack()                -> () — runs the browser OAuth flow
+//   - disconnect_slack()             -> ()
+//   - list_slack_unreads()           -> JSON array of UnreadSummary
+//   - list_slack_for_client(slug)    -> JSON ClientChannelActivity | null
+//
+// Naming: the OAuth commands are *_slack_oauth_* to keep them clearly
+// separate from the existing webhook commands (get_slack_status /
+// save_slack_webhook). Caitlin can have one or both configured — the
+// dashboard will hide the Slack-activity section when OAuth isn't
+// connected, and the receipt-tick path will skip the webhook post when
+// no webhook URL is set.
+
+#[derive(Serialize)]
+struct SlackOauthStatus {
+    connected: bool,
+    has_client_id: bool,
+    has_client_secret: bool,
+    last_sync_at: Option<String>,
+}
+
+#[tauri::command]
+fn get_slack_oauth_status() -> SlackOauthStatus {
+    SlackOauthStatus {
+        connected: oauth::is_connected(&slack::SLACK),
+        has_client_id: oauth::read_keychain(slack::SLACK.client_id_keychain_key)
+            .is_some(),
+        has_client_secret: slack::SLACK
+            .client_secret_keychain_key
+            .map(|k| oauth::read_keychain(k).is_some())
+            .unwrap_or(false),
+        last_sync_at: oauth::read_keychain(KEYRING_SLACK_LAST_SYNC),
+    }
+}
+
+#[tauri::command]
+fn save_slack_oauth_credentials(
+    client_id: String,
+    client_secret: String,
+) -> Result<(), String> {
+    let id = client_id.trim();
+    let secret = client_secret.trim();
+    if id.is_empty() || secret.is_empty() {
+        return Err("Both client ID and client secret required".to_string());
+    }
+    oauth::write_keychain(slack::SLACK.client_id_keychain_key, id)?;
+    if let Some(secret_key) = slack::SLACK.client_secret_keychain_key {
+        oauth::write_keychain(secret_key, secret)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn connect_slack() -> Result<(), String> {
+    oauth::start_oauth_flow(&slack::SLACK).await
+}
+
+#[tauri::command]
+fn disconnect_slack() -> Result<(), String> {
+    oauth::disconnect(&slack::SLACK)?;
+    let _ = oauth::delete_keychain(KEYRING_SLACK_LAST_SYNC);
+    Ok(())
+}
+
+fn stamp_slack_last_sync() {
+    let _ = oauth::write_keychain(
+        KEYRING_SLACK_LAST_SYNC,
+        &chrono::Utc::now().to_rfc3339(),
+    );
+}
+
+#[tauri::command]
+async fn list_slack_unreads() -> Result<String, String> {
+    let summaries = slack::count_unreads_per_channel().await?;
+    stamp_slack_last_sync();
+    serde_json::to_string(&summaries).map_err(|e| format!("Serialise: {}", e))
+}
+
+#[derive(Deserialize, Debug)]
+struct ListSlackForClientInput {
+    client_code: String,
+    // Optional explicit slug — when None we derive from the client name
+    // by lowercasing and replacing spaces with hyphens.
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    client_name: Option<String>,
+}
+
+// Derives a Slack channel slug from a client name. "Northcote Theatre"
+// → "northcote-theatre". The slack module then prefixes "client-".
+fn slugify_client_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut last_was_dash = false;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            last_was_dash = false;
+        } else if c.is_whitespace() || c == '-' || c == '_' || c == '/' {
+            if !last_was_dash && !out.is_empty() {
+                out.push('-');
+                last_was_dash = true;
+            }
+        }
+        // Anything else (punctuation, &, etc.) is dropped silently.
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+#[tauri::command]
+async fn list_slack_for_client(input: serde_json::Value) -> Result<String, String> {
+    let parsed: ListSlackForClientInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    let code = parsed.client_code.trim().to_uppercase();
+    if code.is_empty() {
+        return Err("Pick a client first".to_string());
+    }
+
+    // Slug priority: explicit slug arg → client name lookup → code itself.
+    let slug = match parsed.slug {
+        Some(ref s) if !s.trim().is_empty() => s.trim().to_lowercase(),
+        _ => {
+            let name = match parsed.client_name {
+                Some(ref n) if !n.trim().is_empty() => n.trim().to_string(),
+                _ => {
+                    let qs = format!(
+                        "filterByFormula={}&maxRecords=1&fields%5B%5D=name",
+                        urlencode(&format!("{{code}}='{}'", code))
+                    );
+                    let data = airtable_get("Clients", &qs)
+                        .await
+                        .unwrap_or(serde_json::Value::Null);
+                    data["records"][0]["fields"]["name"]
+                        .as_str()
+                        .unwrap_or(&code)
+                        .to_string()
+                }
+            };
+            slugify_client_name(&name)
+        }
+    };
+
+    let activity = slack::list_channel_activity_for_client(&slug).await?;
+    stamp_slack_last_sync();
+    serde_json::to_string(&activity).map_err(|e| format!("Serialise: {}", e))
+}
+
 // ── Tauri entry ─────────────────────────────────────────────────────────
 
 fn toggle_main_window(app: &tauri::AppHandle) {
@@ -3452,7 +3616,16 @@ pub fn run() {
             gmail_unread_count,
             list_gmail_urgent,
             list_gmail_for_client,
-            list_drive_recent_for_client
+            list_drive_recent_for_client,
+            // v0.26 Block C — Slack read OAuth (separate from the
+            // existing webhook write path which stays on get_slack_status
+            // / save_slack_webhook above)
+            get_slack_oauth_status,
+            save_slack_oauth_credentials,
+            connect_slack,
+            disconnect_slack,
+            list_slack_unreads,
+            list_slack_for_client
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

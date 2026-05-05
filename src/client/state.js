@@ -21,6 +21,7 @@
 //   meetings: [],      // upcoming Calendar events that mention this client
 //   emails: [],        // last 3 Gmail threads matching the client filter
 //   drive_files: [],   // Drive files modified in last 14 days for client folder
+//   slack_activity: { channel, messages } | null,  // last 24h on #client-{slug}; null when no channel matches or not connected
 //   last_fetch_at: { ...section keys -> ms timestamp }
 // }
 //
@@ -40,6 +41,7 @@ export function emptyClientState() {
     meetings: null,
     emails: null,
     drive_files: null,
+    slack_activity: null,
     last_fetch_at: {},
   };
 }

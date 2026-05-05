@@ -38,7 +38,7 @@
 // these via the extra-params hook below so the access token can survive
 // past its 1-hour expiry without sending Caitlin back to her browser.
 
-use crate::oauth::ProviderConfig;
+use crate::oauth::{ProviderConfig, ScopeStyle};
 
 pub const CALENDAR_API_BASE: &str = "https://www.googleapis.com/calendar/v3";
 pub const GMAIL_API_BASE: &str = "https://gmail.googleapis.com/gmail/v1";
@@ -73,4 +73,6 @@ pub const GOOGLE: ProviderConfig = ProviderConfig {
         ("prompt", "consent"),
         ("include_granted_scopes", "true"),
     ],
+    pkce: true,
+    scope_style: ScopeStyle::SpaceSeparated,
 };

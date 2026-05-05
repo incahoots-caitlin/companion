@@ -407,6 +407,90 @@ function renderEmailRow(t) {
   return row;
 }
 
+// ── Recent Slack activity (v0.26) ─────────────────────────────────────
+//
+// Hidden when slack_activity is null — Slack OAuth not connected or no
+// matching #client-{slug} channel. Shows the last 5 messages in that
+// channel; click opens the message in Slack.
+
+function fmtSlackTime(ts) {
+  if (!ts) return "";
+  // Slack ts looks like "1714898123.001234" — seconds since epoch.
+  const secs = Number(String(ts).split(".")[0]);
+  if (!Number.isFinite(secs) || secs <= 0) return "";
+  const d = new Date(secs * 1000);
+  if (Number.isNaN(d.getTime())) return "";
+  return d
+    .toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit", hour12: true })
+    .replace(/\s/g, "")
+    .toLowerCase();
+}
+
+function renderSlackActivity(state) {
+  const activity = state.slack_activity;
+  if (!activity || !activity.channel) return null;
+  const messages = Array.isArray(activity.messages) ? activity.messages : [];
+
+  const root = el("section", { class: "client-section", "data-section": "slack" });
+  const ch = activity.channel;
+  const headerLabel = `💬 RECENT SLACK ACTIVITY · #${ch.name || "channel"}`;
+  const headerRow = el("button", {
+    class: "client-section-header-link",
+    type: "button",
+  }, [el("div", { class: "section-label" }, [headerLabel])]);
+  headerRow.addEventListener("click", () => {
+    const url = ch.deeplink || ch.web_link;
+    if (!url) return;
+    if (window.__TAURI__?.opener?.openUrl) {
+      window.__TAURI__.opener.openUrl(url).catch(() => window.open(url, "_blank"));
+    } else {
+      window.open(url, "_blank");
+    }
+  });
+  root.appendChild(headerRow);
+
+  if (messages.length === 0) {
+    root.appendChild(
+      el("div", { class: "client-empty" }, ["No messages in the last 24 hours."])
+    );
+    return root;
+  }
+
+  const list = el("div", { class: "today-list" });
+  messages.forEach((m) => list.appendChild(renderSlackMessageRow(m)));
+  root.appendChild(list);
+  return root;
+}
+
+function renderSlackMessageRow(m) {
+  const row = el("button", {
+    class: "today-row",
+    type: "button",
+    "data-message-ts": m.ts || "",
+  });
+  if (m.permalink) {
+    row.addEventListener("click", () => {
+      if (window.__TAURI__?.opener?.openUrl) {
+        window.__TAURI__.opener.openUrl(m.permalink).catch(() => window.open(m.permalink, "_blank"));
+      } else {
+        window.open(m.permalink, "_blank");
+      }
+    });
+  }
+  const senderName = m.user_name || (m.user ? `<@${m.user}>` : "(system)");
+  const text = (m.text || "").slice(0, 200);
+  const left = el("div", { class: "today-row-main" }, [
+    el("div", { class: "today-row-title" }, [senderName]),
+    el("div", { class: "today-row-meta" }, [text || "(no text)"]),
+  ]);
+  const right = el("div", { class: "today-row-side" }, [
+    el("span", { class: "today-row-time" }, [fmtSlackTime(m.ts)]),
+  ]);
+  row.appendChild(left);
+  row.appendChild(right);
+  return row;
+}
+
 // ── Recent Drive activity (v0.25) ─────────────────────────────────────
 //
 // Hidden when no files came back. Empty list means: Google not
@@ -602,6 +686,7 @@ export function draw(state) {
     renderCommitments(state),
     renderMeetings(state),
     renderEmails(state),
+    renderSlackActivity(state),
     renderDriveFiles(state),
     renderProjects(state),
     renderReceipts(state),

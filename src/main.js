@@ -394,12 +394,14 @@ async function showSettingsModal() {
   let airtableSet = false;
   let granolaStatus = { connected: false, has_client_id: false, last_pull_at: null };
   let googleStatus = { connected: false, has_client_id: false, last_sync_at: null };
+  let slackOauthStatus = { connected: false, has_client_id: false, has_client_secret: false, last_sync_at: null };
   if (isTauri) {
     try { apiSet = await invoke("get_api_key_status"); } catch {}
     try { slackSet = await invoke("get_slack_status"); } catch {}
     try { airtableSet = await invoke("get_airtable_status"); } catch {}
     try { granolaStatus = await invoke("get_granola_status"); } catch {}
     try { googleStatus = await invoke("get_google_status"); } catch {}
+    try { slackOauthStatus = await invoke("get_slack_oauth_status"); } catch {}
   }
 
   const body = el("div", { class: "settings-body" });
@@ -563,6 +565,65 @@ async function showSettingsModal() {
     googleActions,
   ]));
 
+  // Slack read OAuth (v0.26 Block C). Separate from the Slack webhook
+  // row above — that's the outbound write path used by receipt-tick
+  // on_done hooks. This row authorises a workspace OAuth token that
+  // Companion uses for read APIs (channels, history, users.info) so the
+  // Today dashboard can show unread counts and the per-client view can
+  // show recent messages in #client-{slug}. Two-step setup: paste
+  // client ID + secret (Slack v2 OAuth requires both, no PKCE), then
+  // click Connect.
+  let slackOauthMeta;
+  if (slackOauthStatus.connected) {
+    const lastSync = slackOauthStatus.last_sync_at
+      ? ` Last sync: ${formatGranolaTimestamp(slackOauthStatus.last_sync_at)}.`
+      : "";
+    slackOauthMeta = `Connected. Slack activity is live on Today and per-client views.${lastSync}`;
+  } else if (slackOauthStatus.has_client_id && slackOauthStatus.has_client_secret) {
+    slackOauthMeta = "Credentials saved. Click Connect Slack to authorise in your browser.";
+  } else if (slackOauthStatus.has_client_id) {
+    slackOauthMeta = "Client ID saved. Add the client secret below, then Connect.";
+  } else {
+    slackOauthMeta = "Optional. Create a Slack app at api.slack.com/apps with redirect URL http://localhost:53682/callback and User Token Scopes: channels:read, channels:history, groups:read, groups:history, users:read. Paste the Client ID + Client Secret below, then Connect.";
+  }
+
+  const slackOauthActions = el("div", { class: "settings-row", style: "margin-top: 8px;" });
+  if (slackOauthStatus.connected) {
+    slackOauthActions.appendChild(
+      el("button", { class: "button button-secondary", id: "settings-slack-oauth-disconnect" }, ["Disconnect"]),
+    );
+    slackOauthActions.appendChild(
+      el("button", { class: "button", id: "settings-slack-oauth-reconnect" }, ["Re-authorise"]),
+    );
+  } else {
+    slackOauthActions.appendChild(
+      el("button", { class: "button", id: "settings-slack-oauth-connect" }, ["Connect Slack"]),
+    );
+  }
+
+  body.appendChild(el("div", { class: "settings-section" }, [
+    el("div", { class: "settings-label" }, ["Slack integration (read)"]),
+    el("div", { class: "settings-meta" }, [slackOauthMeta]),
+    el("div", { class: "settings-row" }, [
+      el("input", {
+        id: "settings-slack-oauth-client-id",
+        type: "text",
+        placeholder: slackOauthStatus.has_client_id ? "(client ID set — paste again to overwrite)" : "Slack app Client ID",
+        class: "settings-input",
+      }),
+    ]),
+    el("div", { class: "settings-row" }, [
+      el("input", {
+        id: "settings-slack-oauth-client-secret",
+        type: "password",
+        placeholder: slackOauthStatus.has_client_secret ? "(client secret set — paste again to overwrite)" : "Slack app Client Secret",
+        class: "settings-input",
+      }),
+      el("button", { class: "button button-secondary", id: "settings-slack-oauth-save-id" }, ["Save"]),
+    ]),
+    slackOauthActions,
+  ]));
+
   modal.appendChild(body);
   modal.appendChild(el("div", { class: "modal-actions" }, [
     el("button", { class: "button button-secondary", id: "settings-close" }, ["Done"]),
@@ -695,6 +756,53 @@ async function showSettingsModal() {
       try {
         await invoke("disconnect_google");
         showToast("Google disconnected");
+        reopenSettings();
+      } catch (e) { showToast(`Disconnect failed: ${e}`); }
+    });
+  }
+
+  // Slack OAuth handlers (v0.26). Same modal-reopen pattern as Granola
+  // and Google so the connect/disconnect button swap is reflected
+  // without requiring a manual reopen.
+  document.getElementById("settings-slack-oauth-save-id").addEventListener("click", async () => {
+    const clientId = document.getElementById("settings-slack-oauth-client-id").value.trim();
+    const clientSecret = document.getElementById("settings-slack-oauth-client-secret").value.trim();
+    if (!clientId || !clientSecret) {
+      return showToast("Both client ID and secret required");
+    }
+    try {
+      await invoke("save_slack_oauth_credentials", { clientId, clientSecret });
+      showToast("Slack credentials saved");
+      reopenSettings();
+    } catch (e) { showToast(`Save failed: ${e}`); }
+  });
+
+  const slackConnectBtn = document.getElementById("settings-slack-oauth-connect");
+  const slackReconnectBtn = document.getElementById("settings-slack-oauth-reconnect");
+  const runSlackConnect = async (btn) => {
+    if (!btn) return;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Authorising...";
+    try {
+      await invoke("connect_slack");
+      showToast("Slack connected");
+      reopenSettings();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = original;
+      showToast(`Connect failed: ${e.message || e}`, { ttl: 7000 });
+    }
+  };
+  if (slackConnectBtn) slackConnectBtn.addEventListener("click", () => runSlackConnect(slackConnectBtn));
+  if (slackReconnectBtn) slackReconnectBtn.addEventListener("click", () => runSlackConnect(slackReconnectBtn));
+
+  const slackDisconnectBtn = document.getElementById("settings-slack-oauth-disconnect");
+  if (slackDisconnectBtn) {
+    slackDisconnectBtn.addEventListener("click", async () => {
+      try {
+        await invoke("disconnect_slack");
+        showToast("Slack disconnected");
         reopenSettings();
       } catch (e) { showToast(`Disconnect failed: ${e}`); }
     });

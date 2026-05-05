@@ -32,6 +32,14 @@
 //     urgent: [ ...EmailThread ] | null,
 //     error: string | null,
 //   },
+//   slack: {
+//     // v0.26 — only filled in when Slack OAuth is connected. Hidden
+//     // entirely otherwise. unreads is null while loading, an empty
+//     // array when the user has nothing to triage.
+//     status: { connected: bool, has_client_id, has_client_secret, last_sync_at },
+//     unreads: [ ...UnreadSummary ] | null,
+//     error: string | null,
+//   },
 //   last_fetch_at:        { all section keys } -> ms timestamp
 // }
 //
@@ -63,6 +71,11 @@ export function emptyTodayState() {
     email: {
       unread: null,
       urgent: null,
+      error: null,
+    },
+    slack: {
+      status: null,
+      unreads: null,
       error: null,
     },
     last_fetch_at: {},

@@ -360,6 +360,40 @@ export async function loadDriveFiles(state) {
   }
 }
 
+// ── Slack activity (v0.26) ────────────────────────────────────────────
+//
+// Reads OAuth status first, bails when not connected. The Rust side
+// derives the slug from the client name (Northcote Theatre →
+// "northcote-theatre") and looks up #client-{slug}. When no channel
+// matches the slug, returns null and the render layer hides the section.
+
+export async function loadSlackActivity(state) {
+  try {
+    if (!state.code || !state.header) {
+      state.slack_activity = null;
+      return;
+    }
+    let status = null;
+    try { status = await safeInvoke("get_slack_oauth_status"); } catch {}
+    if (!status?.connected) {
+      state.slack_activity = null;
+      return;
+    }
+    const raw = await safeInvoke("list_slack_for_client", {
+      input: {
+        client_code: state.code,
+        client_name: state.header.name || null,
+      },
+    });
+    const parsed = JSON.parse(raw || "null");
+    state.slack_activity = parsed && parsed.channel ? parsed : null;
+    state.last_fetch_at.slack_activity = Date.now();
+  } catch (e) {
+    console.warn("loadSlackActivity failed:", e);
+    state.slack_activity = null;
+  }
+}
+
 // ── Top-level loaders ─────────────────────────────────────────────────
 
 export async function loadAll(state, code) {
@@ -377,6 +411,7 @@ export async function loadAll(state, code) {
     loadMeetings(state),
     loadEmails(state),
     loadDriveFiles(state),
+    loadSlackActivity(state),
   ]);
   return state;
 }
@@ -408,6 +443,9 @@ export async function refreshStale(state) {
   }
   if ((state.last_fetch_at.drive_files || 0) + STALE_MS < now) {
     tasks.push(loadDriveFiles(state));
+  }
+  if ((state.last_fetch_at.slack_activity || 0) + STALE_MS < now) {
+    tasks.push(loadSlackActivity(state));
   }
   await Promise.allSettled(tasks);
 }

@@ -370,6 +370,90 @@ function renderEmailRow(t) {
   return row;
 }
 
+// ── Section: Slack activity (v0.26) ───────────────────────────────────
+//
+// Hidden when Slack OAuth isn't connected. Otherwise: top channels by
+// unread count. Click opens the Slack desktop app at that channel.
+// Empty list (connected but nothing unread) collapses cleanly to a
+// single "all caught up" line.
+
+function renderSlack(state) {
+  const s = state.slack || {};
+  if (!s.status?.connected) return null; // hide entirely
+
+  const root = el("section", { class: "today-section", "data-section": "slack" });
+  root.appendChild(el("div", { class: "section-label" }, ["💬 SLACK ACTIVITY"]));
+
+  const unreads = Array.isArray(s.unreads) ? s.unreads : [];
+  if (s.error && unreads.length === 0) {
+    root.appendChild(
+      el("div", { class: "empty" }, [
+        "Slack unavailable — try the refresh button.",
+      ])
+    );
+    return root;
+  }
+
+  if (unreads.length === 0) {
+    root.appendChild(el("div", { class: "empty" }, ["All channels caught up."]));
+    return root;
+  }
+
+  const total = unreads.reduce((acc, u) => acc + (Number(u.unread_count) || 0), 0);
+  root.appendChild(
+    el("div", { class: "today-section-meta" }, [
+      `${total} unread across ${unreads.length} channel${unreads.length === 1 ? "" : "s"}`,
+    ])
+  );
+
+  const list = el("div", { class: "today-list" });
+  unreads.forEach((u) => list.appendChild(renderSlackChannelRow(u)));
+  root.appendChild(list);
+  return root;
+}
+
+function renderSlackChannelRow(u) {
+  const ch = u.channel || {};
+  const row = el("button", {
+    class: "today-row",
+    type: "button",
+    "data-channel-id": ch.id || "",
+  });
+  row.addEventListener("click", () => {
+    // Prefer the deeplink — if Slack desktop is running it'll handle it;
+    // when not, the URL just falls through to the system handler. Web
+    // link is the explicit fallback.
+    const url = ch.deeplink || ch.web_link;
+    if (url) dispatch("today:open-url", { url });
+  });
+
+  const last = u.last_message;
+  const senderName = last?.user_name || (last?.user ? `<@${last.user}>` : "");
+  const snippet = last?.text ? last.text.slice(0, 100) : "";
+  const metaBits = [];
+  if (senderName) metaBits.push(senderName);
+  if (snippet) metaBits.push(snippet);
+
+  const left = el("div", { class: "today-row-main" }, [
+    el("div", { class: "today-row-title" }, [`#${ch.name || "channel"}`]),
+    metaBits.length
+      ? el("div", { class: "today-row-meta" }, [metaBits.join(" · ")])
+      : null,
+  ]);
+  const right = el("div", { class: "today-row-side" }, [
+    ch.is_private
+      ? el("span", { class: "client-status-pill" }, ["private"])
+      : null,
+    el("span", { class: "client-status-pill status-active" }, [
+      `${u.unread_count} unread`,
+    ]),
+  ]);
+
+  row.appendChild(left);
+  row.appendChild(right);
+  return row;
+}
+
 // ── Section: live status ──────────────────────────────────────────────
 
 function renderLiveStatus(state) {
@@ -702,6 +786,7 @@ export function draw(state) {
     renderWorkstreams(state),
     renderDecisions(state),
     renderEmail(state),
+    renderSlack(state),
     renderLiveStatus(state),
     renderReceiptsPending(state),
     renderMorningBriefing(state),
