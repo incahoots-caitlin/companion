@@ -11,6 +11,8 @@
 //   tick_item(receipt_id, idx)    -> Result<String, String>  (returns updated JSON)
 
 mod drift;
+mod granola;
+mod oauth;
 
 use keyring::Entry;
 use rusqlite::{params, Connection};
@@ -33,6 +35,17 @@ const KEYRING_AIRTABLE_BASE: &str = "airtable-base-id";
 const ANTHROPIC_API: &str = "https://api.anthropic.com/v1/messages";
 const AIRTABLE_API: &str = "https://api.airtable.com/v0";
 const MODEL_ID: &str = "claude-opus-4-7";
+
+// Beta header for the Anthropic Messages API native MCP connector.
+// When this is sent, the request body may include `mcp_servers` and
+// Claude will invoke the listed MCP tools server-side.
+// Source: https://platform.claude.com/docs/en/agents-and-tools/mcp-connector
+const ANTHROPIC_MCP_BETA: &str = "mcp-client-2025-11-20";
+
+// Tracks the unix-timestamp of the last successful Granola pull. Used
+// for the Settings "Last pull" indicator. Survives restarts via
+// Keychain.
+const KEYRING_GRANOLA_LAST_PULL: &str = "granola-last-pull-at";
 
 // Munbyn reprint paths. Both live in the team-shared Dropbox so Rose
 // also has them, but only Caitlin's Mac has the printer queue named
@@ -579,6 +592,33 @@ struct AnthropicRequest<'a> {
     max_tokens: u32,
     system: &'a str,
     messages: Vec<AnthropicMessage>,
+    // Optional MCP connector fields. When `mcp_servers` is non-empty the
+    // request must also carry the `anthropic-beta: mcp-client-2025-11-20`
+    // header. These serialise as nothing when None, keeping the existing
+    // pure-prompt workflows byte-identical to v0.21.x.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mcp_servers: Option<Vec<McpServerSpec>>,
+}
+
+#[derive(Serialize, Debug)]
+struct McpServerSpec {
+    #[serde(rename = "type")]
+    server_type: &'static str, // always "url"
+    name: String,
+    url: String,
+    authorization_token: String,
+    // Allowlist tools per call to keep token overhead down. The Messages
+    // API connector takes a `tool_configuration` object with
+    // `enabled: bool` and an `allowed_tools` array.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_configuration: Option<McpToolConfiguration>,
+}
+
+#[derive(Serialize, Debug)]
+struct McpToolConfiguration {
+    enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allowed_tools: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -587,11 +627,46 @@ struct AnthropicResponse {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)] // MCP fields captured for future debug surface
 struct AnthropicContentBlock {
     #[serde(rename = "type")]
     block_type: String,
     text: Option<String>,
+    // MCP tool-use / tool-result blocks. We don't render these in the
+    // receipt itself — they're tool calls Claude made on the user's
+    // behalf — but we keep them on the parsed response so a future
+    // debug surface can expose them. The frontend doesn't see this
+    // type today; only the joined text from `text` blocks reaches it.
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    input: Option<serde_json::Value>,
+    #[serde(default)]
+    content: Option<serde_json::Value>,
+    #[serde(default)]
+    is_error: Option<bool>,
 }
+
+// Walks a content array and returns just the text. MCP tool-use and
+// tool-result blocks are skipped here (see also the receipt builder
+// which writes them into the `_mcp_log` field for debug).
+fn collect_text_blocks(blocks: &[AnthropicContentBlock]) -> String {
+    blocks
+        .iter()
+        .filter(|b| b.block_type == "text")
+        .filter_map(|b| b.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+// Note: MCP tool-use / tool-result blocks land on the response with
+// types "mcp_tool_use" and "mcp_tool_result" (and the legacy
+// "tool_use" / "tool_result" shapes). collect_text_blocks ignores
+// them and returns just the assistant's text. The `name`, `input`,
+// `content`, and `is_error` fields on AnthropicContentBlock are
+// captured so a future debug surface can show what tool calls
+// happened. They're deliberately not surfaced today — the user-
+// visible response is just the assistant's prose.
 
 fn extract_json_block(text: &str) -> Result<String, String> {
     // Try fenced ```json block first.
@@ -632,6 +707,7 @@ async fn run_strategic_thinking(
             role: "user".to_string(),
             content: input,
         }],
+        mcp_servers: None,
     };
 
     let client = reqwest::Client::builder()
@@ -660,13 +736,7 @@ async fn run_strategic_thinking(
         .await
         .map_err(|e| format!("Parse error: {}", e))?;
 
-    let text = parsed
-        .content
-        .iter()
-        .filter(|b| b.block_type == "text")
-        .filter_map(|b| b.text.as_deref())
-        .collect::<Vec<_>>()
-        .join("");
+    let text = collect_text_blocks(&parsed.content);
 
     let json = extract_json_block(&text)?;
 
@@ -738,6 +808,7 @@ async fn run_new_client_onboarding(
             role: "user".to_string(),
             content: user_message,
         }],
+        mcp_servers: None,
     };
 
     let client = reqwest::Client::builder()
@@ -766,13 +837,7 @@ async fn run_new_client_onboarding(
         .await
         .map_err(|e| format!("Parse error: {}", e))?;
 
-    let text = api_response
-        .content
-        .iter()
-        .filter(|b| b.block_type == "text")
-        .filter_map(|b| b.text.as_deref())
-        .collect::<Vec<_>>()
-        .join("");
+    let text = collect_text_blocks(&api_response.content);
 
     let json = extract_json_block(&text)?;
 
@@ -792,6 +857,13 @@ async fn run_new_client_onboarding(
 struct MonthlyCheckinInput {
     client_code: String,
     extra_notes: Option<String>,
+    // v0.22: optional Granola transcript bundle. Set by the "Pull from
+    // Granola" button on the modal (which calls `pull_granola_transcripts`
+    // and concatenates the result into this field). Manual paste also
+    // works — the user can edit the textarea before submitting. Plain
+    // text; no shape contract.
+    #[serde(default)]
+    transcript_notes: Option<String>,
 }
 
 // Pull recent receipts from local SQLite for a given client code. Used as
@@ -906,19 +978,28 @@ async fn run_monthly_checkin(
         summaries.join("\n\n")
     };
 
+    let transcript_section = match parsed.transcript_notes.as_deref() {
+        Some(t) if !t.trim().is_empty() => format!(
+            "\n\n## Recent call transcripts / notes\n\n{}",
+            t.trim()
+        ),
+        _ => String::new(),
+    };
+
     let user_message = format!(
         "## Monthly check-in for {} ({})\n\n\
          **Status:** {}\n\
          **Today's date:** {}\n\
          **Window:** last 30 days\n\n\
          ## User flags from the studio side\n\n{}\n\n\
-         ## Recent receipts\n\n{}",
+         ## Recent receipts\n\n{}{}",
         client_name,
         code,
         client_status,
         chrono::Local::now().format("%A %d %B %Y"),
         parsed.extra_notes.as_deref().unwrap_or("(none)"),
         bundle,
+        transcript_section,
     );
 
     let body = AnthropicRequest {
@@ -929,6 +1010,7 @@ async fn run_monthly_checkin(
             role: "user".to_string(),
             content: user_message,
         }],
+        mcp_servers: None,
     };
 
     let http = reqwest::Client::builder()
@@ -957,13 +1039,7 @@ async fn run_monthly_checkin(
         .await
         .map_err(|e| format!("Parse error: {}", e))?;
 
-    let text = api_response
-        .content
-        .iter()
-        .filter(|b| b.block_type == "text")
-        .filter_map(|b| b.text.as_deref())
-        .collect::<Vec<_>>()
-        .join("");
+    let text = collect_text_blocks(&api_response.content);
 
     let json = extract_json_block(&text)?;
 
@@ -986,6 +1062,11 @@ async fn run_monthly_checkin(
 struct QuarterlyReviewInput {
     client_code: String,
     extra_notes: Option<String>,
+    // v0.22: optional Granola transcript bundle. Same semantics as
+    // Monthly Check-in's transcript_notes — populated by the "Pull from
+    // Granola" button or manual paste.
+    #[serde(default)]
+    transcript_notes: Option<String>,
 }
 
 #[tauri::command]
@@ -1024,19 +1105,28 @@ async fn run_quarterly_review(
         summaries.join("\n\n")
     };
 
+    let transcript_section = match parsed.transcript_notes.as_deref() {
+        Some(t) if !t.trim().is_empty() => format!(
+            "\n\n## Recent call transcripts / notes\n\n{}",
+            t.trim()
+        ),
+        _ => String::new(),
+    };
+
     let user_message = format!(
         "## Quarterly review for {} ({})\n\n\
          **Status:** {}\n\
          **Today's date:** {}\n\
          **Window:** last 90 days\n\n\
          ## User flags from the studio side\n\n{}\n\n\
-         ## Recent receipts (last quarter)\n\n{}",
+         ## Recent receipts (last quarter)\n\n{}{}",
         client_name,
         code,
         client_status,
         chrono::Local::now().format("%A %d %B %Y"),
         parsed.extra_notes.as_deref().unwrap_or("(none)"),
         bundle,
+        transcript_section,
     );
 
     let body = AnthropicRequest {
@@ -1047,6 +1137,7 @@ async fn run_quarterly_review(
             role: "user".to_string(),
             content: user_message,
         }],
+        mcp_servers: None,
     };
 
     let http = reqwest::Client::builder()
@@ -1075,13 +1166,7 @@ async fn run_quarterly_review(
         .await
         .map_err(|e| format!("Parse error: {}", e))?;
 
-    let text = api_response
-        .content
-        .iter()
-        .filter(|b| b.block_type == "text")
-        .filter_map(|b| b.text.as_deref())
-        .collect::<Vec<_>>()
-        .join("");
+    let text = collect_text_blocks(&api_response.content);
 
     let json = extract_json_block(&text)?;
 
@@ -1202,6 +1287,7 @@ async fn run_new_campaign_scope(
             role: "user".to_string(),
             content: user_message,
         }],
+        mcp_servers: None,
     };
 
     let http = reqwest::Client::builder()
@@ -1230,13 +1316,7 @@ async fn run_new_campaign_scope(
         .await
         .map_err(|e| format!("Parse error: {}", e))?;
 
-    let text = api_response
-        .content
-        .iter()
-        .filter(|b| b.block_type == "text")
-        .filter_map(|b| b.text.as_deref())
-        .collect::<Vec<_>>()
-        .join("");
+    let text = collect_text_blocks(&api_response.content);
 
     let json = extract_json_block(&text)?;
 
@@ -1375,6 +1455,7 @@ async fn run_subcontractor_onboarding(
             role: "user".to_string(),
             content: user_message,
         }],
+        mcp_servers: None,
     };
 
     let http = reqwest::Client::builder()
@@ -1403,13 +1484,7 @@ async fn run_subcontractor_onboarding(
         .await
         .map_err(|e| format!("Parse error: {}", e))?;
 
-    let text = api_response
-        .content
-        .iter()
-        .filter(|b| b.block_type == "text")
-        .filter_map(|b| b.text.as_deref())
-        .collect::<Vec<_>>()
-        .join("");
+    let text = collect_text_blocks(&api_response.content);
 
     let json = extract_json_block(&text)?;
 
@@ -2665,6 +2740,220 @@ async fn reprint_receipt(state: State<'_, DbState>, receipt_id: String) -> Resul
     Ok(())
 }
 
+// ── Granola integration (v0.22, Block C) ───────────────────────────────
+//
+// Three Tauri commands wrap the OAuth + MCP plumbing for the frontend:
+//
+//   - `get_granola_status()`  → { connected, has_client_id, last_pull_at }
+//   - `save_granola_client_id(client_id)` → ()
+//   - `connect_granola()`     → () — runs the browser OAuth flow.
+//   - `disconnect_granola()`  → () — wipes Keychain entries.
+//   - `pull_granola_transcripts(client_code, since_days)` → String
+//        Calls the Anthropic Messages API with Granola's MCP server
+//        attached, asks Claude to fetch transcripts for the named
+//        client over the window, and returns a plain-text bundle the
+//        frontend appends to the Monthly Check-in / Quarterly Review
+//        textarea.
+//
+// First-call OAuth UX: if `pull_granola_transcripts` is invoked while
+// disconnected, it returns a structured error the frontend uses to
+// nudge the user to Settings → Connect Granola. We don't auto-trigger
+// the browser flow from here because the call may have come from a
+// modal action mid-typing and Caitlin shouldn't lose her place.
+
+#[derive(Serialize)]
+struct GranolaStatus {
+    connected: bool,
+    has_client_id: bool,
+    last_pull_at: Option<String>,
+}
+
+#[tauri::command]
+fn get_granola_status() -> GranolaStatus {
+    GranolaStatus {
+        connected: oauth::is_connected(&granola::GRANOLA),
+        has_client_id: oauth::read_keychain(granola::GRANOLA.client_id_keychain_key)
+            .is_some(),
+        last_pull_at: oauth::read_keychain(KEYRING_GRANOLA_LAST_PULL),
+    }
+}
+
+#[tauri::command]
+fn save_granola_client_id(client_id: String) -> Result<(), String> {
+    let trimmed = client_id.trim();
+    if trimmed.is_empty() {
+        return Err("Empty client ID".to_string());
+    }
+    oauth::write_keychain(granola::GRANOLA.client_id_keychain_key, trimmed)
+}
+
+#[tauri::command]
+async fn connect_granola() -> Result<(), String> {
+    oauth::start_oauth_flow(&granola::GRANOLA).await
+}
+
+#[tauri::command]
+fn disconnect_granola() -> Result<(), String> {
+    oauth::disconnect(&granola::GRANOLA)
+}
+
+#[derive(Deserialize, Debug)]
+struct PullGranolaInput {
+    client_code: String,
+    #[serde(default = "default_pull_window_days")]
+    since_days: i64,
+    // Optional: human-readable client name to pass into the prompt.
+    // Saves an Airtable round-trip when the frontend already knows it.
+    #[serde(default)]
+    client_name: Option<String>,
+}
+
+fn default_pull_window_days() -> i64 {
+    30
+}
+
+#[tauri::command]
+async fn pull_granola_transcripts(
+    input: serde_json::Value,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+
+    let api_key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+    let parsed: PullGranolaInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+
+    let code = parsed.client_code.trim().to_uppercase();
+    if code.is_empty() {
+        return Err("Pick a client first".to_string());
+    }
+
+    // Ensure we have a fresh Granola token. ensure_fresh_token surfaces
+    // a clean error if Granola isn't connected — frontend turns that
+    // into a "Go to Settings → Connect Granola" toast.
+    let token = oauth::ensure_fresh_token(&granola::GRANOLA)
+        .await
+        .map_err(|e| format!("Granola: {}", e))?;
+
+    // Resolve client name. Best-effort — falls back to the code.
+    let client_name = match parsed.client_name {
+        Some(ref n) if !n.trim().is_empty() => n.trim().to_string(),
+        _ => {
+            let qs = format!(
+                "filterByFormula={}&maxRecords=1&fields%5B%5D=name",
+                urlencode(&format!("{{code}}='{}'", code))
+            );
+            let data = airtable_get("Clients", &qs)
+                .await
+                .unwrap_or(serde_json::Value::Null);
+            data["records"][0]["fields"]["name"]
+                .as_str()
+                .unwrap_or(&code)
+                .to_string()
+        }
+    };
+
+    // Build the Granola MCP server entry. Allowlist only the two tools
+    // we actually need — keeps token cost down per the v0.22 plan.
+    let mcp_servers = vec![McpServerSpec {
+        server_type: "url",
+        name: granola::GRANOLA.name.to_string(),
+        url: granola::GRANOLA_MCP_URL.to_string(),
+        authorization_token: token,
+        tool_configuration: Some(McpToolConfiguration {
+            enabled: true,
+            allowed_tools: Some(
+                granola::MONTHLY_CHECKIN_TOOLS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
+        }),
+    }];
+
+    // Plain-text response, not the receipt JSON shape — the workflow
+    // call later wraps the user's pasted/pulled text into a receipt.
+    let user_message = format!(
+        "Use the Granola MCP tools to fetch meeting notes and \
+         transcripts for the client \"{}\" (client code: {}) over \
+         the last {} days.\n\n\
+         Workflow:\n\
+         1. Call `list_meetings` with a date range covering the last \
+            {} days.\n\
+         2. Filter to meetings whose title or attendees match the \
+            client name above.\n\
+         3. For each match, call `get_meeting_transcript`.\n\
+         4. Return a plain-text bundle, one section per meeting:\n\n\
+         ### YYYY-MM-DD — Meeting title\n\
+         (1-2 sentence summary)\n\
+         (raw transcript)\n\n\
+         If no meetings match, reply with the single line: \
+         `No Granola meetings found for {} in the last {} days.` and \
+         nothing else.\n\n\
+         Do not wrap the response in JSON or markdown fences. Plain \
+         text only — Studio will paste this verbatim into a textarea.",
+        client_name, code, parsed.since_days, parsed.since_days,
+        client_name, parsed.since_days,
+    );
+
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 8192,
+        system:
+            "You are a faithful retrieval assistant. Use the Granola \
+             MCP tools to fetch and return meeting transcripts. Do not \
+             summarise or interpret beyond what's asked. Plain text only.",
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+        mcp_servers: Some(mcp_servers),
+    };
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+
+    let response = http
+        .post(ANTHROPIC_API)
+        .header("x-api-key", &api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("anthropic-beta", ANTHROPIC_MCP_BETA)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Anthropic API {}: {}", status.as_u16(), text));
+    }
+
+    let api_response: AnthropicResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    let text = collect_text_blocks(&api_response.content);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(
+            "Granola pull came back empty — try again, or paste manually".to_string(),
+        );
+    }
+
+    // Stamp last-pull-at for the Settings indicator. Best-effort.
+    let _ = oauth::write_keychain(
+        KEYRING_GRANOLA_LAST_PULL,
+        &chrono::Utc::now().to_rfc3339(),
+    );
+
+    Ok(trimmed.to_string())
+}
+
 // ── Tauri entry ─────────────────────────────────────────────────────────
 
 fn toggle_main_window(app: &tauri::AppHandle) {
@@ -2797,7 +3086,13 @@ pub fn run() {
             list_receipts,
             delete_receipt,
             tick_item,
-            reprint_receipt
+            reprint_receipt,
+            // v0.22 Block C — Granola MCP connector
+            get_granola_status,
+            save_granola_client_id,
+            connect_granola,
+            disconnect_granola,
+            pull_granola_transcripts
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

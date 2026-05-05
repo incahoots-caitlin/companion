@@ -373,10 +373,12 @@ async function showSettingsModal() {
   let apiSet = false;
   let slackSet = false;
   let airtableSet = false;
+  let granolaStatus = { connected: false, has_client_id: false, last_pull_at: null };
   if (isTauri) {
     try { apiSet = await invoke("get_api_key_status"); } catch {}
     try { slackSet = await invoke("get_slack_status"); } catch {}
     try { airtableSet = await invoke("get_airtable_status"); } catch {}
+    try { granolaStatus = await invoke("get_granola_status"); } catch {}
   }
 
   const body = el("div", { class: "settings-body" });
@@ -444,6 +446,46 @@ async function showSettingsModal() {
     ]),
   ]));
 
+  // Granola integration (v0.22 Block C).
+  // Two-step setup: first paste the OAuth client ID (issued by
+  // Granola's developer console with redirect URI
+  // http://localhost:53682/callback registered), then click Connect
+  // to run the browser PKCE flow. Status updates without a refresh.
+  const granolaMeta = granolaStatus.connected
+    ? `Connected. Pull from Granola is live on Monthly Check-in and Quarterly Review.${granolaStatus.last_pull_at ? ` Last pull: ${formatGranolaTimestamp(granolaStatus.last_pull_at)}.` : ""}`
+    : granolaStatus.has_client_id
+      ? "Client ID saved. Click Connect to authorise in your browser."
+      : "Optional. Paste your Granola OAuth client ID (redirect URI: http://localhost:53682/callback), then click Connect.";
+
+  const granolaActions = el("div", { class: "settings-row", style: "margin-top: 8px;" });
+  if (granolaStatus.connected) {
+    granolaActions.appendChild(
+      el("button", { class: "button button-secondary", id: "settings-granola-disconnect" }, ["Disconnect"]),
+    );
+    granolaActions.appendChild(
+      el("button", { class: "button", id: "settings-granola-reconnect" }, ["Re-authorise"]),
+    );
+  } else {
+    granolaActions.appendChild(
+      el("button", { class: "button", id: "settings-granola-connect" }, ["Connect Granola"]),
+    );
+  }
+
+  body.appendChild(el("div", { class: "settings-section" }, [
+    el("div", { class: "settings-label" }, ["Granola integration"]),
+    el("div", { class: "settings-meta" }, [granolaMeta]),
+    el("div", { class: "settings-row" }, [
+      el("input", {
+        id: "settings-granola-client-id",
+        type: "text",
+        placeholder: granolaStatus.has_client_id ? "(client ID set — paste again to overwrite)" : "Granola OAuth client ID",
+        class: "settings-input",
+      }),
+      el("button", { class: "button button-secondary", id: "settings-granola-save-id" }, ["Save ID"]),
+    ]),
+    granolaActions,
+  ]));
+
   modal.appendChild(body);
   modal.appendChild(el("div", { class: "modal-actions" }, [
     el("button", { class: "button button-secondary", id: "settings-close" }, ["Done"]),
@@ -489,6 +531,70 @@ async function showSettingsModal() {
       loadStudioSidebar();
     } catch (e) { showToast(`Save failed: ${e}`); }
   });
+
+  // Granola handlers. Re-render the modal in place after state changes
+  // so the connect/disconnect button swap and the meta text update
+  // without requiring a manual reopen.
+  const reopenSettings = () => { close(); showSettingsModal(); };
+
+  document.getElementById("settings-granola-save-id").addEventListener("click", async () => {
+    const clientId = document.getElementById("settings-granola-client-id").value.trim();
+    if (!clientId) return showToast("Paste a client ID first");
+    try {
+      await invoke("save_granola_client_id", { clientId });
+      showToast("Granola client ID saved");
+      reopenSettings();
+    } catch (e) { showToast(`Save failed: ${e}`); }
+  });
+
+  const connectBtn = document.getElementById("settings-granola-connect");
+  const reconnectBtn = document.getElementById("settings-granola-reconnect");
+  const runConnect = async (btn) => {
+    if (!btn) return;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Authorising...";
+    try {
+      await invoke("connect_granola");
+      showToast("Granola connected");
+      reopenSettings();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = original;
+      showToast(`Connect failed: ${e.message || e}`, { ttl: 7000 });
+    }
+  };
+  if (connectBtn) connectBtn.addEventListener("click", () => runConnect(connectBtn));
+  if (reconnectBtn) reconnectBtn.addEventListener("click", () => runConnect(reconnectBtn));
+
+  const disconnectBtn = document.getElementById("settings-granola-disconnect");
+  if (disconnectBtn) {
+    disconnectBtn.addEventListener("click", async () => {
+      try {
+        await invoke("disconnect_granola");
+        showToast("Granola disconnected");
+        reopenSettings();
+      } catch (e) { showToast(`Disconnect failed: ${e}`); }
+    });
+  }
+}
+
+// Render an RFC3339 timestamp as "Mon 5 May, 2:14pm" for the Granola
+// last-pull indicator. Falls back to the raw string on parse failure.
+function formatGranolaTimestamp(rfc3339) {
+  try {
+    const d = new Date(rfc3339);
+    if (Number.isNaN(d.getTime())) return rfc3339;
+    return d.toLocaleString(undefined, {
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch (_) {
+    return rfc3339;
+  }
 }
 
 // ─── Sidebar dynamic load (Airtable Clients) ─────────────────────────
@@ -1039,6 +1145,7 @@ async function showClientPickerReviewModal({
   successToast,
   flagsPlaceholder,
   prefillClientCode,
+  granolaWindowDays, // optional: enables the "Pull from Granola" button on this modal
 }) {
   if (document.getElementById(modalId)) return;
 
@@ -1099,6 +1206,40 @@ async function showClientPickerReviewModal({
   flagsPad.appendChild(flags);
   modal.appendChild(flagsPad);
 
+  // ── Granola transcript pull (v0.22) ─────────────────────────────────
+  // Only rendered when granolaWindowDays is set (Monthly Check-in,
+  // Quarterly Review). The "Pull from Granola" button calls the Tauri
+  // command, gets back a plain-text transcript bundle, and appends it
+  // to the textarea below. Manual paste also works — the textarea is
+  // a normal editable field. The fallback is intentional, even with
+  // Granola wired: useful for offline, or for transcripts that aren't
+  // in Granola.
+  let transcriptPad = null;
+  let transcript = null;
+  if (granolaWindowDays) {
+    const transcriptHeader = el("div", {
+      style: "display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 6px;",
+    }, [
+      el("div", { class: "settings-label" }, ["Call notes / transcripts (optional)"]),
+      el("button", {
+        class: "button button-secondary",
+        id: `${modalId}-pull-granola`,
+        type: "button",
+        style: "padding: 4px 10px; font-size: 12px;",
+      }, ["Pull from Granola"]),
+    ]);
+    transcript = el("textarea", {
+      class: "modal-textarea",
+      placeholder: "Paste call notes or transcripts here. Or click \"Pull from Granola\" to fetch the last " + granolaWindowDays + " days for this client.",
+      rows: 6,
+    });
+    transcriptPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+      transcriptHeader,
+      transcript,
+    ]);
+    modal.appendChild(transcriptPad);
+  }
+
   const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
   const runBtn = el("button", { class: "button" }, ["Run"]);
   modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
@@ -1111,10 +1252,56 @@ async function showClientPickerReviewModal({
   modal.querySelector(".modal-close").addEventListener("click", close);
   cancelBtn.addEventListener("click", close);
 
+  // Wire the Pull from Granola button (only present when transcript is set).
+  if (transcript) {
+    const pullBtn = document.getElementById(`${modalId}-pull-granola`);
+    pullBtn.addEventListener("click", async () => {
+      if (!isTauri) {
+        showToast("Granola pull only works in the Studio app");
+        return;
+      }
+      const code = clientPicker.value;
+      if (!code) return showToast("Pick a client first");
+      const originalLabel = pullBtn.textContent;
+      pullBtn.disabled = true;
+      pullBtn.textContent = "Pulling...";
+      try {
+        const clientName = clients.find((c) => c.code === code)?.name || null;
+        const text = await invoke("pull_granola_transcripts", {
+          input: {
+            client_code: code,
+            since_days: granolaWindowDays,
+            client_name: clientName,
+          },
+        });
+        // Append (don't replace) — Caitlin may have already pasted notes.
+        const existing = transcript.value.trim();
+        transcript.value = existing
+          ? `${existing}\n\n--- Pulled from Granola ---\n\n${text}`
+          : text;
+        showToast("Transcripts pulled");
+      } catch (e) {
+        const msg = String(e.message || e);
+        if (msg.includes("not connected") || msg.includes("client ID not")) {
+          showToast(
+            "Granola not connected. Open Settings → Granola to connect.",
+            { ttl: 7000 },
+          );
+        } else {
+          showToast(`Granola pull failed: ${msg}`, { ttl: 7000 });
+        }
+      } finally {
+        pullBtn.disabled = false;
+        pullBtn.textContent = originalLabel;
+      }
+    });
+  }
+
   runBtn.addEventListener("click", async () => {
     const input = {
       client_code: clientPicker.value,
       extra_notes: flags.value.trim() || null,
+      transcript_notes: transcript ? (transcript.value.trim() || null) : null,
     };
     runBtn.disabled = true;
     runBtn.textContent = runningLabel;
@@ -1142,6 +1329,7 @@ async function showMonthlyCheckinModal(prefillClientCode) {
     successToast: "Check-in receipt ready",
     flagsPlaceholder: "e.g. payment overdue, scope creeping, key contact has changed, big upcoming on-sale. Skip if there's nothing.",
     prefillClientCode,
+    granolaWindowDays: 30,
   });
 }
 
@@ -1155,6 +1343,7 @@ async function showQuarterlyReviewModal(prefillClientCode) {
     successToast: "QBR receipt ready",
     flagsPlaceholder: "e.g. renewal coming up, scope feels off, want to propose a shape change, considering wind-down. Skip if there's nothing pressing.",
     prefillClientCode,
+    granolaWindowDays: 90,
   });
 }
 
