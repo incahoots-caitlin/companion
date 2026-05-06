@@ -58,6 +58,9 @@ export function emptyTodayState() {
       context: null,
       github_actions: null,
       contextfor_me: null,
+      // v0.37 Block F — current-month margin from Studio CFO. null while
+      // loading, { margin, error? } once resolved.
+      margin: null,
     },
     drift: null,
     receipts_pending: null,

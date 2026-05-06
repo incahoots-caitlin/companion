@@ -393,16 +393,33 @@ export async function loadPipeline(state) {
 // ── Live status ───────────────────────────────────────────────────────
 
 export async function loadLiveStatus(state) {
-  // Run all four checks concurrently, write each into state independently
+  // Run all five checks concurrently, write each into state independently
   // so a slow GitHub check doesn't block the fast Studio version read.
   const tasks = [
     loadStudioVersion(state),
     loadGithubActions(state),
     loadContextForMe(state),
     loadContextDeploy(state),
+    loadMarginThisMonth(state),
   ];
   await Promise.allSettled(tasks);
   state.last_fetch_at.live_status = Date.now();
+}
+
+async function loadMarginThisMonth(state) {
+  // v0.37 Block F — Studio CFO surfaces the current-month margin on the
+  // Today live-status row. Failures fall back to a soft "(unavailable)"
+  // — never block the rest of the row.
+  try {
+    const now = new Date();
+    const totals = await safeInvoke("cfo_studio_totals", {
+      year: now.getFullYear(),
+      month: now.getMonth() + 1,
+    });
+    state.live_status.margin = { margin: totals?.margin ?? 0 };
+  } catch (e) {
+    state.live_status.margin = { error: String(e) };
+  }
 }
 
 async function loadStudioVersion(state) {

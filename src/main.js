@@ -25,6 +25,9 @@ import { dispatch as dispatchSkill } from "./skills/dispatch.js";
 import { show as showSkillsOverflow } from "./skills/overflow.js";
 import { skillsForContext } from "./skills/registry.js";
 import * as globalSearch from "./search/index.js";
+import * as cfoFetch from "./cfo/fetch.js";
+import * as cfoRender from "./cfo/render.js";
+import { emptyCfoState, shiftMonth as cfoShiftMonth } from "./cfo/state.js";
 
 // Global state container. Today dashboard owns _state.today; per-client
 // view owns _state.client. Switching clients overwrites _state.client.
@@ -35,6 +38,7 @@ const _state = {
   client: emptyClientState(),
   conversation: emptyConversationState(),
   project: emptyProjectState(),
+  cfo: emptyCfoState(),
 };
 
 // Track whether the chat surface is mounted on top of #client-view. Set
@@ -4517,6 +4521,8 @@ function showTodayView() {
   document.getElementById("client-view")?.setAttribute("hidden", "");
   // Drop any pipeline view if it was open.
   document.getElementById("pipeline-view")?.setAttribute("hidden", "");
+  // Drop the Studio CFO view if it was open (v0.37).
+  document.getElementById("studio-cfo-view")?.setAttribute("hidden", "");
   // Drop any skills-only views (Team, Social launch) if open.
   document
     .querySelectorAll('[data-view-kind="skills-only"]')
@@ -4545,6 +4551,7 @@ function showSkillsOnlyView({ id, title, emoji, intro, context }) {
   document.getElementById("today-view")?.setAttribute("hidden", "");
   document.getElementById("client-view")?.setAttribute("hidden", "");
   document.getElementById("pipeline-view")?.setAttribute("hidden", "");
+  document.getElementById("studio-cfo-view")?.setAttribute("hidden", "");
 
   const viewId = `skills-only-${id}`;
   // Hide every previously-rendered skills-only view container so we don't
@@ -4638,6 +4645,7 @@ async function showPipelineView() {
 
   document.getElementById("today-view")?.setAttribute("hidden", "");
   document.getElementById("client-view")?.setAttribute("hidden", "");
+  document.getElementById("studio-cfo-view")?.setAttribute("hidden", "");
   document
     .querySelectorAll('[data-view-kind="skills-only"]')
     .forEach((n) => n.setAttribute("hidden", ""));
@@ -4750,6 +4758,50 @@ async function showPipelineView() {
 
   // Load leads + render rows.
   await renderLeadsList(leadsList);
+}
+
+// v0.37 Block F — Studio CFO surface. Lives under the Personal sidebar
+// section. Renders monthly financial intelligence (totals, per-client
+// breakdown, hour-creep alerts, next-month outlook) from existing
+// Airtable tables. Read-only; no writes.
+async function showStudioCfoView() {
+  _chatActive = false;
+  _projectActive = false;
+  convRender.exitChat();
+  projectRender.exitProject();
+  clearLiveStatusTimer();
+  clearCalendarTimer();
+
+  document.getElementById("today-view")?.setAttribute("hidden", "");
+  document.getElementById("client-view")?.setAttribute("hidden", "");
+  document.getElementById("pipeline-view")?.setAttribute("hidden", "");
+  document
+    .querySelectorAll('[data-view-kind="skills-only"]')
+    .forEach((n) => n.setAttribute("hidden", ""));
+
+  let view = document.getElementById("studio-cfo-view");
+  if (!view) {
+    view = document.createElement("section");
+    view.id = "studio-cfo-view";
+    document.querySelector("main.main")?.appendChild(view);
+  }
+  view.removeAttribute("hidden");
+
+  const titleEl = document.querySelector(".main-title");
+  if (titleEl) titleEl.textContent = "Studio CFO";
+
+  // Initial paint with whatever's cached, then load + repaint.
+  cfoRender.draw(view, _state.cfo);
+  if (isTauri) {
+    _state.cfo.loading = true;
+    cfoRender.draw(view, _state.cfo);
+    await cfoFetch.loadAll(_state.cfo);
+    cfoRender.draw(view, _state.cfo);
+  } else {
+    _state.cfo.error =
+      "Open the Companion app to load CFO data. Preview is read-only.";
+    cfoRender.draw(view, _state.cfo);
+  }
 }
 
 // Render the list of active leads into the supplied container. Each row
@@ -5253,6 +5305,21 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Click handlers dispatched by the Today render layer.
+  // v0.37 Block F — clicking the margin row in Today's live-status grid
+  // jumps straight into the Studio CFO view.
+  document.addEventListener("today:open-cfo", () => {
+    const item = document.querySelector('.sidebar-item[data-view="studio-cfo"]');
+    if (item) {
+      document.querySelectorAll(".sidebar-item").forEach((i) => {
+        i.classList.remove("active");
+        i.removeAttribute("aria-current");
+      });
+      item.classList.add("active");
+      item.setAttribute("aria-current", "page");
+    }
+    showStudioCfoView();
+  });
+
   document.addEventListener("today:open-url", (e) => {
     const url = e.detail?.url;
     if (!url) return;
@@ -5451,6 +5518,30 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.addEventListener("client:receipt-click", (e) => {
     showReceiptJsonModal(e.detail?.receipt);
+  });
+
+  // v0.37 Block F — Studio CFO month picker. Shift the visible month and
+  // re-fetch all four CFO slices.
+  document.addEventListener("cfo:shift-month", async (e) => {
+    const delta = Number(e.detail?.delta) || 0;
+    if (delta === 0) return;
+    cfoShiftMonth(_state.cfo, delta);
+    const view = document.getElementById("studio-cfo-view");
+    if (!view) return;
+    _state.cfo.totals = null;
+    _state.cfo.per_client = null;
+    _state.cfo.alerts = null;
+    _state.cfo.outlook = null;
+    _state.cfo.loading = true;
+    cfoRender.draw(view, _state.cfo);
+    if (isTauri) {
+      await cfoFetch.loadAll(_state.cfo);
+    } else {
+      _state.cfo.loading = false;
+      _state.cfo.error =
+        "Open the Companion app to load CFO data. Preview is read-only.";
+    }
+    cfoRender.draw(view, _state.cfo);
   });
 
   document.addEventListener("client:refresh-click", async () => {
@@ -5832,6 +5923,12 @@ document.addEventListener("DOMContentLoaded", () => {
         context: "social_launch",
       });
       if (titleEl) titleEl.textContent = "Social launch";
+      return;
+    }
+
+    // v0.37 Block F — Studio CFO under Personal.
+    if (view === "studio-cfo") {
+      showStudioCfoView();
       return;
     }
 

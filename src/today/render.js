@@ -558,6 +558,30 @@ function renderLiveStatus(state) {
   );
   grid.appendChild(cRow);
 
+  // v0.37 Block F — Studio CFO margin this month.
+  const margin = ls.margin;
+  let mLabel = "(loading)";
+  let mClass = "live-status-muted";
+  if (margin?.error) {
+    mLabel = "(unavailable)";
+  } else if (margin && typeof margin.margin === "number") {
+    const m = Math.round(margin.margin);
+    mLabel = "$" + m.toLocaleString("en-AU");
+    mClass = m >= 0 ? "live-status-ok" : "live-status-bad";
+  }
+  const mRow = el(
+    "button",
+    { class: "live-status-row clickable", type: "button" },
+    [
+      el("span", { class: "live-status-label" }, ["Margin this month"]),
+      el("span", { class: `live-status-value ${mClass}` }, [mLabel]),
+    ]
+  );
+  mRow.addEventListener("click", () =>
+    dispatch("today:open-cfo", {})
+  );
+  grid.appendChild(mRow);
+
   root.appendChild(grid);
   return root;
 }

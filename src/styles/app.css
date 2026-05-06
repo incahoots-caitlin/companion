@@ -674,6 +674,84 @@ button.live-status-row {
 .live-status-warn  { color: rgb(180, 110, 0); }
 .live-status-muted { color: var(--text-muted); }
 
+/* Studio CFO (v0.37 Block F). */
+.cfo-month-picker {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.cfo-month-label {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text);
+  min-width: 140px;
+  text-align: center;
+}
+
+.cfo-client-table,
+.cfo-creep-table {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.cfo-client-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) minmax(60px, 0.6fr) minmax(90px, 0.8fr) minmax(180px, 1.4fr);
+  align-items: baseline;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--card-bg);
+  border: 1px solid var(--card-border-color);
+  border-radius: var(--card-radius);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.cfo-client-code {
+  font-weight: 500;
+}
+
+.cfo-client-hours,
+.cfo-client-revenue {
+  color: var(--text);
+}
+
+.cfo-client-budget {
+  font-size: 12px;
+}
+
+.cfo-client-budget.muted {
+  color: var(--text-muted);
+}
+
+.cfo-creep-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--card-bg);
+  border: 1px solid var(--card-border-color);
+  border-radius: var(--card-radius);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.cfo-creep-project {
+  color: var(--text);
+}
+
+.cfo-creep-pct {
+  font-size: 12px;
+  text-align: right;
+}
+
+.cfo-burn-ok   { color: rgb(20, 120, 60); }
+.cfo-burn-warn { color: rgb(180, 110, 0); }
+.cfo-burn-bad  { color: rgb(180, 30, 30); }
+
 /* Briefing block. */
 .today-briefing-body {
   background: var(--card-bg);

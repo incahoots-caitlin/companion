@@ -11,6 +11,7 @@
 //   tick_item(receipt_id, idx)    -> Result<String, String>  (returns updated JSON)
 
 mod calendar;
+mod cfo;
 mod conversations;
 mod drift;
 mod drive;
@@ -6520,6 +6521,33 @@ async fn search_companion(
     search::search(&query, limit, &cache).await
 }
 
+// ── Studio CFO (v0.37 Block F) ─────────────────────────────────────────
+//
+// Read-only financial intelligence. Each command queries Airtable and
+// aggregates client-side. Costs are computed using Caitlin's $110/h
+// principal rate and Rose's $66/h subcontractor rate (TimeLogs.rate
+// overrides when present).
+
+#[tauri::command]
+async fn cfo_studio_totals(year: i32, month: u32) -> Result<cfo::StudioTotals, String> {
+    cfo::studio_totals(year, month).await
+}
+
+#[tauri::command]
+async fn cfo_per_client(year: i32, month: u32) -> Result<Vec<cfo::ClientFinancials>, String> {
+    cfo::per_client(year, month).await
+}
+
+#[tauri::command]
+async fn cfo_hour_creep_alerts() -> Result<Vec<cfo::HourCreepAlert>, String> {
+    cfo::hour_creep_alerts().await
+}
+
+#[tauri::command]
+async fn cfo_outlook(year: i32, month: u32) -> Result<cfo::NextMonthOutlook, String> {
+    cfo::outlook(year, month).await
+}
+
 // ── Tauri entry ─────────────────────────────────────────────────────────
 
 fn toggle_main_window(app: &tauri::AppHandle) {
@@ -6719,7 +6747,12 @@ pub fn run() {
             // v0.32 Block F — Source picker pattern
             fetch_workflow_context,
             // v0.36 Block F — Cross-conversation search
-            search_companion
+            search_companion,
+            // v0.37 Block F — Studio CFO (financial intelligence)
+            cfo_studio_totals,
+            cfo_per_client,
+            cfo_hour_creep_alerts,
+            cfo_outlook
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
