@@ -3022,6 +3022,778 @@ async fn create_airtable_client(args: serde_json::Value) -> Result<String, Strin
     airtable_create_record("Clients", fields).await
 }
 
+// ── v0.33 Block F — Lead-to-Client one-click promotion ─────────────────
+//
+// "Promote Lead" cascades five steps in one Tauri command. Each step is
+// best-effort up to the first hard failure (Airtable rows + folder are
+// left in place; Caitlin can clean up manually). The composite Receipt
+// files at L4 because the CSA send + calendar invite + Lead status flip
+// are L5 and gated by Caitlin's confirmation in the modal that follows.
+//
+// Steps:
+//   1. Create Client row (strip `-L` suffix from Lead.code, copy name +
+//      contact, prefix notes with "Promoted from lead: ...").
+//   2. Create first Project row: code = {CLIENT}-{YYYY}-{MM}-discovery,
+//      type=discovery, status=active, start_date=today.
+//   3. Create Dropbox client folder at Dropbox/CLIENTS/{slug}/ with the
+//      standard six-folder template + 99_archive. Update Client row's
+//      dropbox_folder URL.
+//   4. Draft CSA from 05 TEMPLATES/agreement-template.md with merge
+//      fields filled. Save to {client}/01_contracts/CSA-{slug}-{YYYY-MM-DD}.md
+//   5. Suggest three 30-minute discovery slots from free/busy in next 7
+//      days (don't auto-create event — surface for Caitlin to confirm).
+//
+// Each step files its own Receipt. A summary Receipt covers the workflow
+// at L4 with workflow="promote-lead".
+
+#[derive(Deserialize, Debug)]
+struct PromoteLeadArgs {
+    lead_record_id: String,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct CalendarSlot {
+    pub start: String,        // RFC3339
+    pub end: String,
+    pub label: String,        // e.g. "Wed 7 May, 10:00am"
+}
+
+#[derive(Serialize, Debug)]
+pub struct PromoteLeadResult {
+    pub client_record_id: String,
+    pub client_code: String,
+    pub client_name: String,
+    pub client_slug: String,
+    pub project_record_id: String,
+    pub project_code: String,
+    pub dropbox_folder_path: String,
+    pub dropbox_folder_url: String,
+    pub csa_file_path: String,
+    pub calendar_slots: Vec<CalendarSlot>,
+    pub primary_contact_email: String,
+}
+
+// Find a Lead by its Airtable record id. Returns the fields we need to
+// populate the Client row + downstream steps.
+async fn airtable_get_lead(record_id: &str) -> Result<serde_json::Value, String> {
+    let (api_key, base_id) = read_airtable_creds().ok_or("Airtable not configured")?;
+    let url = format!("{}/{}/Leads/{}", AIRTABLE_API, base_id, record_id);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let resp = client
+        .get(&url)
+        .bearer_auth(&api_key)
+        .send()
+        .await
+        .map_err(|e| format!("Airtable get: {}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Airtable Leads/{} {}: {}", record_id, status.as_u16(), body));
+    }
+    resp.json::<serde_json::Value>().await.map_err(|e| format!("Parse: {}", e))
+}
+
+// Strip a trailing `-L` suffix from a lead code so e.g. NCT-L → NCT.
+// Also trims whitespace and uppercases. Returns empty string if input
+// is empty.
+fn strip_lead_suffix(raw: &str) -> String {
+    let upper = raw.trim().to_uppercase();
+    if let Some(stripped) = upper.strip_suffix("-L") {
+        stripped.to_string()
+    } else {
+        upper
+    }
+}
+
+// Lowercase + spaces-to-hyphens + strip non-[a-z0-9-] for filesystem-safe
+// folder names. e.g. "Northcote Theatre" → "northcote-theatre".
+fn slugify(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut last_was_hyphen = false;
+    for c in raw.trim().chars() {
+        let lower = c.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() {
+            out.push(lower);
+            last_was_hyphen = false;
+        } else if lower == '-' || lower == ' ' || lower == '_' || lower == '/' {
+            if !last_was_hyphen && !out.is_empty() {
+                out.push('-');
+                last_was_hyphen = true;
+            }
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+// Build the URL-encoded Dropbox web link for the team-shared CLIENTS root.
+// Mirrors Caitlin's CLAUDE.md formula: /home/ + URL-encoded relative path.
+fn dropbox_web_url_for_client_folder(slug: &str) -> String {
+    format!("https://www.dropbox.com/home/CLIENTS/{}", urlencode(slug))
+}
+
+// Resolve the local Dropbox CLIENTS root. Honour DROPBOX_CLIENTS_ROOT for
+// tests; default to the standard path under the user's home.
+fn dropbox_clients_root() -> std::path::PathBuf {
+    if let Ok(custom) = std::env::var("DROPBOX_CLIENTS_ROOT") {
+        if !custom.trim().is_empty() {
+            return std::path::PathBuf::from(custom);
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/caitlinreilly".to_string());
+    std::path::PathBuf::from(home)
+        .join("Library")
+        .join("CloudStorage")
+        .join("Dropbox")
+        .join("CLIENTS")
+}
+
+// Path to the agreement template inside the team-shared 05 TEMPLATES folder.
+fn agreement_template_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/caitlinreilly".to_string());
+    std::path::PathBuf::from(home)
+        .join("Library")
+        .join("CloudStorage")
+        .join("Dropbox")
+        .join("IN CAHOOTS")
+        .join("05 TEMPLATES")
+        .join("agreement-template.md")
+}
+
+// Create the standard six-folder template (plus 99_archive) under
+// CLIENTS/{slug}/. Idempotent — `mkdir -p` style. Returns the absolute
+// path to the client root.
+fn create_client_folder_template(slug: &str) -> Result<std::path::PathBuf, String> {
+    let root = dropbox_clients_root();
+    if !root.exists() {
+        return Err(format!(
+            "Dropbox CLIENTS root not found at {}",
+            root.display()
+        ));
+    }
+    let client_root = root.join(slug);
+    let subfolders = [
+        "00_intake",
+        "01_contracts",
+        "02_briefs",
+        "03_creative",
+        "04_reporting",
+        "05_admin",
+        "99_archive",
+    ];
+    for sub in subfolders.iter() {
+        let p = client_root.join(sub);
+        std::fs::create_dir_all(&p).map_err(|e| {
+            format!("mkdir -p {}: {}", p.display(), e)
+        })?;
+    }
+    Ok(client_root)
+}
+
+// Read the agreement template, replace merge fields, return the filled
+// markdown body. Leaves FEE_TOTAL / PAYMENT_SCHEDULE / DELIVERABLES /
+// CAMPAIGN_DELIVERABLES blank for Caitlin to fill before sending.
+fn fill_agreement_template(
+    client_name: &str,
+    project_name: &str,
+    today: &str,
+    primary_contact: &str,
+    primary_contact_email: &str,
+) -> Result<String, String> {
+    let template_path = agreement_template_path();
+    let raw = std::fs::read_to_string(&template_path)
+        .map_err(|e| format!("Read agreement template at {}: {}", template_path.display(), e))?;
+
+    // Caitlin's merge fields. Two patterns coexist in the template
+    // (single + double braces are both treated as merge tokens here).
+    let replacements: &[(&str, &str)] = &[
+        ("{{CLIENT_NAME}}", client_name),
+        ("{{PROJECT_NAME}}", project_name),
+        ("{{DATE}}", today),
+        ("{{CONTRACTOR_NAME}}", "Caitlin Reilly"),
+        ("{{CONTRACTOR_EMAIL}}", "psst@incahoots.marketing"),
+        ("{{WEBSITE}}", "incahoots.marketing"),
+        ("{{CLIENT_CONTACT}}", primary_contact),
+        ("{{CLIENT_EMAIL}}", primary_contact_email),
+    ];
+    let mut filled = raw;
+    for (k, v) in replacements {
+        filled = filled.replace(k, v);
+    }
+    // FEE_TOTAL / PAYMENT_SCHEDULE / DELIVERABLES / CAMPAIGN_DELIVERABLES
+    // are intentionally left as merge tokens so Caitlin can find and fill
+    // them quickly before sending via Dropbox Sign.
+    Ok(filled)
+}
+
+// Suggest three 30-minute slots in the next 7 days. Reads the user's
+// busy times via the Calendar v3 freeBusy endpoint and walks 10:00–17:00
+// local-time work hours, skipping weekends, returning the first three
+// gaps that fit a 30-minute meeting with at least 30 minutes' buffer
+// before the next busy block.
+//
+// Returns an empty Vec when Google isn't connected — the modal then
+// surfaces a "Pick a slot manually" message rather than failing the
+// cascade.
+async fn suggest_calendar_slots() -> Vec<CalendarSlot> {
+    use chrono::{Datelike, Duration, Local, NaiveTime, TimeZone, Timelike};
+
+    let token = match crate::oauth::ensure_fresh_token(&crate::google::GOOGLE).await {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("[promote-lead] calendar slots: oauth: {}", e);
+            return Vec::new();
+        }
+    };
+
+    let now = Local::now();
+    let start = now;
+    let end = now + Duration::days(7);
+
+    // Pull free/busy across the user's primary calendar. The freeBusy
+    // endpoint returns a flat list of busy intervals — walk them after
+    // sorting by start time.
+    let body = serde_json::json!({
+        "timeMin": start.to_rfc3339(),
+        "timeMax": end.to_rfc3339(),
+        "items": [{ "id": "primary" }],
+    });
+    let url = format!("{}/freeBusy", crate::google::CALENDAR_API_BASE);
+    let http = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let resp = match http
+        .post(&url)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[promote-lead] freeBusy network: {}", e);
+            return Vec::new();
+        }
+    };
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        eprintln!("[promote-lead] freeBusy status: {}", body);
+        return Vec::new();
+    }
+    let parsed: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[promote-lead] freeBusy parse: {}", e);
+            return Vec::new();
+        }
+    };
+    let busy_arr = parsed
+        .pointer("/calendars/primary/busy")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut busy: Vec<(chrono::DateTime<Local>, chrono::DateTime<Local>)> = busy_arr
+        .iter()
+        .filter_map(|b| {
+            let s = b["start"].as_str()?;
+            let e = b["end"].as_str()?;
+            let s = chrono::DateTime::parse_from_rfc3339(s).ok()?.with_timezone(&Local);
+            let e = chrono::DateTime::parse_from_rfc3339(e).ok()?.with_timezone(&Local);
+            Some((s, e))
+        })
+        .collect();
+    busy.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut slots: Vec<CalendarSlot> = Vec::new();
+    let work_start = NaiveTime::from_hms_opt(10, 0, 0).unwrap();
+    let work_end = NaiveTime::from_hms_opt(17, 0, 0).unwrap();
+    let slot_len = Duration::minutes(30);
+
+    // Walk day-by-day from tomorrow to start+7d. Skip weekends.
+    let mut day_cursor = (now + Duration::days(1)).date_naive();
+    let final_day = end.date_naive();
+    while day_cursor <= final_day && slots.len() < 3 {
+        let weekday = day_cursor.weekday().number_from_monday();
+        if weekday >= 6 {
+            day_cursor = day_cursor.succ_opt().unwrap_or(day_cursor);
+            continue;
+        }
+        let day_start = match Local
+            .from_local_datetime(&day_cursor.and_time(work_start))
+            .single()
+        {
+            Some(t) => t,
+            None => {
+                day_cursor = day_cursor.succ_opt().unwrap_or(day_cursor);
+                continue;
+            }
+        };
+        let day_end = match Local
+            .from_local_datetime(&day_cursor.and_time(work_end))
+            .single()
+        {
+            Some(t) => t,
+            None => {
+                day_cursor = day_cursor.succ_opt().unwrap_or(day_cursor);
+                continue;
+            }
+        };
+
+        // Walk the day in 30-minute increments. Only mark a slot when a
+        // 30-minute window fits without colliding with a busy block.
+        let mut cursor = day_start;
+        while cursor + slot_len <= day_end && slots.len() < 3 {
+            let cursor_end = cursor + slot_len;
+            let collides = busy.iter().any(|(bs, be)| cursor < *be && cursor_end > *bs);
+            if !collides {
+                slots.push(CalendarSlot {
+                    start: cursor.to_rfc3339(),
+                    end: cursor_end.to_rfc3339(),
+                    label: format_slot_label(&cursor),
+                });
+                // Step forward an hour after picking a slot so the three
+                // suggestions don't bunch up back-to-back.
+                cursor = cursor + Duration::hours(1);
+            } else {
+                cursor = cursor + Duration::minutes(30);
+            }
+            // Defend against a malformed clock that doesn't advance.
+            if cursor.hour() == day_start.hour() && cursor.minute() == day_start.minute() {
+                break;
+            }
+        }
+        day_cursor = day_cursor.succ_opt().unwrap_or(day_cursor);
+    }
+    slots
+}
+
+fn format_slot_label(dt: &chrono::DateTime<chrono::Local>) -> String {
+    use chrono::Timelike;
+    // "Wed 7 May, 10:00am" — short and human, mirrors the Calendar
+    // section's fmtDateTime in render.js.
+    let day = dt.format("%a %-d %b").to_string();
+    let mut hour = dt.hour();
+    let minute = dt.minute();
+    let suffix = if hour >= 12 { "pm" } else { "am" };
+    if hour == 0 {
+        hour = 12;
+    } else if hour > 12 {
+        hour -= 12;
+    }
+    if minute == 0 {
+        format!("{}, {}{}", day, hour, suffix)
+    } else {
+        format!("{}, {}:{:02}{}", day, hour, minute, suffix)
+    }
+}
+
+// File a small "step" Receipt. Used for each cascade step plus the
+// summary at the end. All filed at L4 (drafts gated by the modal's L5
+// confirmations); the final summary inherits the same level.
+async fn file_promote_step_receipt(
+    state: &State<'_, DbState>,
+    workflow: &str,
+    title: &str,
+    project: &str,
+    items: Vec<serde_json::Value>,
+    autonomy: &str,
+) {
+    let now = chrono::Local::now();
+    let receipt_id = format!("rcpt_{}_{}", workflow, now.format("%Y-%m-%d_%H-%M-%S_%f"));
+    let sections = serde_json::json!([{ "items": items }]);
+    let receipt_json = stamp_autonomy_level(
+        &build_pure_receipt(&receipt_id, workflow, title, project, sections),
+        autonomy,
+    );
+    {
+        if let Ok(conn) = state.0.lock() {
+            let _ = persist_receipt(&conn, &receipt_json);
+        }
+    }
+    file_receipt_to_airtable(&receipt_json).await;
+}
+
+#[tauri::command]
+async fn promote_lead(
+    args: serde_json::Value,
+    state: State<'_, DbState>,
+) -> Result<PromoteLeadResult, String> {
+    let parsed: PromoteLeadArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid args: {}", e))?;
+    let lead_record_id = parsed.lead_record_id.trim();
+    if lead_record_id.is_empty() {
+        return Err("Lead record id required".to_string());
+    }
+
+    // ── Read the Lead row ─────────────────────────────────────────────
+    let lead = airtable_get_lead(lead_record_id).await?;
+    let fields = &lead["fields"];
+    let lead_code_raw = fields["code"].as_str().unwrap_or("").to_string();
+    let lead_name = fields["name"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if lead_name.is_empty() {
+        return Err("Lead is missing a name — fill it in Airtable first".to_string());
+    }
+    let primary_contact = fields["primary_contact_name"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let primary_contact_email = fields["primary_contact_email"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let lead_source = fields["source"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let lead_notes = fields["notes"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    let client_code = strip_lead_suffix(&lead_code_raw);
+    if client_code.is_empty() {
+        return Err("Lead is missing a code — set one in Airtable first".to_string());
+    }
+    if client_code.len() > 4 || !client_code.chars().all(|c| c.is_ascii_alphabetic()) {
+        return Err(format!(
+            "Lead code {} doesn't strip to a 1-4 letter client code",
+            lead_code_raw
+        ));
+    }
+
+    // Refuse if this client code already exists. Otherwise the cascade
+    // would create a duplicate Client row.
+    if airtable_find_client_by_code(&client_code).await?.is_some() {
+        return Err(format!(
+            "Client {} already exists in Airtable — promotion would duplicate. Resolve manually.",
+            client_code
+        ));
+    }
+
+    let slug = slugify(&lead_name);
+    if slug.is_empty() {
+        return Err("Couldn't slugify client name".to_string());
+    }
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let yyyy_mm = chrono::Local::now().format("%Y-%m").to_string();
+
+    // ── Step 1: Create Client row ─────────────────────────────────────
+    let mut client_notes = String::new();
+    if !lead_source.is_empty() {
+        client_notes.push_str(&format!("Promoted from lead. Source: {}.", lead_source));
+    } else {
+        client_notes.push_str("Promoted from lead.");
+    }
+    if !lead_notes.is_empty() {
+        client_notes.push_str("\n\n");
+        client_notes.push_str(&lead_notes);
+    }
+
+    let mut client_fields = serde_json::json!({
+        "code": client_code,
+        "name": lead_name,
+        "status": "active",
+        "onboarded_at": today,
+        "notes": client_notes,
+    });
+    if !primary_contact.is_empty() {
+        client_fields["primary_contact_name"] = serde_json::Value::String(primary_contact.clone());
+    }
+    if !primary_contact_email.is_empty() {
+        client_fields["primary_contact_email"] =
+            serde_json::Value::String(primary_contact_email.clone());
+    }
+    let client_record_id = airtable_create_record("Clients", client_fields).await?;
+    file_promote_step_receipt(
+        &state,
+        "promote-lead-client",
+        &format!("RECEIPT — PROMOTE LEAD · client row · {}", client_code),
+        &client_code,
+        vec![
+            serde_json::json!({ "qty": "✓", "text": format!("Created Clients row ({})", client_record_id) }),
+            serde_json::json!({ "qty": "1", "text": format!("Code: {}", client_code) }),
+            serde_json::json!({ "qty": "1", "text": format!("Name: {}", lead_name) }),
+        ],
+        "L4",
+    )
+    .await;
+
+    // ── Step 2: Create Discovery Project row ──────────────────────────
+    let project_code = format!("{}-{}-discovery", client_code, yyyy_mm);
+    let project_fields = serde_json::json!({
+        "code": project_code,
+        "name": "Discovery + onboarding",
+        "client": [client_record_id.clone()],
+        "type": "discovery",
+        "status": "active",
+        "start_date": today,
+    });
+    let project_record_id = airtable_create_record("Projects", project_fields).await?;
+    file_promote_step_receipt(
+        &state,
+        "promote-lead-project",
+        &format!("RECEIPT — PROMOTE LEAD · discovery project · {}", project_code),
+        &project_code,
+        vec![
+            serde_json::json!({ "qty": "✓", "text": format!("Created Projects row ({})", project_record_id) }),
+            serde_json::json!({ "qty": "1", "text": format!("Code: {}", project_code) }),
+            serde_json::json!({ "qty": "1", "text": "Type: discovery, status: active" }),
+        ],
+        "L4",
+    )
+    .await;
+
+    // ── Step 3: Dropbox folder template ───────────────────────────────
+    let client_folder = create_client_folder_template(&slug)?;
+    let dropbox_folder_path = client_folder.to_string_lossy().to_string();
+    let dropbox_folder_url = dropbox_web_url_for_client_folder(&slug);
+    let _ = airtable_update_record(
+        "Clients",
+        &client_record_id,
+        serde_json::json!({ "dropbox_folder": dropbox_folder_url.clone() }),
+    )
+    .await;
+    file_promote_step_receipt(
+        &state,
+        "promote-lead-folder",
+        &format!("RECEIPT — PROMOTE LEAD · folder · {}", slug),
+        &client_code,
+        vec![
+            serde_json::json!({ "qty": "✓", "text": format!("Created folder at {}", dropbox_folder_path) }),
+            serde_json::json!({ "qty": "1", "text": "Subfolders: 00_intake, 01_contracts, 02_briefs, 03_creative, 04_reporting, 05_admin, 99_archive" }),
+            serde_json::json!({ "qty": "1", "text": format!("Web link: {}", dropbox_folder_url) }),
+        ],
+        "L4",
+    )
+    .await;
+
+    // ── Step 4: Draft CSA from agreement-template.md ──────────────────
+    let project_label = "Discovery + onboarding".to_string();
+    let csa_body = fill_agreement_template(
+        &lead_name,
+        &project_label,
+        &today,
+        &primary_contact,
+        &primary_contact_email,
+    )?;
+    let csa_filename = format!("CSA-{}-{}.md", slug, today);
+    let csa_path = client_folder.join("01_contracts").join(&csa_filename);
+    std::fs::write(&csa_path, csa_body)
+        .map_err(|e| format!("Write CSA at {}: {}", csa_path.display(), e))?;
+    let csa_file_path = csa_path.to_string_lossy().to_string();
+    file_promote_step_receipt(
+        &state,
+        "promote-lead-csa",
+        &format!("RECEIPT — PROMOTE LEAD · CSA draft · {}", slug),
+        &client_code,
+        vec![
+            serde_json::json!({ "qty": "✓", "text": format!("Drafted CSA at {}", csa_file_path) }),
+            serde_json::json!({ "qty": "0", "type": "task", "text": "Fill FEE_TOTAL, PAYMENT_SCHEDULE, DELIVERABLES, CAMPAIGN_DELIVERABLES" }),
+            serde_json::json!({ "qty": "0", "type": "task", "text": "Upload to Dropbox Sign and send" }),
+        ],
+        "L4",
+    )
+    .await;
+
+    // ── Step 5: Suggest three calendar slots ──────────────────────────
+    let calendar_slots = suggest_calendar_slots().await;
+    let slot_items: Vec<serde_json::Value> = if calendar_slots.is_empty() {
+        vec![serde_json::json!({ "qty": "0", "type": "task", "text": "Pick a discovery slot manually — Google Calendar wasn't reachable" })]
+    } else {
+        calendar_slots
+            .iter()
+            .map(|s| serde_json::json!({ "qty": "1", "text": s.label }))
+            .collect()
+    };
+    file_promote_step_receipt(
+        &state,
+        "promote-lead-slots",
+        &format!("RECEIPT — PROMOTE LEAD · slot suggestions · {}", client_code),
+        &client_code,
+        slot_items,
+        "L4",
+    )
+    .await;
+
+    // ── Summary Receipt ───────────────────────────────────────────────
+    file_promote_step_receipt(
+        &state,
+        "promote-lead",
+        &format!("RECEIPT — PROMOTE LEAD · {} → {}", lead_code_raw, client_code),
+        &client_code,
+        vec![
+            serde_json::json!({ "qty": "✓", "text": format!("Client {} created ({})", client_code, client_record_id) }),
+            serde_json::json!({ "qty": "✓", "text": format!("Project {} created ({})", project_code, project_record_id) }),
+            serde_json::json!({ "qty": "✓", "text": format!("Folder ready at {}", dropbox_folder_url) }),
+            serde_json::json!({ "qty": "✓", "text": format!("CSA drafted at {}", csa_file_path) }),
+            serde_json::json!({ "qty": "1", "text": format!("Slot suggestions returned: {}", calendar_slots.len()) }),
+            serde_json::json!({ "qty": "0", "type": "task", "text": "Confirm discovery slot and send invite (L5)" }),
+            serde_json::json!({ "qty": "0", "type": "task", "text": "Upload CSA to Dropbox Sign and send (L5)" }),
+            serde_json::json!({ "qty": "0", "type": "task", "text": "Mark Lead as won (L5)" }),
+        ],
+        "L4",
+    )
+    .await;
+
+    Ok(PromoteLeadResult {
+        client_record_id,
+        client_code,
+        client_name: lead_name,
+        client_slug: slug,
+        project_record_id,
+        project_code,
+        dropbox_folder_path,
+        dropbox_folder_url,
+        csa_file_path,
+        calendar_slots,
+        primary_contact_email,
+    })
+}
+
+// List Leads in pipeline. Used by the Pipeline view + the Today
+// dashboard's Pipeline section. Active = anything not won/lost; the
+// caller filters further.
+#[tauri::command]
+async fn list_airtable_leads() -> Result<String, String> {
+    let data = airtable_get(
+        "Leads",
+        "filterByFormula=AND(NOT(%7Bstatus%7D%3D%27won%27)%2CNOT(%7Bstatus%7D%3D%27lost%27))\
+&fields%5B%5D=code\
+&fields%5B%5D=name\
+&fields%5B%5D=status\
+&fields%5B%5D=primary_contact_name\
+&fields%5B%5D=primary_contact_email\
+&fields%5B%5D=source\
+&fields%5B%5D=notes\
+&fields%5B%5D=created_at",
+    )
+    .await?;
+    serde_json::to_string(&data).map_err(|e| e.to_string())
+}
+
+// Mark a Lead as won (L5). Called from the confirmation modal after
+// Caitlin's explicit click. Doesn't touch the Client/Project rows — the
+// promote_lead cascade has already created them.
+#[tauri::command]
+async fn mark_lead_won(
+    args: serde_json::Value,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let parsed: PromoteLeadArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid args: {}", e))?;
+    let lead_record_id = parsed.lead_record_id.trim();
+    if lead_record_id.is_empty() {
+        return Err("Lead record id required".to_string());
+    }
+    airtable_update_record(
+        "Leads",
+        lead_record_id,
+        serde_json::json!({ "status": "won" }),
+    )
+    .await?;
+    file_promote_step_receipt(
+        &state,
+        "mark-lead-won",
+        "RECEIPT — LEAD MARKED WON",
+        "in-cahoots-studio",
+        vec![
+            serde_json::json!({ "qty": "✓", "text": format!("Lead {} status flipped to won", lead_record_id) }),
+        ],
+        "L5",
+    )
+    .await;
+    Ok(())
+}
+
+// Build a Google Calendar prefilled-event URL for the chosen slot.
+// Companion's Google scope is read-only so we don't create the event
+// directly — instead we open the standard "render?action=TEMPLATE"
+// composer URL in Caitlin's browser. She clicks Save, Google sends the
+// invite. Files an L5 receipt because the URL open is the explicit
+// confirmation moment.
+#[derive(Deserialize, Debug)]
+struct ConfirmSlotArgs {
+    client_code: String,
+    client_name: String,
+    primary_contact_email: Option<String>,
+    start: String, // RFC3339
+    end: String,
+}
+
+#[derive(Serialize, Debug)]
+pub struct ConfirmSlotResult {
+    pub calendar_url: String,
+}
+
+#[tauri::command]
+async fn confirm_discovery_slot(
+    args: serde_json::Value,
+    state: State<'_, DbState>,
+) -> Result<ConfirmSlotResult, String> {
+    let parsed: ConfirmSlotArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid args: {}", e))?;
+    let title = format!("Discovery — {} + In Cahoots", parsed.client_name.trim());
+    let details = format!(
+        "Discovery call for {}. Booked via Companion v0.33 promote-lead.",
+        parsed.client_name.trim()
+    );
+    // Convert RFC3339 → Google's compact format YYYYMMDDTHHMMSSZ.
+    let start_compact = compact_calendar_ts(&parsed.start)
+        .ok_or("Invalid slot start")?;
+    let end_compact = compact_calendar_ts(&parsed.end)
+        .ok_or("Invalid slot end")?;
+    let mut url = format!(
+        "https://calendar.google.com/calendar/u/0/r/eventedit?text={}&dates={}/{}&details={}",
+        urlencode(&title),
+        start_compact,
+        end_compact,
+        urlencode(&details),
+    );
+    if let Some(email) = parsed.primary_contact_email.as_deref() {
+        let email = email.trim();
+        if !email.is_empty() {
+            url.push_str("&add=");
+            url.push_str(&urlencode(email));
+        }
+    }
+    file_promote_step_receipt(
+        &state,
+        "confirm-discovery-slot",
+        &format!("RECEIPT — DISCOVERY SLOT CONFIRMED · {}", parsed.client_code),
+        parsed.client_code.trim(),
+        vec![
+            serde_json::json!({ "qty": "✓", "text": format!("Slot: {} → {}", parsed.start, parsed.end) }),
+            serde_json::json!({ "qty": "1", "text": "Opens Google Calendar event composer prefilled — Caitlin clicks Save to send the invite" }),
+        ],
+        "L5",
+    )
+    .await;
+    Ok(ConfirmSlotResult { calendar_url: url })
+}
+
+fn compact_calendar_ts(rfc3339: &str) -> Option<String> {
+    let dt = chrono::DateTime::parse_from_rfc3339(rfc3339).ok()?;
+    Some(dt.with_timezone(&chrono::Utc).format("%Y%m%dT%H%M%SZ").to_string())
+}
+
 // ── List Subcontractors (v0.21) ────────────────────────────────────────
 //
 // Used by the Log time picker so we can default the rate by who's logging
@@ -5635,6 +6407,11 @@ pub fn run() {
             create_airtable_client,
             create_airtable_project,
             list_airtable_subcontractors,
+            // v0.33 Block F — Lead-to-Client one-click promotion
+            list_airtable_leads,
+            promote_lead,
+            confirm_discovery_slot,
+            mark_lead_won,
             create_social_post,
             create_time_log,
             update_project,

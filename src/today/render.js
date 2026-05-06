@@ -746,6 +746,68 @@ function renderCalendar(state) {
   return root;
 }
 
+// ── Section: pipeline (v0.33) ─────────────────────────────────────────
+//
+// Active leads with a "Promote Lead" action button per row. Hidden
+// entirely when the leads slice is null (still loading) or empty.
+
+function renderPipeline(state) {
+  const pipeline = state.pipeline || {};
+  const leads = pipeline.leads;
+  // Hide while loading. Empty list collapses to a single "all caught
+  // up" line. Errors surface inline so the dashboard still loads.
+  if (leads == null) return null;
+  const root = el("section", { class: "today-section", "data-section": "pipeline" });
+  root.appendChild(el("div", { class: "section-label" }, ["🌱 PIPELINE"]));
+
+  if (pipeline.error && leads.length === 0) {
+    root.appendChild(
+      el("div", { class: "empty" }, ["Leads unavailable — try refresh."])
+    );
+    return root;
+  }
+  if (leads.length === 0) {
+    root.appendChild(el("div", { class: "empty" }, ["No active leads."]));
+    return root;
+  }
+
+  const list = el("div", { class: "today-list" });
+  leads.forEach((lead) => list.appendChild(renderPipelineRow(lead)));
+  root.appendChild(list);
+  return root;
+}
+
+function renderPipelineRow(lead) {
+  const row = el("div", { class: "today-row today-row-lead" });
+  const left = el("div", { class: "today-row-main" }, [
+    el("div", { class: "today-row-title" }, [
+      `${lead.code || "(no code)"} — ${lead.name || "(untitled)"}`,
+    ]),
+    el("div", { class: "today-row-meta" }, [
+      [
+        lead.primary_contact_name,
+        lead.primary_contact_email,
+        lead.source ? `via ${lead.source}` : "",
+      ].filter(Boolean).join(" · ") || "No contact details on file yet",
+    ]),
+  ]);
+  const right = el("div", { class: "today-row-side" });
+  if (lead.status) {
+    right.appendChild(el("span", { class: "client-status-pill status-active" }, [lead.status]));
+  }
+  const btn = el("button", { class: "button button-secondary", type: "button" }, [
+    "Promote Lead",
+  ]);
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    dispatch("today:promote-lead", { lead });
+  });
+  right.appendChild(btn);
+  row.appendChild(left);
+  row.appendChild(right);
+  return row;
+}
+
 // ── Section: morning briefing ─────────────────────────────────────────
 
 function renderMorningBriefing(state) {
@@ -785,6 +847,7 @@ export function draw(state) {
     renderCalendar(state),
     renderWorkstreams(state),
     renderDecisions(state),
+    renderPipeline(state),
     renderEmail(state),
     renderSlack(state),
     renderLiveStatus(state),

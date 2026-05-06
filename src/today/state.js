@@ -78,6 +78,13 @@ export function emptyTodayState() {
       unreads: null,
       error: null,
     },
+    // v0.33 Block F — Pipeline section. `leads` is null while loading,
+    // an empty array once Airtable returns nothing. `error` falls back
+    // to a soft empty state in the renderer.
+    pipeline: {
+      leads: null,
+      error: null,
+    },
     last_fetch_at: {},
   };
 }

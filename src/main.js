@@ -4189,15 +4189,26 @@ async function showPipelineView() {
   intro.appendChild(status);
   view.appendChild(intro);
 
-  const placeholder = document.createElement("section");
-  placeholder.className = "today-section";
-  placeholder.appendChild(
+  // v0.33 Block F: live Leads list with per-row Promote button.
+  const leadsSection = document.createElement("section");
+  leadsSection.className = "today-section";
+  leadsSection.dataset.section = "leads";
+  leadsSection.appendChild(
     Object.assign(document.createElement("div"), {
-      className: "empty",
-      textContent: "Lead list and value estimates land in a future build.",
+      className: "section-label",
+      textContent: "🌱 ACTIVE LEADS",
     })
   );
-  view.appendChild(placeholder);
+  const leadsList = document.createElement("div");
+  leadsList.className = "today-list";
+  leadsList.appendChild(
+    Object.assign(document.createElement("div"), {
+      className: "empty",
+      textContent: "Loading leads...",
+    })
+  );
+  leadsSection.appendChild(leadsList);
+  view.appendChild(leadsSection);
 
   // Wire buttons. Read the URL eagerly so we can disable when unset.
   let url = "";
@@ -4226,6 +4237,281 @@ async function showPipelineView() {
     if (!url) return;
     forms.openUrl(url);
   });
+
+  // Load leads + render rows.
+  await renderLeadsList(leadsList);
+}
+
+// Render the list of active leads into the supplied container. Each row
+// has client code, name, status pill and a "Promote Lead" button. Empty
+// states fall back gracefully when Airtable isn't reachable.
+async function renderLeadsList(container) {
+  container.innerHTML = "";
+  if (!isTauri) {
+    container.appendChild(
+      Object.assign(document.createElement("div"), {
+        className: "empty",
+        textContent: "Open the Companion app to see leads.",
+      })
+    );
+    return;
+  }
+  let leads = [];
+  try {
+    const raw = await invoke("list_airtable_leads");
+    const data = JSON.parse(raw);
+    leads = (data.records || []).map((r) => ({
+      record_id: r.id,
+      code: r.fields?.code || "",
+      name: r.fields?.name || "(untitled)",
+      status: r.fields?.status || "",
+      primary_contact_name: r.fields?.primary_contact_name || "",
+      primary_contact_email: r.fields?.primary_contact_email || "",
+      source: r.fields?.source || "",
+      notes: r.fields?.notes || "",
+    }));
+  } catch (e) {
+    container.appendChild(
+      Object.assign(document.createElement("div"), {
+        className: "empty",
+        textContent: `Couldn't load leads (${e}). Check Airtable in Settings.`,
+      })
+    );
+    return;
+  }
+  if (leads.length === 0) {
+    container.appendChild(
+      Object.assign(document.createElement("div"), {
+        className: "empty",
+        textContent: "No active leads. Share the intake form to fill the pipeline.",
+      })
+    );
+    return;
+  }
+  leads.forEach((lead) => container.appendChild(renderLeadRow(lead)));
+}
+
+function renderLeadRow(lead) {
+  const row = el("div", { class: "today-row today-row-lead" });
+  const left = el("div", { class: "today-row-main" }, [
+    el("div", { class: "today-row-title" }, [`${lead.code || "(no code)"} — ${lead.name}`]),
+    el("div", { class: "today-row-meta" }, [
+      [
+        lead.primary_contact_name,
+        lead.primary_contact_email,
+        lead.source ? `via ${lead.source}` : "",
+      ].filter(Boolean).join(" · ") || "No contact details on file yet",
+    ]),
+  ]);
+  const right = el("div", { class: "today-row-side" });
+  if (lead.status) {
+    right.appendChild(el("span", { class: "client-status-pill status-active" }, [lead.status]));
+  }
+  const btn = el("button", { class: "button button-secondary", type: "button" }, ["Promote Lead"]);
+  btn.addEventListener("click", () => showPromoteLeadModal(lead));
+  right.appendChild(btn);
+  row.appendChild(left);
+  row.appendChild(right);
+  return row;
+}
+
+// ─── Promote Lead modal (v0.33 Block F) ──────────────────────────────
+//
+// Surfaces the cascade summary, three calendar slot suggestions, and the
+// L5 confirmation buttons (calendar invite send, mark Lead won). The
+// CSA upload to Dropbox Sign stays manual — the modal links to the
+// drafted file.
+async function showPromoteLeadModal(lead) {
+  if (!isTauri) {
+    showToast("Open the Companion app to promote leads.");
+    return;
+  }
+  if (document.getElementById("promote-lead-modal")) return;
+
+  const overlay = el("div", { id: "promote-lead-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, [`Promote Lead: ${lead.name}`]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+
+  const meta = el("div", { class: "modal-meta" }, [
+    "Cascades five steps. Files Receipts at L4. The calendar invite, Dropbox Sign upload and Lead status flip stay gated by your explicit click.",
+  ]);
+  modal.appendChild(meta);
+
+  const status = el("div", { class: "modal-pad", style: "min-height: 60px;" }, [
+    el("div", { class: "today-section-meta" }, ["Ready to run."]),
+  ]);
+  modal.appendChild(status);
+
+  // Body holds the cascade summary + slot picker once the run completes.
+  const body = el("div", { class: "modal-pad", style: "margin-top: 12px;" });
+  modal.appendChild(body);
+
+  const actions = el("div", { class: "modal-actions" });
+  const cancelBtn = el("button", { class: "button button-secondary", type: "button" }, ["Cancel"]);
+  cancelBtn.addEventListener("click", close);
+  const runBtn = el("button", { class: "button", type: "button" }, ["Run cascade"]);
+  actions.appendChild(cancelBtn);
+  actions.appendChild(runBtn);
+  modal.appendChild(actions);
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    runBtn.disabled = true;
+    runBtn.textContent = "Running cascade...";
+    cancelBtn.disabled = true;
+    status.innerHTML = "";
+    status.appendChild(el("div", { class: "today-section-meta" }, [
+      "1/5 Creating Client row → 2/5 Discovery Project → 3/5 Folder template → 4/5 CSA draft → 5/5 Slot suggestions",
+    ]));
+
+    let result;
+    try {
+      result = await invoke("promote_lead", { args: { lead_record_id: lead.record_id } });
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run cascade";
+      cancelBtn.disabled = false;
+      status.innerHTML = "";
+      status.appendChild(el("div", { class: "banner banner-warn" }, [
+        el("div", { class: "banner-text" }, [`Cascade halted: ${e}`]),
+      ]));
+      return;
+    }
+
+    runBtn.remove();
+    cancelBtn.disabled = false;
+    cancelBtn.textContent = "Close";
+    status.innerHTML = "";
+    status.appendChild(el("div", { class: "today-section-meta" }, [
+      `Lead promoted: ${result.client_code} created with discovery project ${result.project_code}.`,
+    ]));
+
+    body.innerHTML = "";
+    body.appendChild(renderPromoteLeadSummary(result, lead));
+
+    // Refresh sidebar so the new client appears immediately.
+    try { await loadStudioSidebar(); } catch {}
+  });
+}
+
+function renderPromoteLeadSummary(result, lead) {
+  const wrap = el("div", { class: "today-list" });
+
+  // Dropbox folder.
+  wrap.appendChild(el("div", { class: "today-row" }, [
+    el("div", { class: "today-row-main" }, [
+      el("div", { class: "today-row-title" }, ["Dropbox folder"]),
+      el("div", { class: "today-row-meta" }, [result.dropbox_folder_path]),
+    ]),
+    el("div", { class: "today-row-side" }, [
+      buildOpenLinkButton(result.dropbox_folder_url, "Open"),
+    ]),
+  ]));
+
+  // CSA draft.
+  wrap.appendChild(el("div", { class: "today-row" }, [
+    el("div", { class: "today-row-main" }, [
+      el("div", { class: "today-row-title" }, ["CSA drafted"]),
+      el("div", { class: "today-row-meta" }, [
+        `${result.csa_file_path} — fill scope details, then upload to Dropbox Sign and send.`,
+      ]),
+    ]),
+  ]));
+
+  // Slot picker.
+  const slotsRow = el("div", { class: "today-row" });
+  const slotsLeft = el("div", { class: "today-row-main" }, [
+    el("div", { class: "today-row-title" }, ["Discovery call"]),
+    el("div", { class: "today-row-meta" }, [
+      result.calendar_slots.length === 0
+        ? "Google Calendar wasn't reachable — pick a slot manually and email the contact."
+        : "Pick a 30-minute slot. Confirming opens Google Calendar with the event prefilled — click Save to send the invite (L5).",
+    ]),
+  ]);
+  slotsRow.appendChild(slotsLeft);
+  wrap.appendChild(slotsRow);
+
+  if (result.calendar_slots.length > 0) {
+    const slotButtons = el("div", { class: "today-list", style: "flex-direction: row; flex-wrap: wrap; gap: 8px;" });
+    result.calendar_slots.forEach((slot) => {
+      const slotBtn = el("button", { class: "button button-secondary", type: "button" }, [slot.label]);
+      slotBtn.addEventListener("click", async () => {
+        slotBtn.disabled = true;
+        slotBtn.textContent = "Opening calendar...";
+        try {
+          const out = await invoke("confirm_discovery_slot", {
+            args: {
+              client_code: result.client_code,
+              client_name: result.client_name,
+              primary_contact_email: lead.primary_contact_email || result.primary_contact_email || null,
+              start: slot.start,
+              end: slot.end,
+            },
+          });
+          openExternal(out.calendar_url);
+          showToast("Google Calendar opened — click Save to send the invite", { ttl: 4500 });
+          slotBtn.textContent = `${slot.label} (opened)`;
+        } catch (e) {
+          slotBtn.disabled = false;
+          slotBtn.textContent = slot.label;
+          showToast(`Couldn't open calendar: ${e}`, { ttl: 5000 });
+        }
+      });
+      slotButtons.appendChild(slotBtn);
+    });
+    wrap.appendChild(slotButtons);
+  }
+
+  // Mark Lead as won — the final L5 action.
+  const wonRow = el("div", { class: "today-row" });
+  const wonBtn = el("button", { class: "button", type: "button" }, ["Mark Lead as won"]);
+  wonBtn.addEventListener("click", async () => {
+    wonBtn.disabled = true;
+    wonBtn.textContent = "Updating...";
+    try {
+      await invoke("mark_lead_won", { args: { lead_record_id: lead.record_id } });
+      wonBtn.textContent = "Lead marked won ✓";
+      showToast(`${result.client_code} — lead marked won`, { ttl: 3500 });
+    } catch (e) {
+      wonBtn.disabled = false;
+      wonBtn.textContent = "Mark Lead as won";
+      showToast(`Couldn't mark lead won: ${e}`, { ttl: 5000 });
+    }
+  });
+  wonRow.appendChild(el("div", { class: "today-row-main" }, [
+    el("div", { class: "today-row-title" }, ["Lead status"]),
+    el("div", { class: "today-row-meta" }, [
+      "Once you're confident the cascade is good, flip the Lead to won. Removes it from the pipeline (L5).",
+    ]),
+  ]));
+  wonRow.appendChild(el("div", { class: "today-row-side" }, [wonBtn]));
+  wrap.appendChild(wonRow);
+
+  return wrap;
+}
+
+function buildOpenLinkButton(url, label) {
+  const btn = el("button", { class: "button button-secondary", type: "button" }, [label]);
+  btn.addEventListener("click", () => openExternal(url));
+  return btn;
+}
+
+function openExternal(url) {
+  if (!url) return;
+  if (window.__TAURI__?.opener?.openUrl) {
+    window.__TAURI__.opener.openUrl(url).catch(() => window.open(url, "_blank"));
+  } else {
+    window.open(url, "_blank");
+  }
 }
 
 async function loadClientView(clientCode) {
@@ -4464,6 +4750,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.addEventListener("today:commitment-click", (e) => {
     showCommitmentModal(e.detail?.commitment);
+  });
+
+  // v0.33 Block F — Pipeline section's "Promote Lead" button.
+  document.addEventListener("today:promote-lead", (e) => {
+    const lead = e.detail?.lead;
+    if (lead) showPromoteLeadModal(lead);
   });
 
   document.addEventListener("today:decision-click", (e) => {

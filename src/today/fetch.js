@@ -360,6 +360,36 @@ export async function loadSlack(state) {
   state.last_fetch_at.slack = Date.now();
 }
 
+// ── Pipeline (v0.33) ──────────────────────────────────────────────────
+//
+// Pulls the Leads table, filters to active (not won/lost). Fed by
+// Today's Pipeline section. Empty array on failure so the section
+// degrades to a soft "unavailable" rather than crashing.
+
+export async function loadPipeline(state) {
+  const pipeline = state.pipeline || (state.pipeline = { leads: null, error: null });
+  try {
+    const raw = await safeInvoke("list_airtable_leads");
+    const data = JSON.parse(raw);
+    pipeline.leads = (data.records || []).map((r) => ({
+      record_id: r.id,
+      code: r.fields?.code || "",
+      name: r.fields?.name || "(untitled)",
+      status: r.fields?.status || "",
+      primary_contact_name: r.fields?.primary_contact_name || "",
+      primary_contact_email: r.fields?.primary_contact_email || "",
+      source: r.fields?.source || "",
+      notes: r.fields?.notes || "",
+    }));
+    pipeline.error = null;
+  } catch (e) {
+    console.warn("loadPipeline failed:", e);
+    pipeline.leads = [];
+    pipeline.error = String(e);
+  }
+  state.last_fetch_at.pipeline = Date.now();
+}
+
 // ── Live status ───────────────────────────────────────────────────────
 
 export async function loadLiveStatus(state) {
@@ -445,6 +475,7 @@ export async function loadAll(state) {
     loadDrift(state, { force: true }),
     loadCalendar(state),
     loadSlack(state),
+    loadPipeline(state),
   ]);
   // Email runs after calendar so it can reuse the freshly-fetched
   // Google status without a second Keychain hit.
@@ -486,6 +517,9 @@ export async function refreshStale(state) {
   }
   if ((state.last_fetch_at.slack || 0) + STALE_MS < now) {
     tasks.push(loadSlack(state));
+  }
+  if ((state.last_fetch_at.pipeline || 0) + STALE_MS < now) {
+    tasks.push(loadPipeline(state));
   }
   await Promise.allSettled(tasks);
 }
