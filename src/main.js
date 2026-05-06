@@ -18,6 +18,9 @@ import * as projectFetch from "./projects/fetch.js";
 import * as projectRender from "./projects/render.js";
 import { emptyProjectState } from "./projects/state.js";
 import * as forms from "./forms/index.js";
+import { createState as createPickerState } from "./source-picker/state.js";
+import { mountSourcePicker } from "./source-picker/render.js";
+import { probeAvailability as probeSourceAvailability } from "./source-picker/fetch.js";
 
 // Global state container. Today dashboard owns _state.today; per-client
 // view owns _state.client. Switching clients overwrites _state.client.
@@ -988,7 +991,7 @@ async function loadStudioSidebar() {
 // Accepts an optional client_code for parity with the other workflow
 // modals (per-client workflow grid passes it). Strategic Thinking is
 // not client-scoped so the value is ignored.
-function showStrategicThinkingModal(_prefillClientCode) {
+async function showStrategicThinkingModal(_prefillClientCode) {
   if (document.getElementById("st-modal")) return;
   const overlay = el("div", { id: "st-modal", class: "modal-overlay" });
   const modal = el("div", { class: "modal" });
@@ -1001,12 +1004,29 @@ function showStrategicThinkingModal(_prefillClientCode) {
   modal.appendChild(el("div", { class: "modal-meta" }, [
     "Drop in what you're thinking through. Claude reads it, asks back if needed, and returns a receipt with the decisions, ticks, and follow-up tasks.",
   ]));
+
+  // v0.32: add a source-picker so the seed brief can come from Granola
+  // / Gmail / Slack / Calendar / Form / Manual paste. Existing manual
+  // paste (the topic textarea) still works — picker is additive.
+  const available = await probeSourceAvailability();
+  const pickerState = createPickerState({ clientCode: null });
+  const picker = mountSourcePicker({
+    container: modal,
+    state: pickerState,
+    available,
+    label: "Optional source",
+  });
+
+  const topicPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+    el("div", { class: "settings-label" }, ["What you're thinking through"]),
+  ]);
   const textarea = el("textarea", {
     class: "modal-textarea",
     placeholder: "I'm thinking about whether to launch COOL before the wedding or after, given the post-wedding sequencing decision yesterday...",
-    rows: 10,
+    rows: 8,
   });
-  modal.appendChild(textarea);
+  topicPad.appendChild(textarea);
+  modal.appendChild(topicPad);
   modal.appendChild(el("div", { class: "modal-actions" }, [
     el("button", { class: "button button-secondary", id: "st-cancel" }, ["Cancel"]),
     el("button", { class: "button", id: "st-run" }, ["Run"]),
@@ -1022,13 +1042,20 @@ function showStrategicThinkingModal(_prefillClientCode) {
   modal.querySelector(".modal-close").addEventListener("click", close);
   document.getElementById("st-cancel").addEventListener("click", close);
   document.getElementById("st-run").addEventListener("click", async () => {
-    const input = textarea.value.trim();
-    if (!input) return showToast("Type something first");
+    const userInput = textarea.value.trim();
+    if (!userInput) return showToast("Type something first");
     const runBtn = document.getElementById("st-run");
     runBtn.disabled = true;
+    runBtn.textContent = "Pulling source...";
+    const blob = await picker.ensureContextBlob();
     runBtn.textContent = "Thinking...";
+    // Strategic thinking takes a single string — prepend the source blob
+    // when present so the model has the original context.
+    const composed = blob
+      ? `${blob}\n\n---\n\n${userInput}`
+      : userInput;
     try {
-      const json = await invoke("run_strategic_thinking", { input });
+      const json = await invoke("run_strategic_thinking", { input: composed });
       const receipt = JSON.parse(json);
       document.getElementById("feed").prepend(renderReceipt(receipt));
       close();
@@ -1572,6 +1599,23 @@ async function showClientPickerReviewModal({
   ]));
   modal.appendChild(grid);
 
+  // v0.32: source-picker — broader source palette than Granola alone.
+  // The existing "Pull from Granola" button below stays — this is
+  // additive. The picker hides Granola when not connected, so users
+  // never see a duplicate path on the same modal.
+  const available = await probeSourceAvailability();
+  const pickerState = createPickerState({ clientCode: prefillClientCode || null });
+  // Hide Granola from the picker since the existing pull button below
+  // already handles the multi-day Granola window. Keeps the UX from
+  // looking like two ways to do the same thing.
+  const pickerAvailable = { ...available, granola: false };
+  const picker = mountSourcePicker({
+    container: modal,
+    state: pickerState,
+    available: pickerAvailable,
+    label: "Extra source (optional)",
+  });
+
   const flagsPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
     el("div", { class: "settings-label" }, ["Anything to flag (optional)"]),
   ]);
@@ -1675,12 +1719,24 @@ async function showClientPickerReviewModal({
   }
 
   runBtn.addEventListener("click", async () => {
+    runBtn.disabled = true;
+    runBtn.textContent = "Pulling source...";
+    // Pull picker blob (will skip silently for manual source). Append
+    // the resulting context to transcript_notes so the existing backend
+    // shape doesn't need to change.
+    const blob = await picker.ensureContextBlob();
+    const transcriptText = transcript ? transcript.value.trim() : "";
+    let transcriptNotes = transcriptText;
+    if (blob && blob.trim()) {
+      transcriptNotes = transcriptText
+        ? `${transcriptText}\n\n--- Source picker ---\n\n${blob}`
+        : blob;
+    }
     const input = {
       client_code: clientPicker.value,
       extra_notes: flags.value.trim() || null,
-      transcript_notes: transcript ? (transcript.value.trim() || null) : null,
+      transcript_notes: transcriptNotes || null,
     };
-    runBtn.disabled = true;
     runBtn.textContent = runningLabel;
     try {
       const json = await invoke(command, { input });
@@ -2183,6 +2239,18 @@ async function showBuildScopeModal(prefillClientCode) {
   });
   modal.appendChild(grid);
 
+  // v0.32: source-picker for the brief (call notes, discovery form
+  // submission, etc). Manual textarea below stays as the always-on
+  // fallback / additional notes.
+  const available = await probeSourceAvailability();
+  const pickerState = createPickerState({ clientCode: prefillClientCode || null });
+  const picker = mountSourcePicker({
+    container: modal,
+    state: pickerState,
+    available,
+    label: "Brief source (optional)",
+  });
+
   const deliverablesPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
     el("div", { class: "settings-label" }, ["Deliverables / brief notes"]),
   ]);
@@ -2207,15 +2275,23 @@ async function showBuildScopeModal(prefillClientCode) {
   cancelBtn.addEventListener("click", close);
 
   runBtn.addEventListener("click", async () => {
+    const baseDeliverables = deliverables.value.trim();
+    const blob = await picker.ensureContextBlob();
+    // Prepend the source blob as extra context to the deliverables —
+    // run_scope_of_work doesn't take context_blob separately, so we
+    // splice it into the deliverables string.
+    const composed = blob
+      ? `${baseDeliverables}\n\n---\n\nSource context:\n\n${blob}`
+      : baseDeliverables;
     const input = {
       client_code: clientPicker.value || null,
       new_client_name: newClientName.value.trim() || null,
       project_type: projectType.value,
       length: length.value.trim() || null,
-      deliverables: deliverables.value.trim(),
+      deliverables: composed,
       budget_range: budget.value.trim() || null,
     };
-    if (!input.deliverables) return showToast("Deliverables required");
+    if (!baseDeliverables && !blob) return showToast("Deliverables or a source required");
     if (!input.client_code && !input.new_client_name) {
       return showToast("Pick a client or enter a new client name");
     }
@@ -2235,6 +2311,632 @@ async function showBuildScopeModal(prefillClientCode) {
             "CSA generation via Dropbox Sign ships in v0.33. For now, the markdown is in the receipt and the JSON is on disk.",
             { ttl: 7000 }
           );
+        },
+      });
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
+// ─── v0.32 Block F — Skills batch 2 modals ───────────────────────────
+//
+// Seven new workflows wired from skill SKILL.md files. Each modal uses
+// the new source-picker pattern (Granola / Gmail / Slack / Calendar /
+// Form / Manual paste) for the brief input. Source-picker auto-hides
+// sources whose OAuth isn't connected.
+
+// Shared helper — opens a modal scaffold, mounts a source-picker, and
+// returns the elements + picker handle. The body builder fills in the
+// rest of the modal's fields. Reuses the same overlay/close pattern as
+// the v0.31 skill modals.
+async function buildSkillModal({
+  modalId,
+  title,
+  meta,
+  prefillClientCode = null,
+  showSourcePicker = true,
+  pickerLabel = "Brief source",
+}) {
+  if (document.getElementById(modalId)) return null;
+  const overlay = el("div", { id: modalId, class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, [title]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+  if (meta) modal.appendChild(el("div", { class: "modal-meta" }, [meta]));
+
+  let picker = null;
+  if (showSourcePicker) {
+    const available = await probeSourceAvailability();
+    const state = createPickerState({ clientCode: prefillClientCode });
+    picker = mountSourcePicker({
+      container: modal,
+      state,
+      available,
+      label: pickerLabel,
+    });
+  }
+
+  return { overlay, modal, close, picker };
+}
+
+async function showPressReleaseModal(prefillClientCode) {
+  const clients = await fetchClientsForPicker();
+  const built = await buildSkillModal({
+    modalId: "pr-modal",
+    title: "Draft Press Release",
+    meta: "Pulls the source brief (call, email, brief etc.) and returns a press release in Caitlin's voice. Saved as a receipt for client send-off.",
+    prefillClientCode,
+  });
+  if (!built) return;
+  const { overlay, modal, close, picker } = built;
+
+  const grid = el("div", { class: "modal-field-grid" });
+  const clientPicker = el("select", { class: "settings-input" });
+  const noClient = document.createElement("option");
+  noClient.value = "";
+  noClient.textContent = "(no client / In Cahoots)";
+  clientPicker.appendChild(noClient);
+  clients.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c.code;
+    opt.textContent = `${c.code} — ${c.name}`;
+    clientPicker.appendChild(opt);
+  });
+  if (prefillClientCode && clients.some((c) => c.code === prefillClientCode)) {
+    clientPicker.value = prefillClientCode;
+  }
+  const angle = el("input", {
+    type: "text",
+    class: "settings-input",
+    placeholder: "e.g. on-sale announcement, casting reveal, festival lineup",
+  });
+  [
+    ["Client", clientPicker],
+    ["Angle / news hook", angle],
+  ].forEach(([label, input]) => {
+    grid.appendChild(el("label", { class: "modal-field" }, [
+      el("div", { class: "settings-label" }, [label]),
+      input,
+    ]));
+  });
+  modal.appendChild(grid);
+
+  const notesPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+    el("div", { class: "settings-label" }, ["Extra notes (optional)"]),
+  ]);
+  const notes = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "Anything not covered by the source — quotes from the artist, key dates, embargo, etc.",
+    rows: 4,
+  });
+  notesPad.appendChild(notes);
+  modal.appendChild(notesPad);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Run"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  angle.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    if (!angle.value.trim()) return showToast("Angle required");
+    runBtn.disabled = true;
+    runBtn.textContent = "Pulling source...";
+    const blob = await picker.ensureContextBlob();
+    runBtn.textContent = "Drafting press release...";
+    try {
+      const json = await invoke("run_press_release", {
+        input: {
+          client_code: clientPicker.value || null,
+          context_blob: blob || null,
+          angle: angle.value.trim(),
+          extra_notes: notes.value.trim() || null,
+        },
+      });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Press release drafted");
+      showHandoffBanner({
+        secondary: "Press release filed",
+        label: "Send to media list (v0.40+)",
+        onClick: () => showToast("Media-list send ships in v0.40+. For now, copy from the receipt.", { ttl: 6000 }),
+      });
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
+async function showEdmWriterModal(prefillClientCode) {
+  const clients = await fetchClientsForPicker();
+  const built = await buildSkillModal({
+    modalId: "edm-modal",
+    title: "Draft EDM",
+    meta: "Subject lines + full email body for client newsletters. Picks up the brief from the source-picker.",
+    prefillClientCode,
+  });
+  if (!built) return;
+  const { overlay, modal, close, picker } = built;
+
+  const grid = el("div", { class: "modal-field-grid" });
+  const clientPicker = el("select", { class: "settings-input" });
+  const noClient = document.createElement("option");
+  noClient.value = "";
+  noClient.textContent = "(no client / In Cahoots)";
+  clientPicker.appendChild(noClient);
+  clients.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c.code;
+    opt.textContent = `${c.code} — ${c.name}`;
+    clientPicker.appendChild(opt);
+  });
+  if (prefillClientCode && clients.some((c) => c.code === prefillClientCode)) {
+    clientPicker.value = prefillClientCode;
+  }
+
+  const purpose = el("input", {
+    type: "text",
+    class: "settings-input",
+    placeholder: "e.g. on-sale announcement, monthly update, post-show thank you",
+  });
+  const audience = el("input", {
+    type: "text",
+    class: "settings-input",
+    placeholder: "e.g. ticket buyers, members, full list, lapsed",
+  });
+
+  [
+    ["Client", clientPicker],
+    ["Purpose", purpose],
+    ["Audience", audience],
+  ].forEach(([label, input]) => {
+    grid.appendChild(el("label", { class: "modal-field" }, [
+      el("div", { class: "settings-label" }, [label]),
+      input,
+    ]));
+  });
+  modal.appendChild(grid);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Run"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  purpose.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    if (!purpose.value.trim()) return showToast("Purpose required");
+    runBtn.disabled = true;
+    runBtn.textContent = "Pulling source...";
+    const blob = await picker.ensureContextBlob();
+    runBtn.textContent = "Drafting EDM...";
+    try {
+      const json = await invoke("run_edm_writer", {
+        input: {
+          client_code: clientPicker.value || null,
+          context_blob: blob || null,
+          purpose: purpose.value.trim(),
+          audience: audience.value.trim() || null,
+        },
+      });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("EDM drafted");
+      showHandoffBanner({
+        secondary: "EDM draft filed",
+        label: "Schedule send (v0.40+)",
+        onClick: () => showToast("Send-scheduling ships in v0.40+. For now, copy from the receipt.", { ttl: 6000 }),
+      });
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
+async function showReelsScriptingModal(prefillClientCode) {
+  const clients = await fetchClientsForPicker();
+  const built = await buildSkillModal({
+    modalId: "reels-modal",
+    title: "Script a Reel",
+    meta: "Reference reel + topic in, full script out (hook, beats, captions). Hands off to a Subcontractor brief Receipt for the videographer.",
+    prefillClientCode,
+  });
+  if (!built) return;
+  const { overlay, modal, close, picker } = built;
+
+  const grid = el("div", { class: "modal-field-grid" });
+  const clientPicker = el("select", { class: "settings-input" });
+  const noClient = document.createElement("option");
+  noClient.value = "";
+  noClient.textContent = "(no client / In Cahoots)";
+  clientPicker.appendChild(noClient);
+  clients.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c.code;
+    opt.textContent = `${c.code} — ${c.name}`;
+    clientPicker.appendChild(opt);
+  });
+  if (prefillClientCode && clients.some((c) => c.code === prefillClientCode)) {
+    clientPicker.value = prefillClientCode;
+  }
+  const topic = el("input", {
+    type: "text",
+    class: "settings-input",
+    placeholder: "What the reel's about — show, artist, behind-the-scenes etc.",
+  });
+  const refUrl = el("input", {
+    type: "url",
+    class: "settings-input",
+    placeholder: "https://www.instagram.com/reel/... (optional reference reel)",
+  });
+
+  [
+    ["Client", clientPicker],
+    ["Topic", topic],
+    ["Reference reel URL", refUrl],
+  ].forEach(([label, input]) => {
+    grid.appendChild(el("label", { class: "modal-field" }, [
+      el("div", { class: "settings-label" }, [label]),
+      input,
+    ]));
+  });
+  modal.appendChild(grid);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Run"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  topic.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    if (!topic.value.trim()) return showToast("Topic required");
+    runBtn.disabled = true;
+    runBtn.textContent = "Pulling source...";
+    const blob = await picker.ensureContextBlob();
+    runBtn.textContent = "Scripting reel...";
+    try {
+      const json = await invoke("run_reels_scripting", {
+        input: {
+          client_code: clientPicker.value || null,
+          context_blob: blob || null,
+          topic: topic.value.trim(),
+          reference_url: refUrl.value.trim() || null,
+        },
+      });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Reel script ready");
+      showHandoffBanner({
+        secondary: "Reel script filed",
+        label: "Brief videographer (subcontractor)",
+        onClick: () => showToast("Subcontractor brief receipt — open Subcontractor Onboarding from Today.", { ttl: 7000 }),
+      });
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
+// Hook generator — inline tool. No source-picker (just a topic). Returns
+// 6 variants; receipt rendering shows them as items the user can pick
+// from. L2 autonomy.
+async function showHookGeneratorModal(prefillTopic = "") {
+  const built = await buildSkillModal({
+    modalId: "hook-modal",
+    title: "Generate hooks",
+    meta: "Six two-line hook variants for any topic. Pick one to drop into a social composer.",
+    showSourcePicker: false,
+  });
+  if (!built) return;
+  const { overlay, modal, close } = built;
+
+  const topicPad = el("div", { class: "modal-pad" }, [
+    el("div", { class: "settings-label" }, ["Topic"]),
+  ]);
+  const topic = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "What you want hooks for. One topic per run — short and specific.",
+    rows: 3,
+  });
+  if (prefillTopic) topic.value = prefillTopic;
+  topicPad.appendChild(topic);
+  modal.appendChild(topicPad);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Run"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  topic.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    if (!topic.value.trim()) return showToast("Topic required");
+    runBtn.disabled = true;
+    runBtn.textContent = "Generating hooks...";
+    try {
+      const json = await invoke("run_hook_generator", {
+        input: { topic: topic.value.trim() },
+      });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Six hook variants ready");
+      showHandoffBanner({
+        secondary: "Hooks filed",
+        label: "Pick one and drop into the social composer",
+        onClick: () => {
+          const hook = firstItemText(receipt);
+          showInCahootsSocialModal();
+          // Best-effort: prefill the topic textarea once the modal mounts.
+          setTimeout(() => {
+            const ta = document.querySelector("#inc-soc-modal .modal-textarea");
+            if (ta && hook) ta.value = hook;
+          }, 50);
+        },
+      });
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
+async function showClientEmailModal(prefillClientCode) {
+  const clients = await fetchClientsForPicker();
+  if (clients.length === 0) {
+    return showToast("No clients in Airtable. Onboard a client first.", { ttl: 6000 });
+  }
+  const built = await buildSkillModal({
+    modalId: "ce-modal",
+    title: "Draft email to client",
+    meta: "Composes a client-facing email in Caitlin's voice. Hand off to humaniser + copy-editor before sending.",
+    prefillClientCode,
+  });
+  if (!built) return;
+  const { overlay, modal, close, picker } = built;
+
+  const grid = el("div", { class: "modal-field-grid" });
+  const clientPicker = el("select", { class: "settings-input" });
+  clients.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c.code;
+    opt.textContent = `${c.code} — ${c.name}`;
+    clientPicker.appendChild(opt);
+  });
+  if (prefillClientCode && clients.some((c) => c.code === prefillClientCode)) {
+    clientPicker.value = prefillClientCode;
+  }
+  const purpose = el("input", {
+    type: "text",
+    class: "settings-input",
+    placeholder: "e.g. follow-up to discovery call, scope confirmation, meeting reschedule",
+  });
+
+  [
+    ["Client", clientPicker],
+    ["Purpose", purpose],
+  ].forEach(([label, input]) => {
+    grid.appendChild(el("label", { class: "modal-field" }, [
+      el("div", { class: "settings-label" }, [label]),
+      input,
+    ]));
+  });
+  modal.appendChild(grid);
+
+  const notesPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+    el("div", { class: "settings-label" }, ["Extra notes (optional)"]),
+  ]);
+  const notes = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "Things the source doesn't cover — tone preference, specific ask, deadline, etc.",
+    rows: 4,
+  });
+  notesPad.appendChild(notes);
+  modal.appendChild(notesPad);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Run"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  purpose.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    if (!clientPicker.value) return showToast("Pick a client first");
+    if (!purpose.value.trim()) return showToast("Purpose required");
+    runBtn.disabled = true;
+    runBtn.textContent = "Pulling source...";
+    const blob = await picker.ensureContextBlob();
+    runBtn.textContent = "Drafting email...";
+    try {
+      const json = await invoke("run_client_email", {
+        input: {
+          client_code: clientPicker.value,
+          context_blob: blob || null,
+          purpose: purpose.value.trim(),
+          extra_notes: notes.value.trim() || null,
+        },
+      });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Email drafted");
+      showHandoffBanner({
+        secondary: "Client email filed",
+        label: "Run through humaniser + copy-editor",
+        onClick: () => {
+          const draft = firstItemText(receipt);
+          showHumaniserModal(draft);
+        },
+      });
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
+// Inline edit-pass modals (humaniser + copy-editor). Both take a single
+// text input and return the rewritten version. Used as inline buttons on
+// any draft text — see openInlineEditPass below.
+async function showHumaniserModal(prefillText = "") {
+  const built = await buildSkillModal({
+    modalId: "hum-modal",
+    title: "Edit pass: humaniser",
+    meta: "Removes signs of AI writing. Plain prose, Australian spelling, no em dashes.",
+    showSourcePicker: false,
+  });
+  if (!built) return;
+  const { overlay, modal, close } = built;
+
+  const pad = el("div", { class: "modal-pad" }, [
+    el("div", { class: "settings-label" }, ["Text to humanise"]),
+  ]);
+  const textArea = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "Paste the draft text here. Whole emails, posts, paragraphs — all fine.",
+    rows: 12,
+  });
+  if (prefillText) textArea.value = prefillText;
+  pad.appendChild(textArea);
+  modal.appendChild(pad);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Run"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  textArea.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    if (!textArea.value.trim()) return showToast("Paste text first");
+    runBtn.disabled = true;
+    runBtn.textContent = "Humanising...";
+    try {
+      const json = await invoke("run_humanizer", {
+        input: { text: textArea.value },
+      });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Humanised draft ready");
+      showHandoffBanner({
+        secondary: "Humanised draft filed",
+        label: "Apply changes (copy from receipt)",
+        onClick: () => {
+          const rewritten = firstItemText(receipt);
+          if (rewritten && navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(rewritten);
+            showToast("Rewritten copy copied to clipboard");
+          }
+        },
+      });
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
+async function showCopyEditorModal(prefillText = "") {
+  const built = await buildSkillModal({
+    modalId: "copy-modal",
+    title: "Edit pass: copy editor",
+    meta: "In Cahoots copy-editor pass. Cleans up grammar, tightens sentences, matches Caitlin's voice.",
+    showSourcePicker: false,
+  });
+  if (!built) return;
+  const { overlay, modal, close } = built;
+
+  const pad = el("div", { class: "modal-pad" }, [
+    el("div", { class: "settings-label" }, ["Text to edit"]),
+  ]);
+  const textArea = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "Paste the draft text here.",
+    rows: 12,
+  });
+  if (prefillText) textArea.value = prefillText;
+  pad.appendChild(textArea);
+  modal.appendChild(pad);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Run"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  textArea.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    if (!textArea.value.trim()) return showToast("Paste text first");
+    runBtn.disabled = true;
+    runBtn.textContent = "Editing...";
+    try {
+      const json = await invoke("run_copy_editor", {
+        input: { text: textArea.value },
+      });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Edited draft ready");
+      showHandoffBanner({
+        secondary: "Copy-editor pass filed",
+        label: "Apply changes (copy from receipt)",
+        onClick: () => {
+          const edited = firstItemText(receipt);
+          if (edited && navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(edited);
+            showToast("Edited copy copied to clipboard");
+          }
         },
       });
     } catch (e) {
@@ -4077,6 +4779,14 @@ document.addEventListener("DOMContentLoaded", () => {
         // v0.31 Block F — Skills batch 1 modals.
         showNctCaptionModal,
         showBuildScopeModal,
+        // v0.32 Block F — Skills batch 2 modals.
+        showPressReleaseModal,
+        showEdmWriterModal,
+        showReelsScriptingModal,
+        showHookGeneratorModal,
+        showClientEmailModal,
+        showHumaniserModal,
+        showCopyEditorModal,
       },
       toast: showToast,
       requireApiKey: async () => {
@@ -4394,6 +5104,20 @@ document.addEventListener("DOMContentLoaded", () => {
         openSkillWorkflow(showWrapReportModal);
       } else if (name === "Build Scope") {
         openSkillWorkflow(showBuildScopeModal);
+      } else if (name === "Draft Press Release") {
+        openSkillWorkflow(showPressReleaseModal);
+      } else if (name === "Draft EDM") {
+        openSkillWorkflow(showEdmWriterModal);
+      } else if (name === "Script a Reel") {
+        openSkillWorkflow(showReelsScriptingModal);
+      } else if (name === "Generate hooks") {
+        openSkillWorkflow(showHookGeneratorModal);
+      } else if (name === "Draft email to client") {
+        openSkillWorkflow(showClientEmailModal);
+      } else if (name === "Edit pass: humanise") {
+        openSkillWorkflow(showHumaniserModal);
+      } else if (name === "Edit pass: copy editor") {
+        openSkillWorkflow(showCopyEditorModal);
       } else {
         showToast(`${name}: not wired yet.`);
       }

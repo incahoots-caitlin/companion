@@ -28,6 +28,14 @@ export function launch(key, clientCode, ctx) {
     // v0.31 Block F — Skills batch 1.
     "nct-caption": () => ctx.modals.showNctCaptionModal(clientCode),
     "build-scope": () => ctx.modals.showBuildScopeModal(clientCode),
+    // v0.32 Block F — Skills batch 2.
+    "press-release": () => ctx.modals.showPressReleaseModal(clientCode),
+    "edm-writer": () => ctx.modals.showEdmWriterModal(clientCode),
+    "reels-scripting": () => ctx.modals.showReelsScriptingModal(clientCode),
+    "hook-generator": () => ctx.modals.showHookGeneratorModal(),
+    "client-email": () => ctx.modals.showClientEmailModal(clientCode),
+    "humanizer": () => ctx.modals.showHumaniserModal(),
+    "copy-editor": () => ctx.modals.showCopyEditorModal(),
   };
 
   const fn = dispatchTable[key];
@@ -45,6 +53,13 @@ export function launch(key, clientCode, ctx) {
     "strategic-thinking",
     "nct-caption",
     "build-scope",
+    "press-release",
+    "edm-writer",
+    "reels-scripting",
+    "hook-generator",
+    "client-email",
+    "humanizer",
+    "copy-editor",
   ];
   if (needsKey.includes(key) && ctx.requireApiKey) {
     ctx.requireApiKey().then((ok) => {

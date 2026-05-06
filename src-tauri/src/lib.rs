@@ -20,6 +20,7 @@ mod granola;
 mod oauth;
 mod project_feed;
 mod slack;
+mod source_picker;
 
 use keyring::Entry;
 use rusqlite::{params, Connection};
@@ -152,6 +153,19 @@ const SKILL_CAMPAIGN_WRAP_REPORT: &str =
     include_str!("../prompts/skills/campaign-wrap-report.md");
 const SKILL_SCOPE_OF_WORK_BUILDER: &str =
     include_str!("../prompts/skills/scope-of-work-builder.md");
+
+// v0.32 Block F — Skills batch 2.
+const SKILL_PRESS_RELEASE_WRITER: &str =
+    include_str!("../prompts/skills/press-release-writer.md");
+const SKILL_EDM_WRITER: &str = include_str!("../prompts/skills/edm-writer.md");
+const SKILL_REELS_SCRIPTING: &str =
+    include_str!("../prompts/skills/reels-scripting.md");
+const SKILL_HOOK_GENERATOR: &str =
+    include_str!("../prompts/skills/hook-generator.md");
+const SKILL_CLIENT_EMAIL: &str = include_str!("../prompts/skills/client-email.md");
+const SKILL_HUMANIZER: &str = include_str!("../prompts/skills/humanizer.md");
+const SKILL_IN_CAHOOTS_COPY_EDITOR: &str =
+    include_str!("../prompts/skills/in-cahoots-copy-editor.md");
 
 fn skill_system_prompt(skill_body: &str) -> String {
     format!("{}\n\n{}", skill_body, SKILL_RECEIPT_ENVELOPE)
@@ -2306,6 +2320,554 @@ fn scope_payload_path(client_code: &str, date_slug: &str) -> String {
     )
 }
 
+// ── v0.32 Block F — Skills batch 2 workflows ──────────────────────────
+//
+// Seven new workflows wired from skill SKILL.md files. All accept a
+// `context_blob` from the source-picker pattern (string returned by
+// fetch_workflow_context). The blob is prepended to the user message so
+// the model has the original brief verbatim. All are L4 autonomy except
+// hook-generator and the two edit-pass skills which are L2 (intermediate
+// — Caitlin reviews each output before pasting back into the source
+// surface).
+
+#[derive(Deserialize, Debug)]
+struct PressReleaseInput {
+    #[serde(default)]
+    client_code: Option<String>,
+    #[serde(default)]
+    context_blob: Option<String>,
+    angle: String,
+    #[serde(default)]
+    extra_notes: Option<String>,
+}
+
+#[tauri::command]
+async fn run_press_release(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+    let parsed: PressReleaseInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    let angle = parsed.angle.trim();
+    if angle.is_empty() {
+        return Err("Angle / topic required".to_string());
+    }
+    let project = parsed
+        .client_code
+        .as_deref()
+        .map(|s| s.trim().to_uppercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "INC".to_string());
+
+    let receipt_id = format!(
+        "rcpt_{}",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    let user_message = format!(
+        "## Press release brief\n\n\
+         **Today's date:** {}\n\
+         **Project / client code:** {}\n\
+         **Angle:** {}\n\n\
+         {}\n\n\
+         ## Extra notes\n\n{}\n\n\
+         ## Companion receipt envelope hints\n\n\
+         - id: {}\n\
+         - project: {}\n\
+         - workflow: press-release\n\
+         - title: RECEIPT — PRESS RELEASE DRAFT\n\
+         - paid_block.customer: {}\n\
+         - sections[0].header: PRESS RELEASE\n\
+         - The first item in sections[0] should be the full press \
+           release as a single `qty: \"✓\"` item (or split paragraphs \
+           across items if cleaner).\n",
+        chrono::Local::now().format("%A %d %B %Y"),
+        project,
+        angle,
+        parsed.context_blob.as_deref().unwrap_or("(no source)"),
+        parsed.extra_notes.as_deref().unwrap_or("(none)"),
+        receipt_id,
+        project,
+        project,
+    );
+
+    let system = skill_system_prompt(SKILL_PRESS_RELEASE_WRITER);
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 4096,
+        system: &system,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+        mcp_servers: None,
+    };
+
+    let json = call_anthropic_for_receipt(&key, &body, "L4").await?;
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+    file_receipt_to_airtable(&json).await;
+    Ok(json)
+}
+
+#[derive(Deserialize, Debug)]
+struct EdmWriterInput {
+    #[serde(default)]
+    client_code: Option<String>,
+    #[serde(default)]
+    context_blob: Option<String>,
+    purpose: String,
+    #[serde(default)]
+    audience: Option<String>,
+}
+
+#[tauri::command]
+async fn run_edm_writer(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+    let parsed: EdmWriterInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    if parsed.purpose.trim().is_empty() {
+        return Err("EDM purpose required".to_string());
+    }
+    let project = parsed
+        .client_code
+        .as_deref()
+        .map(|s| s.trim().to_uppercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "INC".to_string());
+
+    let receipt_id = format!(
+        "rcpt_{}",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    let user_message = format!(
+        "## EDM brief\n\n\
+         **Today's date:** {}\n\
+         **Project / client code:** {}\n\
+         **Purpose:** {}\n\
+         **Audience:** {}\n\n\
+         {}\n\n\
+         ## Companion receipt envelope hints\n\n\
+         - id: {}\n\
+         - project: {}\n\
+         - workflow: edm-writer\n\
+         - title: RECEIPT — EDM DRAFT\n\
+         - paid_block.customer: {}\n\
+         - sections[0].header: EDM DRAFT\n\
+         - First item: subject line variants (qty: \"1\" each).\n\
+         - Second item: full EDM body with line breaks.\n",
+        chrono::Local::now().format("%A %d %B %Y"),
+        project,
+        parsed.purpose.trim(),
+        parsed.audience.as_deref().unwrap_or("(unspecified)"),
+        parsed.context_blob.as_deref().unwrap_or("(no source)"),
+        receipt_id,
+        project,
+        project,
+    );
+
+    let system = skill_system_prompt(SKILL_EDM_WRITER);
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 4096,
+        system: &system,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+        mcp_servers: None,
+    };
+
+    let json = call_anthropic_for_receipt(&key, &body, "L4").await?;
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+    file_receipt_to_airtable(&json).await;
+    Ok(json)
+}
+
+#[derive(Deserialize, Debug)]
+struct ReelsScriptingInput {
+    #[serde(default)]
+    client_code: Option<String>,
+    #[serde(default)]
+    context_blob: Option<String>,
+    topic: String,
+    #[serde(default)]
+    reference_url: Option<String>,
+}
+
+#[tauri::command]
+async fn run_reels_scripting(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+    let parsed: ReelsScriptingInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    if parsed.topic.trim().is_empty() {
+        return Err("Reel topic required".to_string());
+    }
+    let project = parsed
+        .client_code
+        .as_deref()
+        .map(|s| s.trim().to_uppercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "INC".to_string());
+
+    let receipt_id = format!(
+        "rcpt_{}",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    let user_message = format!(
+        "## Reel script brief\n\n\
+         **Today's date:** {}\n\
+         **Project / client code:** {}\n\
+         **Topic:** {}\n\
+         **Reference reel URL:** {}\n\n\
+         {}\n\n\
+         ## Companion receipt envelope hints\n\n\
+         - id: {}\n\
+         - project: {}\n\
+         - workflow: reels-scripting\n\
+         - title: RECEIPT — REEL SCRIPT\n\
+         - paid_block.customer: {}\n\
+         - sections[0].header: REEL SCRIPT\n",
+        chrono::Local::now().format("%A %d %B %Y"),
+        project,
+        parsed.topic.trim(),
+        parsed.reference_url.as_deref().unwrap_or("(none)"),
+        parsed.context_blob.as_deref().unwrap_or("(no source)"),
+        receipt_id,
+        project,
+        project,
+    );
+
+    let system = skill_system_prompt(SKILL_REELS_SCRIPTING);
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 4096,
+        system: &system,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+        mcp_servers: None,
+    };
+
+    let json = call_anthropic_for_receipt(&key, &body, "L4").await?;
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+    file_receipt_to_airtable(&json).await;
+    Ok(json)
+}
+
+#[derive(Deserialize, Debug)]
+struct HookGeneratorInput {
+    topic: String,
+}
+
+#[tauri::command]
+async fn run_hook_generator(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+    let parsed: HookGeneratorInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    if parsed.topic.trim().is_empty() {
+        return Err("Hook topic required".to_string());
+    }
+    let receipt_id = format!(
+        "rcpt_{}",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    let user_message = format!(
+        "## Hook generation brief\n\n\
+         **Today's date:** {}\n\
+         **Topic:** {}\n\n\
+         Produce six two-line hook variants per the skill structure. Number \
+         them 1-6. Keep each line within 40 characters.\n\n\
+         ## Companion receipt envelope hints\n\n\
+         - id: {}\n\
+         - project: INC\n\
+         - workflow: hook-generator\n\
+         - title: RECEIPT — HOOK VARIANTS\n\
+         - paid_block.customer: In Cahoots\n\
+         - sections[0].header: HOOKS\n\
+         - Each variant goes in as one item with `qty: \"1\"` and the full \
+           two-line hook as `text` (line break separates them).\n",
+        chrono::Local::now().format("%A %d %B %Y"),
+        parsed.topic.trim(),
+        receipt_id,
+    );
+
+    let system = skill_system_prompt(SKILL_HOOK_GENERATOR);
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 2048,
+        system: &system,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+        mcp_servers: None,
+    };
+
+    // L2 — intermediate / inline tool. Caitlin picks one variant before
+    // it goes back into the social composer.
+    let json = call_anthropic_for_receipt(&key, &body, "L2").await?;
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+    file_receipt_to_airtable(&json).await;
+    Ok(json)
+}
+
+#[derive(Deserialize, Debug)]
+struct ClientEmailInput {
+    client_code: String,
+    #[serde(default)]
+    context_blob: Option<String>,
+    purpose: String,
+    #[serde(default)]
+    extra_notes: Option<String>,
+}
+
+#[tauri::command]
+async fn run_client_email(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+    let parsed: ClientEmailInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    let code = parsed.client_code.trim().to_uppercase();
+    if code.is_empty() {
+        return Err("Pick a client first".to_string());
+    }
+    if parsed.purpose.trim().is_empty() {
+        return Err("Email purpose required".to_string());
+    }
+
+    // Resolve client name for the email recipient framing.
+    let qs = format!(
+        "filterByFormula={}&maxRecords=1&fields%5B%5D=name&fields%5B%5D=primary_contact_name&fields%5B%5D=primary_contact_email",
+        urlencode(&format!("{{code}}='{}'", code))
+    );
+    let data = airtable_get("Clients", &qs)
+        .await
+        .unwrap_or(serde_json::Value::Null);
+    let client_name = data["records"][0]["fields"]["name"]
+        .as_str()
+        .unwrap_or(&code)
+        .to_string();
+    let contact_name = data["records"][0]["fields"]["primary_contact_name"]
+        .as_str()
+        .unwrap_or("(unknown)")
+        .to_string();
+
+    let receipt_id = format!(
+        "rcpt_{}",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    let user_message = format!(
+        "## Client email brief\n\n\
+         **Today's date:** {}\n\
+         **Client:** {} ({})\n\
+         **Primary contact:** {}\n\
+         **Purpose:** {}\n\n\
+         {}\n\n\
+         ## Extra notes\n\n{}\n\n\
+         ## Companion receipt envelope hints\n\n\
+         - id: {}\n\
+         - project: {}\n\
+         - workflow: client-email\n\
+         - title: RECEIPT — CLIENT EMAIL DRAFT\n\
+         - paid_block.customer: {}\n\
+         - sections[0].header: EMAIL DRAFT\n\
+         - First item: subject line. Second item: full email body.\n",
+        chrono::Local::now().format("%A %d %B %Y"),
+        client_name,
+        code,
+        contact_name,
+        parsed.purpose.trim(),
+        parsed.context_blob.as_deref().unwrap_or("(no source)"),
+        parsed.extra_notes.as_deref().unwrap_or("(none)"),
+        receipt_id,
+        code,
+        client_name,
+    );
+
+    let system = skill_system_prompt(SKILL_CLIENT_EMAIL);
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 4096,
+        system: &system,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+        mcp_servers: None,
+    };
+
+    let json = call_anthropic_for_receipt(&key, &body, "L4").await?;
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+    file_receipt_to_airtable(&json).await;
+    Ok(json)
+}
+
+// Edit-pass skills (humanizer + copy-editor) take a single `text` input
+// and return the rewritten version. Both run at L2 because Caitlin
+// previews the output before applying the change to the source draft.
+
+#[derive(Deserialize, Debug)]
+struct HumanizerInput {
+    text: String,
+}
+
+#[tauri::command]
+async fn run_humanizer(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+    let parsed: HumanizerInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    if parsed.text.trim().is_empty() {
+        return Err("Text to humanise required".to_string());
+    }
+    let receipt_id = format!(
+        "rcpt_{}",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    let user_message = format!(
+        "## Humaniser pass\n\n\
+         **Today's date:** {}\n\n\
+         ## Source text\n\n{}\n\n\
+         Produce the rewritten version per the skill rules. Plain prose only.\n\n\
+         ## Companion receipt envelope hints\n\n\
+         - id: {}\n\
+         - project: INC\n\
+         - workflow: humanizer\n\
+         - title: RECEIPT — HUMANISED DRAFT\n\
+         - paid_block.customer: In Cahoots\n\
+         - sections[0].header: REWRITTEN\n\
+         - sections[0].items[0].qty: \"✓\"\n\
+         - sections[0].items[0].text: full rewritten text (line breaks allowed).\n",
+        chrono::Local::now().format("%A %d %B %Y"),
+        parsed.text.trim(),
+        receipt_id,
+    );
+
+    let system = skill_system_prompt(SKILL_HUMANIZER);
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 4096,
+        system: &system,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+        mcp_servers: None,
+    };
+
+    let json = call_anthropic_for_receipt(&key, &body, "L2").await?;
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+    file_receipt_to_airtable(&json).await;
+    Ok(json)
+}
+
+#[derive(Deserialize, Debug)]
+struct CopyEditorInput {
+    text: String,
+}
+
+#[tauri::command]
+async fn run_copy_editor(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+    let parsed: CopyEditorInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    if parsed.text.trim().is_empty() {
+        return Err("Text to edit required".to_string());
+    }
+    let receipt_id = format!(
+        "rcpt_{}",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    let user_message = format!(
+        "## In Cahoots copy-editor pass\n\n\
+         **Today's date:** {}\n\n\
+         ## Source text\n\n{}\n\n\
+         Edit the source per the skill rules. Match Caitlin's voice. Australian \
+         spelling. No em dashes. No marketing clichés.\n\n\
+         ## Companion receipt envelope hints\n\n\
+         - id: {}\n\
+         - project: INC\n\
+         - workflow: in-cahoots-copy-editor\n\
+         - title: RECEIPT — COPY-EDITOR PASS\n\
+         - paid_block.customer: In Cahoots\n\
+         - sections[0].header: EDITED\n\
+         - sections[0].items[0].qty: \"✓\"\n\
+         - sections[0].items[0].text: full edited text (line breaks allowed).\n",
+        chrono::Local::now().format("%A %d %B %Y"),
+        parsed.text.trim(),
+        receipt_id,
+    );
+
+    let system = skill_system_prompt(SKILL_IN_CAHOOTS_COPY_EDITOR);
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 4096,
+        system: &system,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+        mcp_servers: None,
+    };
+
+    let json = call_anthropic_for_receipt(&key, &body, "L2").await?;
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+    file_receipt_to_airtable(&json).await;
+    Ok(json)
+}
+
 // Shared HTTP path for skill workflows. Posts the request, parses the
 // response, extracts the fenced JSON receipt, and stamps the autonomy
 // level. Returns the receipt JSON ready to persist.
@@ -3811,6 +4373,429 @@ fn default_pull_window_days() -> i64 {
     30
 }
 
+// v0.32 picker helper. Extracted from `pull_granola_transcripts` so the
+// source_picker module can reuse the same MCP path with its own
+// arguments. Returns the plain-text bundle (no envelope) — caller wraps.
+pub(crate) async fn pull_granola_via_mcp(
+    client_code: &str,
+    since_days: i64,
+    client_name: Option<&str>,
+) -> Result<String, String> {
+    let api_key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+    let code = client_code.trim().to_uppercase();
+    if code.is_empty() {
+        return Err("Pick a client first".to_string());
+    }
+
+    let token = oauth::ensure_fresh_token(&granola::GRANOLA)
+        .await
+        .map_err(|e| format!("Granola: {}", e))?;
+
+    let resolved_name = match client_name {
+        Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+        _ => {
+            let qs = format!(
+                "filterByFormula={}&maxRecords=1&fields%5B%5D=name",
+                urlencode(&format!("{{code}}='{}'", code))
+            );
+            let data = airtable_get("Clients", &qs)
+                .await
+                .unwrap_or(serde_json::Value::Null);
+            data["records"][0]["fields"]["name"]
+                .as_str()
+                .unwrap_or(&code)
+                .to_string()
+        }
+    };
+
+    let mcp_servers = vec![McpServerSpec {
+        server_type: "url",
+        name: granola::GRANOLA.name.to_string(),
+        url: granola::GRANOLA_MCP_URL.to_string(),
+        authorization_token: token,
+        tool_configuration: Some(McpToolConfiguration {
+            enabled: true,
+            allowed_tools: Some(
+                granola::MONTHLY_CHECKIN_TOOLS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
+        }),
+    }];
+
+    let user_message = format!(
+        "Use the Granola MCP tools to fetch meeting notes and \
+         transcripts for the client \"{}\" (client code: {}) over \
+         the last {} days.\n\n\
+         Workflow:\n\
+         1. Call `list_meetings` with a date range covering the last \
+            {} days.\n\
+         2. Filter to meetings whose title or attendees match the \
+            client name above.\n\
+         3. For each match, call `get_meeting_transcript`.\n\
+         4. Return a plain-text bundle, one section per meeting:\n\n\
+         ### YYYY-MM-DD — Meeting title\n\
+         (1-2 sentence summary)\n\
+         (raw transcript)\n\n\
+         If no meetings match, reply with the single line: \
+         `No Granola meetings found for {} in the last {} days.` and \
+         nothing else.\n\n\
+         Do not wrap the response in JSON or markdown fences. Plain \
+         text only.",
+        resolved_name, code, since_days, since_days, resolved_name, since_days,
+    );
+
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 8192,
+        system:
+            "You are a faithful retrieval assistant. Use the Granola \
+             MCP tools to fetch and return meeting transcripts. Do not \
+             summarise or interpret beyond what's asked. Plain text only.",
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+        mcp_servers: Some(mcp_servers),
+    };
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+
+    let response = http
+        .post(ANTHROPIC_API)
+        .header("x-api-key", &api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("anthropic-beta", ANTHROPIC_MCP_BETA)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Anthropic API {}: {}", status.as_u16(), text));
+    }
+
+    let api_response: AnthropicResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    let text = collect_text_blocks(&api_response.content);
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() {
+        return Err(
+            "Granola pull came back empty — try again, or paste manually".to_string(),
+        );
+    }
+
+    let _ = oauth::write_keychain(
+        KEYRING_GRANOLA_LAST_PULL,
+        &chrono::Utc::now().to_rfc3339(),
+    );
+    Ok(trimmed)
+}
+
+// v0.32 picker helper. Reads a single Gmail thread (id or first match
+// for a search expression) and returns it as plain markdown.
+pub(crate) async fn fetch_gmail_for_picker(source_ref: &str) -> Result<String, String> {
+    let token = oauth::ensure_fresh_token(&google::GOOGLE)
+        .await
+        .map_err(|e| format!("Google: {}", e))?;
+
+    // Heuristic: thread IDs are hex strings (16-20 chars). Anything with
+    // spaces or operators (`from:`, `is:`, etc.) goes through search.
+    let looks_like_id =
+        source_ref.len() >= 8 && source_ref.chars().all(|c| c.is_ascii_alphanumeric());
+    let id = if looks_like_id {
+        source_ref.to_string()
+    } else {
+        // Use a search and grab the first result.
+        let q = format!("{}", source_ref);
+        let url = format!(
+            "{}/users/me/threads?maxResults=1&q={}",
+            google::GMAIL_API_BASE,
+            urlencode(&q),
+        );
+        let resp = http_get_json_bearer(&url, &token).await?;
+        resp["threads"][0]["id"]
+            .as_str()
+            .ok_or_else(|| "No Gmail threads matched that search".to_string())?
+            .to_string()
+    };
+
+    // Pull the full thread body — minimal format gives us all messages
+    // with payload/parts so we can extract the plain-text body.
+    let url = format!(
+        "{}/users/me/threads/{}?format=full",
+        google::GMAIL_API_BASE,
+        urlencode(&id),
+    );
+    let val = http_get_json_bearer(&url, &token).await?;
+    let messages = val["messages"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if messages.is_empty() {
+        return Err("Gmail thread has no messages".to_string());
+    }
+
+    let mut subject = String::new();
+    let mut out = String::new();
+    for (i, m) in messages.iter().enumerate() {
+        let mut from = String::new();
+        if let Some(headers) = m["payload"]["headers"].as_array() {
+            for h in headers {
+                let name = h["name"].as_str().unwrap_or("");
+                let value = h["value"].as_str().unwrap_or("");
+                if name.eq_ignore_ascii_case("Subject") && subject.is_empty() {
+                    subject = value.to_string();
+                } else if name.eq_ignore_ascii_case("From") {
+                    from = value.to_string();
+                }
+            }
+        }
+        let body = extract_plain_body(&m["payload"]);
+        if i == 0 && !subject.is_empty() {
+            out.push_str(&format!("**Subject:** {}\n\n", subject));
+        }
+        out.push_str(&format!("### Message {} — From: {}\n\n{}\n\n", i + 1, from, body.trim()));
+    }
+    Ok(out.trim_end().to_string())
+}
+
+fn extract_plain_body(payload: &serde_json::Value) -> String {
+    // Prefer text/plain part; fall back to snippet.
+    if let Some(parts) = payload["parts"].as_array() {
+        for p in parts {
+            let mime = p["mimeType"].as_str().unwrap_or("");
+            if mime == "text/plain" {
+                if let Some(data) = p["body"]["data"].as_str() {
+                    if let Some(decoded) = decode_base64url(data) {
+                        return decoded;
+                    }
+                }
+            }
+        }
+        // Recurse into multipart parts.
+        for p in parts {
+            let nested = extract_plain_body(p);
+            if !nested.is_empty() {
+                return nested;
+            }
+        }
+    }
+    if let Some(data) = payload["body"]["data"].as_str() {
+        if let Some(decoded) = decode_base64url(data) {
+            return decoded;
+        }
+    }
+    String::new()
+}
+
+fn decode_base64url(s: &str) -> Option<String> {
+    // Gmail uses URL-safe base64 with no padding. Tiny inline decoder so
+    // we don't need to add a new dep.
+    fn b64_index(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' | b'-' => Some(62),
+            b'/' | b'_' => Some(63),
+            _ => None,
+        }
+    }
+    let cleaned: Vec<u8> = s
+        .bytes()
+        .filter(|c| !c.is_ascii_whitespace() && *c != b'=')
+        .collect();
+    let mut out: Vec<u8> = Vec::with_capacity(cleaned.len() * 3 / 4 + 2);
+    let mut buf: u32 = 0;
+    let mut bits: u8 = 0;
+    for &c in &cleaned {
+        let v = b64_index(c)?;
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8 & 0xFF);
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+async fn http_get_json_bearer(
+    url: &str,
+    token: &str,
+) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let resp = client
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("Network: {}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {}", status.as_u16(), body));
+    }
+    resp.json().await.map_err(|e| format!("Parse: {}", e))
+}
+
+// v0.32 picker helper. Resolves a Slack permalink to a thread and
+// returns the messages as a plain-text bundle.
+pub(crate) async fn fetch_slack_thread_for_picker(
+    permalink: &str,
+) -> Result<String, String> {
+    // Permalink format:
+    //   https://<ws>.slack.com/archives/<channel_id>/p<ts_no_dot>
+    // optionally with ?thread_ts=<root_ts> for replies.
+    let trimmed = permalink.trim();
+    if !trimmed.starts_with("https://") && !trimmed.starts_with("http://") {
+        return Err("Slack URL must start with https://".to_string());
+    }
+    // Split off query string.
+    let (path_part, query_part) = match trimmed.split_once('?') {
+        Some((p, q)) => (p, q),
+        None => (trimmed, ""),
+    };
+    // Drop the scheme + host, keep the path.
+    let after_scheme = path_part
+        .splitn(4, '/')
+        .nth(3)
+        .ok_or_else(|| "Slack URL too short".to_string())?;
+    let segs: Vec<&str> = after_scheme.split('/').filter(|s| !s.is_empty()).collect();
+    if segs.len() < 3 || segs[0] != "archives" {
+        return Err("Slack URL must be a /archives/<channel>/p<ts> permalink".to_string());
+    }
+    let channel_id = segs[1].to_string();
+    let p_ts = segs[2];
+    if !p_ts.starts_with('p') || p_ts.len() < 11 {
+        return Err("Slack permalink ts segment looks malformed".to_string());
+    }
+    // Convert "p1714984823123456" → "1714984823.123456"
+    let raw = &p_ts[1..];
+    let target_ts = format!("{}.{}", &raw[..raw.len() - 6], &raw[raw.len() - 6..]);
+
+    // If the permalink had ?thread_ts= use that root, else target_ts is
+    // likely the root itself.
+    let thread_root = query_part
+        .split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .find(|(k, _)| *k == "thread_ts")
+        .map(|(_, v)| v.to_string())
+        .unwrap_or_else(|| target_ts.clone());
+
+    // Reuse list_recent_messages to pull a 168h (7 day) window then
+    // filter to the thread by matching ts.
+    let mut messages = slack::list_recent_messages(&channel_id, 168)
+        .await
+        .map_err(|e| format!("Slack: {}", e))?;
+    messages.retain(|m| m.ts == thread_root || m.ts == target_ts);
+    if messages.is_empty() {
+        return Err(
+            "Slack thread not found in the last 7 days of channel history".to_string(),
+        );
+    }
+    let mut out = String::new();
+    out.push_str(&format!("**Channel id:** {}\n\n", channel_id));
+    for m in messages {
+        let user = m
+            .user_name
+            .as_deref()
+            .or(m.user.as_deref())
+            .unwrap_or("(unknown)");
+        out.push_str(&format!("**{}** ({}):\n{}\n\n", user, m.ts, m.text));
+    }
+    Ok(out.trim_end().to_string())
+}
+
+// v0.32 picker helper. Reads a single Calendar event by ID. When the
+// `source_ref` looks like a date (YYYY-MM-DD) we fall back to the first
+// event on that date.
+pub(crate) async fn fetch_calendar_event_for_picker(
+    source_ref: &str,
+) -> Result<String, String> {
+    let token = oauth::ensure_fresh_token(&google::GOOGLE)
+        .await
+        .map_err(|e| format!("Google: {}", e))?;
+
+    let event_id = if source_ref.len() == 10 && source_ref.chars().filter(|c| *c == '-').count() == 2 {
+        // Looks like a date — pull events on that day, take the first.
+        let url = format!(
+            "{}/calendars/primary/events?timeMin={}T00:00:00Z&timeMax={}T23:59:59Z&singleEvents=true&maxResults=1",
+            google::CALENDAR_API_BASE,
+            urlencode(source_ref),
+            urlencode(source_ref),
+        );
+        let val = http_get_json_bearer(&url, &token).await?;
+        val["items"][0]["id"]
+            .as_str()
+            .ok_or_else(|| format!("No Calendar events found on {}", source_ref))?
+            .to_string()
+    } else {
+        source_ref.to_string()
+    };
+
+    let url = format!(
+        "{}/calendars/primary/events/{}",
+        google::CALENDAR_API_BASE,
+        urlencode(&event_id),
+    );
+    let val = http_get_json_bearer(&url, &token).await?;
+    let summary = val["summary"].as_str().unwrap_or("(no title)");
+    let description = val["description"].as_str().unwrap_or("(no description)");
+    let location = val["location"].as_str().unwrap_or("");
+    let start = val["start"]["dateTime"]
+        .as_str()
+        .or(val["start"]["date"].as_str())
+        .unwrap_or("");
+    let end = val["end"]["dateTime"]
+        .as_str()
+        .or(val["end"]["date"].as_str())
+        .unwrap_or("");
+    let mut attendees: Vec<String> = Vec::new();
+    if let Some(arr) = val["attendees"].as_array() {
+        for a in arr {
+            if let Some(email) = a["email"].as_str() {
+                attendees.push(email.to_string());
+            }
+        }
+    }
+
+    let mut out = format!(
+        "**{}**\n\nWhen: {} → {}\n",
+        summary, start, end
+    );
+    if !location.is_empty() {
+        out.push_str(&format!("Where: {}\n", location));
+    }
+    if !attendees.is_empty() {
+        out.push_str(&format!("Attendees: {}\n", attendees.join(", ")));
+    }
+    out.push_str(&format!("\n---\n\n{}", description));
+    Ok(out)
+}
+
+// Tauri command exposed to JS. Routes to source_picker::fetch_workflow_context.
+#[tauri::command]
+async fn fetch_workflow_context(input: serde_json::Value) -> Result<String, String> {
+    let parsed: source_picker::FetchInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    source_picker::fetch_workflow_context(parsed).await
+}
+
 #[tauri::command]
 async fn pull_granola_transcripts(
     input: serde_json::Value,
@@ -4380,7 +5365,7 @@ struct ListSlackForClientInput {
 
 // Derives a Slack channel slug from a client name. "Northcote Theatre"
 // → "northcote-theatre". The slack module then prefixes "client-".
-fn slugify_client_name(name: &str) -> String {
+pub(crate) fn slugify_client_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut last_was_dash = false;
     for c in name.chars() {
@@ -4638,6 +5623,14 @@ pub fn run() {
             run_in_cahoots_social_post,
             run_campaign_wrap_report,
             run_scope_of_work,
+            // v0.32 Block F — Skills batch 2
+            run_press_release,
+            run_edm_writer,
+            run_reels_scripting,
+            run_hook_generator,
+            run_client_email,
+            run_humanizer,
+            run_copy_editor,
             create_airtable_subcontractor,
             create_airtable_client,
             create_airtable_project,
@@ -4691,7 +5684,9 @@ pub fn run() {
             // v0.30 Block F — Forms layer
             get_form_url,
             set_form_url,
-            list_form_urls
+            list_form_urls,
+            // v0.32 Block F — Source picker pattern
+            fetch_workflow_context
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
