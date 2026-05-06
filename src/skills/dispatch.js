@@ -31,6 +31,7 @@ const NEEDS_API_KEY = new Set([
   "humanizer",
   "copy-editor",
   "in-cahoots-social",
+  "draft-dossier",
 ]);
 
 export async function dispatch(skillId, options = {}, ctx = {}) {
@@ -102,6 +103,8 @@ export async function dispatch(skillId, options = {}, ctx = {}) {
       return ctx.modals.showCopyEditorModal?.();
     case "in-cahoots-social":
       return ctx.modals.showInCahootsSocialModal?.();
+    case "draft-dossier":
+      return ctx.modals.showDraftDossierModal?.(clientCode);
     case "log-time":
       return ctx.modals.showLogTimeModal?.(clientCode);
     case "schedule-social-post":

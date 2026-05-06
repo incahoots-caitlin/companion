@@ -2937,6 +2937,212 @@ async function showEdmWriterModal(prefillClientCode) {
   });
 }
 
+// ─── Draft dossier modal (v0.39) ──────────────────────────────────────
+//
+// Two modes:
+//   - Existing client: pick from the Airtable-backed client list.
+//   - New lead: type a name + optional slug, no Airtable record needed
+//     yet. The dossier still drafts and writes to disk so Caitlin can
+//     spin up the doc before formal onboarding.
+// Source-picker is the v0.32 component. Run hits run_draft_dossier
+// which writes the markdown to ~/Dropbox/IN CAHOOTS/03 CLIENT
+// DOSSIERS/{slug}.md (or {slug}-draft-{date}.md if there's already one
+// on disk). Caitlin signs off and merges manually.
+function slugifyForUI(name) {
+  return (name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+async function showDraftDossierModal(prefillClientCode) {
+  const clients = await fetchClientsForPicker();
+  const built = await buildSkillModal({
+    modalId: "draft-dossier-modal",
+    title: "Draft dossier",
+    meta: "Pulls a brief from Granola, Gmail, Slack, Calendar, an intake form, or a manual paste, and drafts the 12-section client dossier. Saves to 03 CLIENT DOSSIERS. Caitlin signs off the draft before publishing.",
+    prefillClientCode,
+  });
+  if (!built) return;
+  const { overlay, modal, close, picker } = built;
+
+  // Mode toggle: existing client or new lead.
+  const grid = el("div", { class: "modal-field-grid" });
+
+  const modeRow = el("div", { class: "modal-field" }, [
+    el("div", { class: "settings-label" }, ["Mode"]),
+  ]);
+  const modeWrap = el("div", { style: "display: flex; gap: 8px;" });
+  const modeExisting = el(
+    "button",
+    {
+      type: "button",
+      class: "button button-secondary",
+      style: "padding: 4px 12px; font-size: 12px;",
+    },
+    ["Existing client"]
+  );
+  const modeNew = el(
+    "button",
+    {
+      type: "button",
+      class: "button button-secondary",
+      style: "padding: 4px 12px; font-size: 12px;",
+    },
+    ["New lead"]
+  );
+  modeWrap.appendChild(modeExisting);
+  modeWrap.appendChild(modeNew);
+  modeRow.appendChild(modeWrap);
+  grid.appendChild(modeRow);
+
+  // Existing-client picker.
+  const existingRow = el("label", { class: "modal-field" }, [
+    el("div", { class: "settings-label" }, ["Client"]),
+  ]);
+  const clientPicker = el("select", { class: "settings-input" });
+  const noClient = document.createElement("option");
+  noClient.value = "";
+  noClient.textContent = "Select a client";
+  clientPicker.appendChild(noClient);
+  clients.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c.code;
+    opt.textContent = `${c.code} — ${c.name}`;
+    clientPicker.appendChild(opt);
+  });
+  if (prefillClientCode && clients.some((c) => c.code === prefillClientCode)) {
+    clientPicker.value = prefillClientCode;
+  }
+  existingRow.appendChild(clientPicker);
+  grid.appendChild(existingRow);
+
+  // New-lead inputs (name + slug). Slug auto-fills from name unless the
+  // user edits it.
+  const nameRow = el("label", { class: "modal-field" }, [
+    el("div", { class: "settings-label" }, ["Client name"]),
+  ]);
+  const nameInput = el("input", {
+    type: "text",
+    class: "settings-input",
+    placeholder: "e.g. The Push, Castlemaine State Festival, Aldous Harding",
+  });
+  nameRow.appendChild(nameInput);
+  grid.appendChild(nameRow);
+
+  const slugRow = el("label", { class: "modal-field" }, [
+    el("div", { class: "settings-label" }, ["Slug (filename)"]),
+  ]);
+  const slugInput = el("input", {
+    type: "text",
+    class: "settings-input",
+    placeholder: "e.g. the-push (auto-fills from name)",
+  });
+  let slugTouched = false;
+  slugRow.appendChild(slugInput);
+  grid.appendChild(slugRow);
+
+  modal.appendChild(grid);
+
+  // Extra-notes pad.
+  const notesPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+    el("div", { class: "settings-label" }, ["Extra notes (optional)"]),
+  ]);
+  const notes = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "Anything not in the source — your knowledge of this client, prior call summaries, things to ask about.",
+    rows: 4,
+  });
+  notesPad.appendChild(notes);
+  modal.appendChild(notesPad);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Run"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  // Wire up the mode toggle. Default mode = existing client when a
+  // prefill code came in, otherwise existing if there are clients,
+  // otherwise new lead.
+  let mode = prefillClientCode ? "existing" : clients.length ? "existing" : "new";
+  function applyMode() {
+    if (mode === "existing") {
+      modeExisting.classList.remove("button-secondary");
+      modeNew.classList.add("button-secondary");
+      existingRow.style.display = "";
+      nameRow.style.display = "none";
+      slugRow.style.display = "none";
+    } else {
+      modeExisting.classList.add("button-secondary");
+      modeNew.classList.remove("button-secondary");
+      existingRow.style.display = "none";
+      nameRow.style.display = "";
+      slugRow.style.display = "";
+    }
+  }
+  modeExisting.addEventListener("click", () => { mode = "existing"; applyMode(); });
+  modeNew.addEventListener("click", () => { mode = "new"; applyMode(); });
+  applyMode();
+  if (mode === "existing") {
+    setTimeout(() => clientPicker.focus(), 0);
+  } else {
+    setTimeout(() => nameInput.focus(), 0);
+  }
+
+  // Auto-fill slug from name unless the user has edited it.
+  nameInput.addEventListener("input", () => {
+    if (!slugTouched) slugInput.value = slugifyForUI(nameInput.value);
+  });
+  slugInput.addEventListener("input", () => { slugTouched = true; });
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    let payload = {};
+    if (mode === "existing") {
+      if (!clientPicker.value) return showToast("Pick a client or switch to New lead");
+      payload.client_code = clientPicker.value;
+    } else {
+      const name = nameInput.value.trim();
+      if (!name) return showToast("Client name required");
+      const slug = (slugInput.value.trim() || slugifyForUI(name));
+      if (!slug) return showToast("Slug required (letters and numbers only)");
+      payload.new_client_name = name;
+      payload.new_client_slug = slug;
+    }
+
+    runBtn.disabled = true;
+    runBtn.textContent = "Pulling source...";
+    const blob = await picker.ensureContextBlob();
+    runBtn.textContent = "Drafting dossier...";
+    try {
+      const json = await invoke("run_draft_dossier", {
+        input: {
+          ...payload,
+          context_blob: blob || null,
+          extra_notes: notes.value.trim() || null,
+        },
+      });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Dossier drafted");
+      showHandoffBanner({
+        secondary: "Dossier draft saved to 03 CLIENT DOSSIERS",
+        label: "Open the dossier folder",
+        onClick: () => showToast("Find it at ~/Dropbox/IN CAHOOTS/03 CLIENT DOSSIERS/", { ttl: 6000 }),
+      });
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
 async function showReelsScriptingModal(prefillClientCode) {
   const clients = await fetchClientsForPicker();
   const built = await buildSkillModal({
@@ -5798,6 +6004,8 @@ document.addEventListener("DOMContentLoaded", () => {
       showHumaniserModal,
       showCopyEditorModal,
       showCampaignLaunchChecklistModal,
+      // v0.39 Block F — Draft dossier (multi-source).
+      showDraftDossierModal,
     },
     toast: showToast,
     requireApiKey: async () => {

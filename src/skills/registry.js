@@ -72,6 +72,14 @@ export const SKILLS = [
     needs: "none",
     placeholder: true, // Promote Lead lives on the Pipeline view per-row
   },
+  {
+    id: "draft-dossier",
+    label: "Draft dossier",
+    description: "From any source — call, email, form, or paste",
+    category: "onboard",
+    contexts: ["client", "subcontractor"],
+    needs: "client_code",
+  },
 
   // ── Cycle ────────────────────────────────────────────────────────────
   {

@@ -169,6 +169,10 @@ const SKILL_HUMANIZER: &str = include_str!("../prompts/skills/humanizer.md");
 const SKILL_IN_CAHOOTS_COPY_EDITOR: &str =
     include_str!("../prompts/skills/in-cahoots-copy-editor.md");
 
+// v0.39 Block F — Multi-source dossier draft.
+const SKILL_CLIENT_ONBOARDING: &str =
+    include_str!("../prompts/skills/client-onboarding.md");
+
 fn skill_system_prompt(skill_body: &str) -> String {
     format!("{}\n\n{}", skill_body, SKILL_RECEIPT_ENVELOPE)
 }
@@ -2730,6 +2734,202 @@ async fn run_edm_writer(
         persist_receipt(&conn, &json)?;
     }
     file_receipt_to_airtable(&json).await;
+    Ok(json)
+}
+
+// ── v0.39 Block F — Draft dossier (multi-source) ──────────────────────
+//
+// Reuses the source-picker (Granola, Gmail, Slack, Calendar, Form,
+// manual) to pull a brief blob, then runs the client-onboarding skill
+// against the In Cahoots 12-section dossier template. Saves the
+// markdown body to `Dropbox/IN CAHOOTS/03 CLIENT DOSSIERS/{slug}.md`.
+// If a dossier already exists at that path, writes to
+// `{slug}-draft-{YYYY-MM-DD}.md` instead so Caitlin can manually merge.
+//
+// L4 autonomy: Caitlin reviews the draft before publishing.
+
+#[derive(Deserialize, Debug)]
+struct DraftDossierInput {
+    // For an existing client: pass the code only.
+    #[serde(default)]
+    client_code: Option<String>,
+    // For a brand new lead with no Airtable record yet, pass the name +
+    // optional explicit slug. The frontend collects these in "new lead"
+    // mode of the modal.
+    #[serde(default)]
+    new_client_name: Option<String>,
+    #[serde(default)]
+    new_client_slug: Option<String>,
+    // Source-picker output (already wrapped by fetch_workflow_context).
+    #[serde(default)]
+    context_blob: Option<String>,
+    // Optional extras to weave into the dossier draft.
+    #[serde(default)]
+    extra_notes: Option<String>,
+}
+
+fn dossier_dir() -> String {
+    format!(
+        "{}/Library/CloudStorage/Dropbox/IN CAHOOTS/03 CLIENT DOSSIERS",
+        std::env::var("HOME").unwrap_or_default()
+    )
+}
+
+fn dossier_path(slug: &str) -> String {
+    format!("{}/{}.md", dossier_dir(), slug)
+}
+
+fn dossier_draft_path(slug: &str) -> String {
+    let date = chrono::Local::now().format("%Y-%m-%d");
+    format!("{}/{}-draft-{}.md", dossier_dir(), slug, date)
+}
+
+// Resolve the client's friendly name from Airtable for the modal flow
+// where only the code was passed.
+async fn lookup_client_name_by_code(code: &str) -> Option<String> {
+    let qs = format!(
+        "filterByFormula={}&maxRecords=1&fields%5B%5D=name",
+        urlencode(&format!("{{code}}='{}'", code))
+    );
+    let data = airtable_get("Clients", &qs).await.ok()?;
+    data["records"][0]["fields"]["name"]
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+#[tauri::command]
+async fn run_draft_dossier(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+    let parsed: DraftDossierInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+
+    // Resolve client identity. Existing client → code + name from
+    // Airtable. New lead → name + slug supplied by the frontend.
+    let (client_code, client_name, slug) = if let Some(code) = parsed
+        .client_code
+        .as_deref()
+        .map(|s| s.trim().to_uppercase())
+        .filter(|s| !s.is_empty())
+    {
+        let name = lookup_client_name_by_code(&code).await.unwrap_or_else(|| code.clone());
+        let slug = slugify_client_name(&name);
+        (code, name, slug)
+    } else {
+        let name = parsed
+            .new_client_name
+            .as_deref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or("Either client_code or new_client_name is required")?;
+        let slug = parsed
+            .new_client_slug
+            .as_deref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| slugify_client_name(&name));
+        // No Airtable code yet — use the slug uppercased as a placeholder
+        // for the receipt project tag so the receipts log groups it
+        // sensibly.
+        let placeholder = slug.to_uppercase();
+        (placeholder, name, slug)
+    };
+
+    if slug.is_empty() {
+        return Err("Could not derive a client slug — pass new_client_slug".to_string());
+    }
+
+    // Decide write path now so the prompt can hint the right filename.
+    let final_path = dossier_path(&slug);
+    let collision = std::path::Path::new(&final_path).exists();
+    let write_path = if collision {
+        dossier_draft_path(&slug)
+    } else {
+        final_path.clone()
+    };
+
+    let receipt_id = format!(
+        "rcpt_{}",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+
+    let user_message = format!(
+        "## Draft a client dossier\n\n\
+         **Today's date:** {today}\n\
+         **Client name:** {name}\n\
+         **Client slug:** {slug}\n\
+         **Client code (for receipt project tag):** {code}\n\
+         **Existing dossier on disk:** {collision_note}\n\
+         **Write path:** {write_path}\n\n\
+         ## Source\n\n{source}\n\n\
+         ## Extra notes\n\n{notes}\n\n\
+         ## Companion receipt envelope hints\n\n\
+         - id: {receipt_id}\n\
+         - project: {code}\n\
+         - workflow: draft-dossier\n\
+         - title: RECEIPT — DRAFT DOSSIER\n\
+         - paid_block.customer: {name}\n\
+         - sections[0].header: DOSSIER DRAFT\n\
+         - First items (qty: \"✓\") name the sections you filled.\n\
+         - Then items (qty: \"1\") naming sections left as TBC.\n\
+         - Add `type: task, done: false` items for the open follow-ups \
+           Caitlin needs to chase to fill the gaps.\n\
+         - Output the full 12-section dossier markdown above the JSON \
+           block. Companion writes that markdown to: {write_path}\n",
+        today = chrono::Local::now().format("%A %d %B %Y"),
+        name = client_name,
+        slug = slug,
+        code = client_code,
+        collision_note = if collision {
+            "Yes — write a draft alongside, do not overwrite."
+        } else {
+            "No — write a fresh dossier."
+        },
+        write_path = write_path,
+        source = parsed.context_blob.as_deref().unwrap_or("(no source provided)"),
+        notes = parsed.extra_notes.as_deref().unwrap_or("(none)"),
+        receipt_id = receipt_id,
+    );
+
+    let system = skill_system_prompt(SKILL_CLIENT_ONBOARDING);
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 8192,
+        system: &system,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+        mcp_servers: None,
+    };
+
+    let raw = call_anthropic_raw_text(&key, &body).await?;
+    let json = stamp_autonomy_level(&extract_json_block(&raw)?, "L4");
+    let markdown_body = strip_json_block(&raw);
+
+    // Make sure the dossier directory exists (it does today, but a
+    // fresh install or a renamed Dropbox folder shouldn't error out).
+    if let Err(e) = std::fs::create_dir_all(dossier_dir()) {
+        eprintln!("run_draft_dossier: create_dir_all failed: {}", e);
+    }
+    if let Err(e) = std::fs::write(&write_path, markdown_body.as_bytes()) {
+        eprintln!(
+            "run_draft_dossier: failed to write {}: {}",
+            write_path, e
+        );
+        return Err(format!("Could not write dossier to {}: {}", write_path, e));
+    }
+
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+    file_receipt_to_airtable(&json).await;
+
     Ok(json)
 }
 
@@ -7025,6 +7225,8 @@ pub fn run() {
             list_form_urls,
             // v0.32 Block F — Source picker pattern
             fetch_workflow_context,
+            // v0.39 Block F — Draft dossier (multi-source)
+            run_draft_dossier,
             // v0.36 Block F — Cross-conversation search
             search_companion,
             // v0.37 Block F — Studio CFO (financial intelligence)
