@@ -14,20 +14,27 @@ import { emptyClientState } from "./client/state.js";
 import * as convFetch from "./conversations/fetch.js";
 import * as convRender from "./conversations/render.js";
 import { emptyConversationState } from "./conversations/state.js";
+import * as projectFetch from "./projects/fetch.js";
+import * as projectRender from "./projects/render.js";
+import { emptyProjectState } from "./projects/state.js";
 
 // Global state container. Today dashboard owns _state.today; per-client
 // view owns _state.client. Switching clients overwrites _state.client.
 // _state.conversation owns the chat surface (v0.27 Block D).
+// _state.project owns the per-project Updates surface (v0.28 Block E).
 const _state = {
   today: emptyTodayState(),
   client: emptyClientState(),
   conversation: emptyConversationState(),
+  project: emptyProjectState(),
 };
 
 // Track whether the chat surface is mounted on top of #client-view. Set
 // when a workstream is opened, cleared when the user hits "Back" or
 // switches clients.
 let _chatActive = false;
+// Track whether the per-project view is mounted on top of #client-view.
+let _projectActive = false;
 
 // 60s timer for live-status row, reset on each Today mount.
 let _liveStatusTimer = null;
@@ -2628,6 +2635,13 @@ function showToast(message, opts = {}) {
 
 // ─── View switcher (Today vs per-client) ─────────────────────────────
 function showTodayView() {
+  // Drop chat / project surface so re-entering #client-view later starts
+  // from the standard layout.
+  _chatActive = false;
+  _projectActive = false;
+  convRender.exitChat();
+  projectRender.exitProject();
+
   document.getElementById("today-view")?.removeAttribute("hidden");
   document.getElementById("client-view")?.setAttribute("hidden", "");
   const titleEl = document.querySelector(".main-title");
@@ -2648,10 +2662,12 @@ async function loadClientView(clientCode) {
   clearLiveStatusTimer();
   clearCalendarTimer();
 
-  // Switching clients drops any open chat surface so the new client's
-  // standard view paints from a clean slot.
+  // Switching clients drops any open chat or project surface so the new
+  // client's standard view paints from a clean slot.
   _chatActive = false;
+  _projectActive = false;
   convRender.exitChat();
+  projectRender.exitProject();
 
   todayEl?.setAttribute("hidden", "");
   clientEl.removeAttribute("hidden");
@@ -2723,6 +2739,78 @@ function exitChatToClientView() {
   convRender.exitChat();
   if (_state.client?.code) {
     clientRender.draw(_state.client);
+  }
+}
+
+// ─── Per-project view (v0.28 Block E) ────────────────────────────────
+//
+// Replaces the per-client right pane with a project header, free-text
+// composer, and an aggregated update feed (Notes + Receipts +
+// Conversations + Calendar + Slack + Gmail + Drive). Same mount-on-
+// top-of-#client-view pattern as the chat surface.
+
+async function loadProjectView(projectCode, opts = {}) {
+  if (!isTauri) {
+    showToast("Open the Companion app to use the project view.");
+    return;
+  }
+  const code = (projectCode || "").trim();
+  if (!code) return;
+
+  // Stop dashboard timers; this view is a per-client child.
+  clearLiveStatusTimer();
+  clearCalendarTimer();
+
+  // Drop chat if it was open. Project view replaces #client-view.
+  _chatActive = false;
+  convRender.exitChat();
+
+  document.getElementById("today-view")?.setAttribute("hidden", "");
+  document.getElementById("client-view")?.removeAttribute("hidden");
+
+  _projectActive = true;
+  _state.project = emptyProjectState();
+  _state.project.project_code = code;
+  projectRender.drawLoading(code);
+
+  await projectFetch.loadProject(_state.project, code);
+  projectRender.draw(_state.project);
+
+  const titleEl = document.querySelector(".main-title");
+  if (titleEl) {
+    titleEl.textContent =
+      _state.project.header?.name || _state.project.header?.code || code;
+  }
+
+  // If we opened from outside a client view, optionally pre-load the
+  // matching client view so a Back press lands on the right surface.
+  if (opts.preloadClient && _state.project.header?.client_code) {
+    // Best-effort, fire and forget — we don't await this so the
+    // project view stays responsive.
+    const clientCode = _state.project.header.client_code;
+    if (_state.client?.code !== clientCode) {
+      _state.client = emptyClientState();
+      _state.client.code = clientCode;
+      clientFetch.loadAll(_state.client, clientCode).catch((e) =>
+        console.warn("background client preload failed:", e)
+      );
+    }
+  }
+}
+
+function exitProjectToClientView() {
+  _projectActive = false;
+  projectRender.exitProject();
+  // Fall back to Today if we have no client context (e.g. opened from
+  // a deep link, then back-pressed).
+  if (_state.client?.code) {
+    clientRender.draw(_state.client);
+    const titleEl = document.querySelector(".main-title");
+    if (titleEl && _state.client.header?.name) {
+      titleEl.textContent = _state.client.header.name;
+    }
+  } else {
+    showTodayView();
   }
 }
 
@@ -2841,7 +2929,62 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   document.addEventListener("client:project-click", (e) => {
-    showProjectDetailModal(e.detail?.project);
+    const p = e.detail?.project;
+    if (!p?.code) return;
+    // v0.28 Block E: clicking a project from the per-client view opens
+    // the per-project Updates feed. The detail modal is still reachable
+    // from the project header for fields-only edits.
+    loadProjectView(p.code);
+  });
+
+  // ─── Per-project view event handlers (v0.28 Block E) ─────────────────
+  document.addEventListener("project:back-click", () => {
+    exitProjectToClientView();
+  });
+
+  document.addEventListener("project:client-link-click", async (e) => {
+    const code = e.detail?.client_code;
+    if (!code) return;
+    _projectActive = false;
+    projectRender.exitProject();
+    activateClientSidebar(code);
+    await loadClientView(code);
+  });
+
+  document.addEventListener("project:open-url", (e) => {
+    const url = e.detail?.url;
+    if (!url) return;
+    if (window.__TAURI__?.opener?.openUrl) {
+      window.__TAURI__.opener.openUrl(url).catch(() => window.open(url, "_blank"));
+    } else {
+      window.open(url, "_blank");
+    }
+  });
+
+  document.addEventListener("project:note-save", async (e) => {
+    const body = (e.detail?.body || "").trim();
+    const tags = Array.isArray(e.detail?.tags) ? e.detail.tags : [];
+    if (!body) return;
+    if (!_state.project?.project_code) return;
+    if (_state.project.composer.saving) return;
+
+    _state.project.composer.saving = true;
+    _state.project.composer.error = null;
+    projectRender.draw(_state.project);
+
+    try {
+      await projectFetch.createNote(_state.project.project_code, body, tags);
+      // Reset composer and refresh the feed so the new note appears.
+      _state.project.composer = { body: "", tags: [], saving: false, error: null };
+      await projectFetch.refreshUpdates(_state.project);
+      projectRender.draw(_state.project);
+      showToast("Note saved");
+    } catch (err) {
+      _state.project.composer.saving = false;
+      _state.project.composer.error = String(err);
+      projectRender.draw(_state.project);
+      showToast(`Save failed: ${err}`, { ttl: 5000 });
+    }
   });
 
   document.addEventListener("client:receipt-click", (e) => {
@@ -3023,6 +3166,22 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   document.body.addEventListener("click", (e) => {
+    // Project sub-items inside the sidebar take priority — they sit
+    // inside an expanded client item but render with their own class.
+    const projectItem = e.target.closest(".sidebar-subitem[data-project-code]");
+    if (projectItem) {
+      e.preventDefault();
+      e.stopPropagation();
+      const projectCode = projectItem.dataset.projectCode;
+      if (!projectCode) return;
+      // Activate the parent client item visually so the user knows
+      // which client they're inside.
+      const parentClient = projectItem.closest("[data-client-code]");
+      if (parentClient) activateSidebar(parentClient);
+      loadProjectView(projectCode, { preloadClient: true });
+      return;
+    }
+
     const item = e.target.closest(".sidebar-item");
     if (!item) return;
     const view = item.dataset.view || "today";

@@ -18,6 +18,7 @@ mod gmail;
 mod google;
 mod granola;
 mod oauth;
+mod project_feed;
 mod slack;
 
 use keyring::Entry;
@@ -281,7 +282,7 @@ fn save_slack_webhook(url: String) -> Result<(), String> {
 
 // ── Airtable ───────────────────────────────────────────────────────────
 
-fn read_airtable_creds() -> Option<(String, String)> {
+pub(crate) fn read_airtable_creds() -> Option<(String, String)> {
     let key = cached_secret(KEYRING_AIRTABLE_KEY)?;
     let base = cached_secret(KEYRING_AIRTABLE_BASE)?;
     Some((key, base))
@@ -3494,6 +3495,51 @@ async fn archive_conversation(workstream_code: String) -> Result<(), String> {
     conversations::archive(workstream_code).await
 }
 
+// ── Project Updates feed (v0.28 Block E) ───────────────────────────────
+//
+// Aggregates ProjectNotes + Receipts + Conversations + Calendar + Slack +
+// Gmail + Drive into one timeline scoped to a project code. Each source
+// is fault-tolerant — if Slack OAuth is off, Slack is skipped and the
+// rest still load. The free-text scratchpad lives in a new ProjectNotes
+// table; CRUD commands sit alongside the aggregator.
+
+#[tauri::command]
+async fn list_project_updates(
+    project_code: String,
+) -> Result<project_feed::ProjectFeed, String> {
+    project_feed::list_project_updates(&project_code).await
+}
+
+#[tauri::command]
+async fn list_active_projects_for_client(
+    client_code: String,
+) -> Result<Vec<project_feed::ProjectSummary>, String> {
+    project_feed::list_active_projects_for_client(&client_code).await
+}
+
+#[tauri::command]
+async fn create_project_note(
+    payload: serde_json::Value,
+) -> Result<String, String> {
+    let parsed: project_feed::CreateNoteInput = serde_json::from_value(payload)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    project_feed::create_note(parsed).await
+}
+
+#[tauri::command]
+async fn update_project_note(
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    let parsed: project_feed::UpdateNoteInput = serde_json::from_value(payload)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    project_feed::update_note(parsed).await
+}
+
+#[tauri::command]
+async fn delete_project_note(note_record_id: String) -> Result<(), String> {
+    project_feed::delete_note(&note_record_id).await
+}
+
 // ── Tauri entry ─────────────────────────────────────────────────────────
 
 fn toggle_main_window(app: &tauri::AppHandle) {
@@ -3658,7 +3704,13 @@ pub fn run() {
             // v0.27 Block D — Conversations chat surface
             load_conversation,
             send_message,
-            archive_conversation
+            archive_conversation,
+            // v0.28 Block E — Project Updates scratchpad
+            list_project_updates,
+            list_active_projects_for_client,
+            create_project_note,
+            update_project_note,
+            delete_project_note
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

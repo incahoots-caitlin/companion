@@ -95,6 +95,43 @@
   font-weight: 500;
 }
 
+/* v0.28 Block E: project sub-items expand under their parent client. */
+.sidebar-subitems {
+  display: flex;
+  flex-direction: column;
+  margin: 2px 0 4px var(--space-md);
+  padding-left: var(--space-xs);
+  border-left: 1px solid var(--border-soft);
+}
+
+.sidebar-subitem {
+  display: block;
+  padding: 4px var(--space-xs);
+  border-radius: var(--radius-sm, 4px);
+  color: var(--text-muted);
+  text-decoration: none;
+  font: var(--type-body);
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.sidebar-subitem:hover {
+  background: var(--surface2);
+  color: var(--text);
+}
+
+.sidebar-subitem.active {
+  background: var(--surface2);
+  color: var(--text);
+  font-weight: 500;
+}
+
 /* ── Main pane ────────────────────────────────────── */
 .main {
   overflow-y: auto;

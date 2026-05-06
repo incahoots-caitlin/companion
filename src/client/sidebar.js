@@ -6,11 +6,19 @@
 //
 // The 60s cache is in-memory — switching views inside one session doesn't
 // re-fetch, but a relaunch always pulls fresh.
+//
+// v0.28 Block E: each client item also lists its active projects as
+// sub-items. The project list is fetched per-client lazily when the
+// sidebar mounts, then cached alongside the records. Rendering as a
+// flat list (client item, then sub-items underneath) keeps the existing
+// click-through behaviour for the parent client item — clicking the
+// client name still opens the per-client view.
 
 const CACHE_TTL = 60 * 1000; // 60s
 
 let _cache = {
   records: null,
+  projects_by_code: null, // { CODE: ProjectSummary[] }
   fetched_at: 0,
 };
 
@@ -71,12 +79,36 @@ async function fetchClients() {
     console.warn("sidebar parse failed:", e);
     return null;
   }
-  _cache = { records, fetched_at: now };
+  _cache = { records, projects_by_code: {}, fetched_at: now };
   return records;
 }
 
+// Pull the active projects for a single client code. Errors return an
+// empty list so the sidebar still renders cleanly. Cached on
+// `_cache.projects_by_code` for the same TTL as the client list.
+async function fetchProjectsForClient(code) {
+  if (!code) return [];
+  if (_cache.projects_by_code && _cache.projects_by_code[code]) {
+    return _cache.projects_by_code[code];
+  }
+  let list = [];
+  try {
+    list = await safeInvoke("list_active_projects_for_client", {
+      clientCode: code,
+    });
+  } catch (e) {
+    console.warn(`sidebar projects fetch failed for ${code}:`, e);
+    list = [];
+  }
+  if (!Array.isArray(list)) list = [];
+  if (_cache.projects_by_code) {
+    _cache.projects_by_code[code] = list;
+  }
+  return list;
+}
+
 export function clearCache() {
-  _cache = { records: null, fetched_at: 0 };
+  _cache = { records: null, projects_by_code: null, fetched_at: 0 };
 }
 
 export async function loadClients() {
@@ -117,19 +149,40 @@ export async function loadClients() {
       ])
     );
   } else {
+    // Render each client item, then asynchronously expand it with
+    // active projects. The parent click handler still routes to the
+    // per-client view; project sub-items route to the per-project view.
     records.forEach((r) => {
       const f = r.fields || {};
       const code = (f.code || "").toUpperCase();
       if (!code) return;
       const name = f.name || code;
-      studioSection.appendChild(
-        el("a", {
-          class: "sidebar-item",
-          "data-view": `client-${code}`,
-          "data-client-code": code,
-          href: "#",
-        }, [`${code} — ${name}`])
-      );
+      const clientItem = el("a", {
+        class: "sidebar-item",
+        "data-view": `client-${code}`,
+        "data-client-code": code,
+        href: "#",
+      }, [`${code} — ${name}`]);
+      studioSection.appendChild(clientItem);
+
+      // Empty container for project sub-items so we can fill it in
+      // place once Airtable returns. Using a marker ensures repeat
+      // mounts don't double-up.
+      const projectsWrap = el("div", {
+        class: "sidebar-subitems",
+        "data-projects-for": code,
+      });
+      studioSection.appendChild(projectsWrap);
+
+      // Fire and forget — the sidebar reflects projects when they
+      // arrive without blocking the rest of the boot.
+      fetchProjectsForClient(code)
+        .then((projects) => {
+          renderProjectSubitems(projectsWrap, code, projects);
+        })
+        .catch(() => {
+          // already logged in fetcher — leave the wrap empty.
+        });
     });
   }
 
@@ -140,4 +193,23 @@ export async function loadClients() {
       href: "#",
     }, ["Pipeline"])
   );
+}
+
+function renderProjectSubitems(wrap, clientCode, projects) {
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  if (!projects || projects.length === 0) return;
+  projects.forEach((p) => {
+    const code = p.code || "";
+    if (!code) return;
+    const label = p.name ? p.name : code;
+    const sub = el("a", {
+      class: "sidebar-subitem",
+      "data-project-code": code,
+      "data-client-code": clientCode,
+      href: "#",
+      title: code,
+    }, [label]);
+    wrap.appendChild(sub);
+  });
 }
