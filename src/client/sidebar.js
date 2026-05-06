@@ -129,6 +129,9 @@ export async function loadClients() {
     studioSection.appendChild(
       el("a", { class: "sidebar-item", "data-view": "pipeline", href: "#" }, ["Pipeline"])
     );
+    studioSection.appendChild(
+      el("a", { class: "sidebar-item", "data-view": "team", href: "#" }, ["Team"])
+    );
     return;
   }
 
@@ -192,6 +195,13 @@ export async function loadClients() {
       "data-view": "pipeline",
       href: "#",
     }, ["Pipeline"])
+  );
+  studioSection.appendChild(
+    el("a", {
+      class: "sidebar-item",
+      "data-view": "team",
+      href: "#",
+    }, ["Team"])
   );
 }
 

@@ -4,6 +4,8 @@
 // No fetch in here. Click handlers dispatch CustomEvents on document so
 // main.js can wire modals without us reaching into the global namespace.
 
+import { skillsForContext } from "../skills/registry.js";
+
 function el(tag, props = {}, children = []) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) {
@@ -667,82 +669,56 @@ function renderReceiptRow(r) {
   return row;
 }
 
-// ── Workflows grid (pre-scoped) ───────────────────────────────────────
+// ── Skills (v0.34) ────────────────────────────────────────────────────
+//
+// Pulls from the central skills registry, filtered to the per-client
+// context. NCT-only skills are gated by client code; Draft Wrap Report
+// only renders when the client has a wrap/done project. Click dispatches
+// "skill:dispatch" with the skill id pre-scoped to this client_code.
 
-const WORKFLOW_CARDS = [
-  {
-    key: "monthly-checkin",
-    title: "Monthly Check-in",
-    meta: "Last 30 days · pre-filled to this client",
-  },
-  {
-    key: "new-campaign-scope",
-    title: "New Campaign Scope",
-    meta: "Festival, venue, touring, capability",
-  },
-  {
-    key: "build-scope",
-    title: "Build Scope",
-    meta: "SOW in Caitlin's voice (v0.31)",
-  },
-  {
-    key: "quarterly-review",
-    title: "Quarterly Review",
-    meta: "Last 90 days · QBR receipt",
-  },
-  {
-    key: "strategic-thinking",
-    title: "Strategic Thinking",
-    meta: "Open thinking session",
-  },
-  // Pure-Airtable workflows (v0.21) — no Anthropic call.
-  {
-    key: "schedule-social-post",
-    title: "Schedule social post",
-    meta: "Drafts to SocialPosts",
-  },
-  {
-    key: "log-time",
-    title: "Log time",
-    meta: "Hours → TimeLogs",
-  },
-  {
-    key: "edit-project",
-    title: "Edit project",
-    meta: "Update fields, file diff",
-  },
-  // v0.31 Block F — Skills batch 1.
-  // NCT caption only surfaces on the NCT client view; gated by client_code.
-  {
-    key: "nct-caption",
-    title: "Draft NCT social caption",
-    meta: "Venue voice · 3 variants",
-    only_for_client: "NCT",
-  },
-];
+function renderSkills(state) {
+  const root = el("section", { class: "client-section", "data-section": "skills" });
+  root.appendChild(el("div", { class: "section-label" }, ["🛠 SKILLS"]));
 
-function renderWorkflows(state) {
-  const root = el("section", { class: "client-section", "data-section": "workflows" });
-  root.appendChild(el("div", { class: "section-label" }, ["Workflows for this client"]));
-  const grid = el("div", { class: "client-shortcut-grid" });
-  // v0.31: cards may declare `only_for_client` to gate per-client. When
-  // set, the card only renders for the matching client code (e.g. the
-  // NCT caption writer is NCT-only).
   const code = (state.code || "").toUpperCase();
-  WORKFLOW_CARDS.filter((w) => !w.only_for_client || w.only_for_client === code).forEach((w) => {
+  // For Draft Wrap Report, surface only when at least one project on
+  // this client is wrap/done. We pass the most-advanced status as the
+  // gate value (the skill's project_status gate matches any of them).
+  const wrapStatuses = ["wrap", "done", "wrapped", "complete", "completed"];
+  const wrapped = (state.projects || []).find((p) =>
+    wrapStatuses.includes(String(p.status || "").toLowerCase())
+  );
+
+  const skills = skillsForContext("client", {
+    client_code: code,
+    project_status: wrapped ? String(wrapped.status).toLowerCase() : "",
+    has_existing: true, // existing client view, not creation
+  });
+
+  if (skills.length === 0) {
+    root.appendChild(
+      el("div", { class: "client-empty" }, ["No skills available for this client yet."])
+    );
+    return root;
+  }
+
+  const grid = el("div", { class: "client-shortcut-grid" });
+  skills.forEach((s) => {
     const card = el("button", {
-      class: "client-shortcut" + (w.placeholder ? " client-shortcut-placeholder" : ""),
+      class: "client-shortcut" + (s.placeholder ? " client-shortcut-placeholder" : ""),
       type: "button",
-      "data-workflow-key": w.key,
+      "data-skill-id": s.id,
     }, [
-      el("div", { class: "client-shortcut-title" }, [w.title]),
-      el("div", { class: "client-shortcut-meta" }, [w.meta]),
+      el("div", { class: "client-shortcut-title" }, [s.label]),
+      el("div", { class: "client-shortcut-meta" }, [s.description || ""]),
     ]);
     card.addEventListener("click", () =>
-      dispatch("client:workflow-click", {
-        key: w.key,
-        placeholder: !!w.placeholder,
+      dispatch("skill:dispatch", {
+        skill_id: s.id,
         client_code: state.code,
+        // Pass the wrapped project for the Wrap Report skill so the
+        // dispatcher can pre-fill the project picker.
+        project_code: s.id === "wrap-report" && wrapped ? wrapped.code : null,
       })
     );
     grid.appendChild(card);
@@ -776,7 +752,7 @@ export function draw(state) {
     renderDriveFiles(state),
     renderProjects(state),
     renderReceipts(state),
-    renderWorkflows(state),
+    renderSkills(state),
   ];
   sections.forEach((s) => {
     if (s) container.appendChild(s);

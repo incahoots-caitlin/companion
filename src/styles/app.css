@@ -716,6 +716,29 @@ button.live-status-row {
   padding-top: var(--space-md);
 }
 
+/* v0.34: "More skills..." button row under the Today quick-skills strip. */
+.today-skills-overflow-row {
+  margin-top: var(--space-sm);
+  padding: 0 var(--section-padding-x, var(--space-md));
+}
+
+/* Overflow modal: tighter grid + group labels. */
+.skills-overflow-body {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.skills-overflow-group-label {
+  margin-top: var(--space-md);
+  padding-left: 0;
+  padding-right: 0;
+}
+.skills-overflow-group-label:first-child {
+  margin-top: 0;
+}
+.skills-overflow-grid {
+  margin-bottom: var(--space-sm);
+}
+
 /* Refresh icon button in the header. */
 .button-icon {
   background: transparent;

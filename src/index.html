@@ -17,7 +17,7 @@
     <link rel="stylesheet" href="styles/design-system/toasts.css" />
     <link rel="stylesheet" href="styles/design-system/layouts.css" />
     <link rel="stylesheet" href="styles/app.css" />
-    <script type="module" src="/main.js?v=0.33.0" defer></script>
+    <script type="module" src="/main.js?v=0.34.0" defer></script>
   </head>
   <body>
     <aside class="sidebar" role="navigation" aria-label="Companion navigation">
@@ -42,12 +42,14 @@
              Airtable-driven, cached 60s. Pipeline link stays under them. -->
         <div class="sidebar-empty">Loading clients...</div>
         <a class="sidebar-item" data-view="pipeline">Pipeline</a>
+        <a class="sidebar-item" data-view="team">Team</a>
       </div>
 
       <div class="sidebar-section">
         <div class="sidebar-label">Personal</div>
         <a class="sidebar-item" data-view="mba">MBA</a>
         <a class="sidebar-item" data-view="fundraising">Fundraising</a>
+        <a class="sidebar-item" data-view="social-launch">Social launch</a>
       </div>
 
       <div class="sidebar-section sidebar-section-bottom">
@@ -63,92 +65,20 @@
             <button class="button-icon" id="today-refresh-btn" title="Refresh dashboard" aria-label="Refresh dashboard">
               <span aria-hidden="true">↻</span>
             </button>
-            <button class="button button-secondary" id="workflows-btn">Workflows</button>
+            <button class="button button-secondary" id="workflows-btn">Skills</button>
             <button class="button" id="strategic-thinking-btn">Start Strategic Thinking</button>
           </div>
         </header>
 
         <div id="today-sections" class="today-sections"></div>
 
-        <div class="section-label today-workflows-label">Start a workflow</div>
-        <section class="workflow-starters workflow-starters-compact">
-          <div class="workflow-card">
-            <div class="workflow-card-title">New Client Onboarding</div>
-            <div class="workflow-card-meta">Discovery → scope → CSA → handoff</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">New Campaign Scope</div>
-            <div class="workflow-card-meta">Festival, venue, touring, capability</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Subcontractor Onboarding</div>
-            <div class="workflow-card-meta">CSA + role + pre-start info</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Strategic Thinking</div>
-            <div class="workflow-card-meta">Decision capture and receipt</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Monthly Check-in</div>
-            <div class="workflow-card-meta">Retainer client review</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Quarterly Review</div>
-            <div class="workflow-card-meta">QBR for retainer clients</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Schedule social post</div>
-            <div class="workflow-card-meta">Drafts to SocialPosts</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Log time</div>
-            <div class="workflow-card-meta">Hours → TimeLogs</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Edit project</div>
-            <div class="workflow-card-meta">Update fields, file diff</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Build Scope</div>
-            <div class="workflow-card-meta">SOW in Caitlin's voice</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">In Cahoots social post</div>
-            <div class="workflow-card-meta">Founder-led brand draft</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Draft Wrap Report</div>
-            <div class="workflow-card-meta">For projects at wrap or done</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Draft Press Release</div>
-            <div class="workflow-card-meta">From any source brief</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Draft EDM</div>
-            <div class="workflow-card-meta">Subject lines + full body</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Script a Reel</div>
-            <div class="workflow-card-meta">Hook, beats, captions</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Generate hooks</div>
-            <div class="workflow-card-meta">6 variants for any topic</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Draft email to client</div>
-            <div class="workflow-card-meta">Caitlin's voice, ready to humanise</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Edit pass: humanise</div>
-            <div class="workflow-card-meta">Strip AI tells from any draft</div>
-          </div>
-          <div class="workflow-card">
-            <div class="workflow-card-title">Edit pass: copy editor</div>
-            <div class="workflow-card-meta">Tighten + match voice</div>
-          </div>
+        <div class="section-label today-workflows-label">Quick skills</div>
+        <section class="workflow-starters workflow-starters-compact" id="today-quick-skills">
+          <!-- Populated by main.js from skills/registry.js (today_quick context) -->
         </section>
+        <div class="today-skills-overflow-row">
+          <button class="button button-secondary" type="button" id="more-skills-btn">More skills...</button>
+        </div>
 
         <div class="section-label" hidden>Recent receipts</div>
         <section class="feed" id="feed" hidden></section>

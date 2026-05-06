@@ -6,6 +6,7 @@
 // clicks. main.js wires the handlers.
 
 import { NOTE_TAGS } from "./state.js";
+import { skillsForContext } from "../skills/registry.js";
 
 const SOURCE_ICON = {
   note: "🗒",
@@ -298,6 +299,59 @@ function renderProjectForms(state) {
   return root;
 }
 
+// ── Skills (v0.34) ────────────────────────────────────────────────────
+//
+// Project-scoped skill cards: Build Scope, Draft Wrap Report (gated by
+// status = wrap/done), Press Release, EDM, Reels, Hooks, Edit project,
+// Draft caption. Click dispatches "skill:dispatch" with both client_code
+// and project_code pre-scoped from the project header.
+
+function renderProjectSkills(state) {
+  const status = String(state.header?.status || "").toLowerCase();
+  const clientCode = state.header?.client_code || "";
+  const projectCode = state.header?.code || state.project_code || "";
+
+  const skills = skillsForContext("project", {
+    client_code: clientCode,
+    project_status: status,
+  });
+  if (skills.length === 0) return null;
+
+  const root = el("section", {
+    class: "project-section",
+    "data-section": "skills",
+  });
+  root.appendChild(el("div", { class: "section-label" }, ["🛠 SKILLS"]));
+
+  const grid = el("div", { class: "client-shortcut-grid" });
+  skills.forEach((s) => {
+    const card = el(
+      "button",
+      {
+        class:
+          "client-shortcut" +
+          (s.placeholder ? " client-shortcut-placeholder" : ""),
+        type: "button",
+        "data-skill-id": s.id,
+      },
+      [
+        el("div", { class: "client-shortcut-title" }, [s.label]),
+        el("div", { class: "client-shortcut-meta" }, [s.description || ""]),
+      ]
+    );
+    card.addEventListener("click", () =>
+      dispatch("skill:dispatch", {
+        skill_id: s.id,
+        client_code: clientCode,
+        project_code: projectCode,
+      })
+    );
+    grid.appendChild(card);
+  });
+  root.appendChild(grid);
+  return root;
+}
+
 // ── Updates feed ──────────────────────────────────────────────────────
 
 function renderTagPills(tags) {
@@ -554,6 +608,8 @@ export function draw(state) {
   const layout = el("div", { class: "project-layout" });
   layout.appendChild(renderHeader(state));
   layout.appendChild(renderProjectForms(state));
+  const skillsSection = renderProjectSkills(state);
+  if (skillsSection) layout.appendChild(skillsSection);
   layout.appendChild(renderComposer(state));
   layout.appendChild(renderUpdates(state));
   if (state.error) {

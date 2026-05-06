@@ -7,6 +7,8 @@
 //
 // All emoji prefixes match Caitlin's scheduled-task digest style.
 
+import { skillsForContext } from "../skills/registry.js";
+
 function el(tag, props = {}, children = []) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) {
@@ -833,6 +835,34 @@ function renderMorningBriefing(state) {
   return root;
 }
 
+// ── Quick skills strip (v0.34) ────────────────────────────────────────
+//
+// Three quick-skill cards directly under the Today sections: Strategic
+// Thinking, Log time, Schedule social post. Pulled from the central
+// skills registry by the today_quick context. Click dispatches
+// "skill:dispatch" — main.js handles the rest.
+
+function renderQuickSkills() {
+  const container = document.getElementById("today-quick-skills");
+  if (!container) return;
+  container.innerHTML = "";
+  const skills = skillsForContext("today_quick");
+  skills.forEach((s) => {
+    const card = el("button", {
+      class: "workflow-card",
+      type: "button",
+      "data-skill-id": s.id,
+    }, [
+      el("div", { class: "workflow-card-title" }, [s.label]),
+      el("div", { class: "workflow-card-meta" }, [s.description || ""]),
+    ]);
+    card.addEventListener("click", () =>
+      dispatch("skill:dispatch", { skill_id: s.id })
+    );
+    container.appendChild(card);
+  });
+}
+
 // ── Top-level draw ────────────────────────────────────────────────────
 
 export function draw(state) {
@@ -857,6 +887,11 @@ export function draw(state) {
   sections.forEach((s) => {
     if (s) container.appendChild(s);
   });
+
+  // Quick skills strip lives in its own static container (#today-quick-
+  // skills) below the section grid. Render it once here so it stays in
+  // sync with the registry.
+  renderQuickSkills();
 }
 
 // Re-render a single live-status row (cheap, called every 60s by main.js).

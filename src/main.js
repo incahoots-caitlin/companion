@@ -21,6 +21,9 @@ import * as forms from "./forms/index.js";
 import { createState as createPickerState } from "./source-picker/state.js";
 import { mountSourcePicker } from "./source-picker/render.js";
 import { probeAvailability as probeSourceAvailability } from "./source-picker/fetch.js";
+import { dispatch as dispatchSkill } from "./skills/dispatch.js";
+import { show as showSkillsOverflow } from "./skills/overflow.js";
+import { skillsForContext } from "./skills/registry.js";
 
 // Global state container. Today dashboard owns _state.today; per-client
 // view owns _state.client. Switching clients overwrites _state.client.
@@ -4109,6 +4112,10 @@ function showTodayView() {
   document.getElementById("client-view")?.setAttribute("hidden", "");
   // Drop any pipeline view if it was open.
   document.getElementById("pipeline-view")?.setAttribute("hidden", "");
+  // Drop any skills-only views (Team, Social launch) if open.
+  document
+    .querySelectorAll('[data-view-kind="skills-only"]')
+    .forEach((n) => n.setAttribute("hidden", ""));
   const titleEl = document.querySelector(".main-title");
   if (titleEl) titleEl.textContent = "Today";
   // Re-render with whatever's already in state, then refresh stale slices.
@@ -4116,6 +4123,101 @@ function showTodayView() {
   todayFetch.refreshStale(_state.today).then(() => todayRender.draw(_state.today));
   startLiveStatusTimer();
   startCalendarTimer();
+}
+
+// v0.34 Skills restructure: minimal "Skills only" view used for Team
+// and Personal: Social launch. Both hold a single Skills section pulled
+// from the registry (filtered by context). No live data slots yet —
+// future versions can add team summaries, post performance, etc.
+function showSkillsOnlyView({ id, title, emoji, intro, context }) {
+  _chatActive = false;
+  _projectActive = false;
+  convRender.exitChat();
+  projectRender.exitProject();
+  clearLiveStatusTimer();
+  clearCalendarTimer();
+
+  document.getElementById("today-view")?.setAttribute("hidden", "");
+  document.getElementById("client-view")?.setAttribute("hidden", "");
+  document.getElementById("pipeline-view")?.setAttribute("hidden", "");
+
+  const viewId = `skills-only-${id}`;
+  // Hide every previously-rendered skills-only view container so we don't
+  // stack them.
+  document
+    .querySelectorAll('[data-view-kind="skills-only"]')
+    .forEach((n) => n.setAttribute("hidden", ""));
+
+  let view = document.getElementById(viewId);
+  if (!view) {
+    view = document.createElement("section");
+    view.id = viewId;
+    view.dataset.viewKind = "skills-only";
+    document.querySelector("main.main")?.appendChild(view);
+  }
+  view.removeAttribute("hidden");
+  view.innerHTML = "";
+
+  const header = document.createElement("header");
+  header.className = "main-header";
+  header.appendChild(
+    Object.assign(document.createElement("div"), {
+      className: "main-title",
+      textContent: title,
+    })
+  );
+  view.appendChild(header);
+
+  if (intro) {
+    const introEl = document.createElement("section");
+    introEl.className = "today-section";
+    const labelEl = document.createElement("div");
+    labelEl.className = "today-section-meta";
+    labelEl.textContent = intro;
+    introEl.appendChild(labelEl);
+    view.appendChild(introEl);
+  }
+
+  const skillsSection = document.createElement("section");
+  skillsSection.className = "today-section";
+  const sectionLabel = document.createElement("div");
+  sectionLabel.className = "section-label";
+  sectionLabel.textContent = `${emoji || "🛠"} SKILLS`;
+  skillsSection.appendChild(sectionLabel);
+
+  const skills = skillsForContext(context);
+  if (skills.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No skills available here yet.";
+    skillsSection.appendChild(empty);
+  } else {
+    const grid = document.createElement("div");
+    grid.className = "client-shortcut-grid";
+    skills.forEach((s) => {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className =
+        "client-shortcut" + (s.placeholder ? " client-shortcut-placeholder" : "");
+      card.dataset.skillId = s.id;
+      const cardTitle = document.createElement("div");
+      cardTitle.className = "client-shortcut-title";
+      cardTitle.textContent = s.label;
+      const cardMeta = document.createElement("div");
+      cardMeta.className = "client-shortcut-meta";
+      cardMeta.textContent = s.description || "";
+      card.appendChild(cardTitle);
+      card.appendChild(cardMeta);
+      card.addEventListener("click", () => {
+        document.dispatchEvent(
+          new CustomEvent("skill:dispatch", { detail: { skill_id: s.id } })
+        );
+      });
+      grid.appendChild(card);
+    });
+    skillsSection.appendChild(grid);
+  }
+  view.appendChild(skillsSection);
 }
 
 // v0.30 Block F: minimal Pipeline view. Shows the "Share Lead Intake
@@ -4131,6 +4233,9 @@ async function showPipelineView() {
 
   document.getElementById("today-view")?.setAttribute("hidden", "");
   document.getElementById("client-view")?.setAttribute("hidden", "");
+  document
+    .querySelectorAll('[data-view-kind="skills-only"]')
+    .forEach((n) => n.setAttribute("hidden", ""));
 
   let view = document.getElementById("pipeline-view");
   if (!view) {
@@ -4532,6 +4637,11 @@ async function loadClientView(clientCode) {
 
   todayEl?.setAttribute("hidden", "");
   clientEl.removeAttribute("hidden");
+  // Hide pipeline + skills-only views if either was previously visible.
+  document.getElementById("pipeline-view")?.setAttribute("hidden", "");
+  document
+    .querySelectorAll('[data-view-kind="skills-only"]')
+    .forEach((n) => n.setAttribute("hidden", ""));
 
   // Brand-new client view: blow away state and show a loading placeholder.
   _state.client = emptyClientState();
@@ -5057,6 +5167,62 @@ document.addEventListener("DOMContentLoaded", () => {
     convRender.draw(_state.conversation, _state.client.workstreams || []);
   });
 
+  // v0.34 Skills restructure: single dispatch entry point. Skill cards
+  // from any view (Today quick strip, per-client, per-project, Team,
+  // Social launch, the More skills overflow modal) emit "skill:dispatch"
+  // with { skill_id, client_code?, project_code? }. The dispatcher in
+  // src/skills/dispatch.js routes to the right modal opener.
+  const skillDispatchCtx = {
+    modals: {
+      showStrategicThinkingModal,
+      showMonthlyCheckinModal,
+      showQuarterlyReviewModal,
+      showNewClientOnboardingModal,
+      showSubcontractorOnboardingModal,
+      showScheduleSocialPostModal,
+      showLogTimeModal,
+      showEditProjectModal,
+      showNctCaptionModal,
+      showBuildScopeModal,
+      showWrapReportModal,
+      showInCahootsSocialModal,
+      showPressReleaseModal,
+      showEdmWriterModal,
+      showReelsScriptingModal,
+      showHookGeneratorModal,
+      showClientEmailModal,
+      showHumaniserModal,
+      showCopyEditorModal,
+    },
+    toast: showToast,
+    requireApiKey: async () => {
+      if (!isTauri) {
+        showToast("Open the Companion app to run live workflows. Preview is read-only.");
+        return false;
+      }
+      const ready = await invoke("get_api_key_status");
+      if (!ready) {
+        showApiKeyBanner();
+        showToast("Set your Anthropic API key first");
+        return false;
+      }
+      return true;
+    },
+    requireTauri: async () => {
+      if (!isTauri) {
+        showToast("Open the Companion app to file workflows. Preview is read-only.");
+        return false;
+      }
+      return true;
+    },
+  };
+
+  document.addEventListener("skill:dispatch", (e) => {
+    const { skill_id, client_code, project_code } = e.detail || {};
+    if (!skill_id) return;
+    dispatchSkill(skill_id, { client_code, project_code }, skillDispatchCtx);
+  });
+
   document.addEventListener("client:workflow-click", (e) => {
     const { key, client_code } = e.detail || {};
     clientWorkflows.launch(key, client_code, {
@@ -5234,6 +5400,32 @@ document.addEventListener("DOMContentLoaded", () => {
     if (view === "pipeline") {
       showPipelineView();
       if (titleEl) titleEl.textContent = "Pipeline";
+      return;
+    }
+
+    // v0.34: Team view holds Subcontractor Onboarding (and future team
+    // skills). Social launch under Personal holds the In Cahoots social
+    // post skill. Both are minimal Skills-only surfaces for now.
+    if (view === "team") {
+      showSkillsOnlyView({
+        id: "team",
+        title: "Team",
+        emoji: "👥",
+        intro: "Team operations. Run subcontractor onboarding from here.",
+        context: "team",
+      });
+      if (titleEl) titleEl.textContent = "Team";
+      return;
+    }
+    if (view === "social-launch") {
+      showSkillsOnlyView({
+        id: "social-launch",
+        title: "Social launch",
+        emoji: "📣",
+        intro: "Founder-led launch for @incahoots.marketing.",
+        context: "social_launch",
+      });
+      if (titleEl) titleEl.textContent = "Social launch";
       return;
     }
 
@@ -5419,6 +5611,16 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("strategic-thinking-btn")?.addEventListener("click", openStrategicThinking);
 
   document.getElementById("workflows-btn")?.addEventListener("click", () => {
-    document.querySelector(".workflow-starters")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // v0.34: header "Skills" button opens the overflow modal directly.
+    showSkillsOverflow((skillId) =>
+      dispatchSkill(skillId, {}, skillDispatchCtx)
+    );
+  });
+
+  // v0.34: "More skills..." button under the Today quick-skills strip.
+  document.getElementById("more-skills-btn")?.addEventListener("click", () => {
+    showSkillsOverflow((skillId) =>
+      dispatchSkill(skillId, {}, skillDispatchCtx)
+    );
   });
 });
