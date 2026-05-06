@@ -17,7 +17,8 @@
     <link rel="stylesheet" href="styles/design-system/toasts.css" />
     <link rel="stylesheet" href="styles/design-system/layouts.css" />
     <link rel="stylesheet" href="styles/app.css" />
-    <script type="module" src="/main.js?v=0.35.0" defer></script>
+    <link rel="stylesheet" href="styles/design-system/global-search.css" />
+    <script type="module" src="/main.js?v=0.36.0" defer></script>
   </head>
   <body>
     <aside class="sidebar" role="navigation" aria-label="Companion navigation">
@@ -58,6 +59,26 @@
     </aside>
 
     <main class="main">
+      <!-- v0.36 Block F — global search bar. Sticks to the top of the
+           main pane regardless of which view is active. Cmd-K focuses
+           the input. Results render into the dropdown below. -->
+      <div class="global-search" id="global-search">
+        <div class="global-search-input-wrap">
+          <span class="global-search-icon" aria-hidden="true">⌕</span>
+          <input
+            type="search"
+            id="global-search-input"
+            class="global-search-input"
+            placeholder="Search Conversations, Receipts, Notes, Decisions, Commitments..."
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="Search Companion"
+          />
+          <kbd class="global-search-kbd" aria-hidden="true">⌘K</kbd>
+        </div>
+        <div class="global-search-dropdown" id="global-search-dropdown" hidden></div>
+      </div>
+
       <section id="today-view">
         <header class="main-header">
           <div class="main-title">Today</div>

@@ -24,6 +24,7 @@ import { probeAvailability as probeSourceAvailability } from "./source-picker/fe
 import { dispatch as dispatchSkill } from "./skills/dispatch.js";
 import { show as showSkillsOverflow } from "./skills/overflow.js";
 import { skillsForContext } from "./skills/registry.js";
+import * as globalSearch from "./search/index.js";
 
 // Global state container. Today dashboard owns _state.today; per-client
 // view owns _state.client. Switching clients overwrites _state.client.
@@ -4279,6 +4280,87 @@ function showReceiptJsonModal(receipt) {
   closeBtn.addEventListener("click", close);
 }
 
+// v0.36 Block F — search result → existing surface dispatch.
+//
+// Each result carries a `jump_to` envelope shaped on the Rust side. We
+// route by kind: receipts open the receipt JSON modal, decisions and
+// commitments open their respective capture/detail modals, project
+// notes load the per-project view (filtered scroll lands in v0.37 if
+// the per-project feed grows that capability), and conversations load
+// the chat surface for their workstream code.
+async function handleSearchJump(result) {
+  if (!result || !result.jump_to) return;
+  const j = result.jump_to;
+  const kind = j.kind;
+
+  if (kind === "receipt") {
+    // showReceiptJsonModal expects { title, workflow, date, ticked, total, json }.
+    showReceiptJsonModal({
+      title: j.title || result.title,
+      workflow: j.workflow,
+      date: j.date,
+      ticked: j.ticked || 0,
+      total: j.total || 0,
+      json: j.json,
+      summary: j.summary,
+    });
+    return;
+  }
+
+  if (kind === "decision") {
+    showDecisionCaptureModal({
+      id: j.record_id,
+      title: j.title || result.title,
+      decision: j.decision,
+      reasoning: j.reasoning,
+      due_date: j.due_date,
+      decision_type: j.decision_type,
+      status: j.status,
+    });
+    return;
+  }
+
+  if (kind === "commitment") {
+    showCommitmentModal({
+      id: j.record_id,
+      title: j.title || result.title,
+      notes: j.notes,
+      due_at: j.due_at,
+      priority: j.priority,
+      surface: j.surface,
+    });
+    return;
+  }
+
+  if (kind === "conversation") {
+    const wsCode = j.workstream_code;
+    const clientCode = j.client_code;
+    if (!wsCode) {
+      showToast("Conversation has no workstream code — can't jump.");
+      return;
+    }
+    if (clientCode) {
+      activateClientSidebar(clientCode);
+      await loadClientView(clientCode);
+    }
+    // loadChatView wants a workstream-shaped object. Title falls back to code.
+    loadChatView({ code: wsCode, title: result.title || wsCode });
+    return;
+  }
+
+  if (kind === "project_note") {
+    const projectCode = j.project_code;
+    if (!projectCode) {
+      showToast("Note has no project code — can't jump.");
+      return;
+    }
+    await loadProjectView(projectCode, { preloadClient: true });
+    return;
+  }
+
+  showToast(`Unknown jump target: ${kind}`);
+}
+
 // Rebuild the client-id → code lookup. Kept tiny so post-mutation refreshes
 // don't pay a full reload cost.
 async function rebuildClientLookup() {
@@ -5767,6 +5849,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Background: check for updates on launch.
   checkForUpdates();
+
+  // v0.36 Block F — global search bar in the header. Cmd-K focuses.
+  globalSearch.mount({
+    invoke,
+    isTauri,
+    showToast,
+    onJump: handleSearchJump,
+  });
 
   async function openStrategicThinking() {
     if (!isTauri) {

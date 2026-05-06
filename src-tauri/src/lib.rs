@@ -19,6 +19,7 @@ mod google;
 mod granola;
 mod oauth;
 mod project_feed;
+mod search;
 mod slack;
 mod source_picker;
 
@@ -6504,6 +6505,21 @@ async fn delete_project_note(note_record_id: String) -> Result<(), String> {
     project_feed::delete_note(&note_record_id).await
 }
 
+// ── Cross-conversation search (v0.36 Block F) ──────────────────────────
+//
+// Single Tauri command exposed to the frontend. The header search bar
+// debounces on the JS side; the 30s in-flight cache here covers repeat
+// queries inside a session.
+
+#[tauri::command]
+async fn search_companion(
+    query: String,
+    limit: Option<usize>,
+    cache: State<'_, search::SearchCache>,
+) -> Result<Vec<search::SearchResult>, String> {
+    search::search(&query, limit, &cache).await
+}
+
 // ── Tauri entry ─────────────────────────────────────────────────────────
 
 fn toggle_main_window(app: &tauri::AppHandle) {
@@ -6548,6 +6564,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(conn)));
             app.manage(RateLimit(Mutex::new(None)));
             app.manage(DriftCache(Mutex::new(None)));
+            app.manage(search::SearchCache::new());
 
             // Warm secrets cache so we hit Keychain once at launch, not
             // per API call. The user clicks "Always Allow" once per
@@ -6700,7 +6717,9 @@ pub fn run() {
             set_form_url,
             list_form_urls,
             // v0.32 Block F — Source picker pattern
-            fetch_workflow_context
+            fetch_workflow_context,
+            // v0.36 Block F — Cross-conversation search
+            search_companion
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
