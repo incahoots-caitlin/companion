@@ -11,13 +11,23 @@ import * as clientRender from "./client/render.js";
 import * as clientWorkflows from "./client/workflows.js";
 import * as clientSidebar from "./client/sidebar.js";
 import { emptyClientState } from "./client/state.js";
+import * as convFetch from "./conversations/fetch.js";
+import * as convRender from "./conversations/render.js";
+import { emptyConversationState } from "./conversations/state.js";
 
 // Global state container. Today dashboard owns _state.today; per-client
 // view owns _state.client. Switching clients overwrites _state.client.
+// _state.conversation owns the chat surface (v0.27 Block D).
 const _state = {
   today: emptyTodayState(),
   client: emptyClientState(),
+  conversation: emptyConversationState(),
 };
+
+// Track whether the chat surface is mounted on top of #client-view. Set
+// when a workstream is opened, cleared when the user hits "Back" or
+// switches clients.
+let _chatActive = false;
 
 // 60s timer for live-status row, reset on each Today mount.
 let _liveStatusTimer = null;
@@ -1844,6 +1854,28 @@ function showWorkstreamDetailModal(workstream) {
           },
         },
       });
+      // v0.27: marking a workstream done also archives its bound chat,
+      // if any. Best-effort — never fails the mark-done flow.
+      if (workstream.code) {
+        try {
+          await invoke("archive_conversation", { workstreamCode: workstream.code });
+        } catch (e) {
+          console.warn("archive_conversation failed:", e);
+        }
+        // If the chat surface is currently showing this workstream, flip
+        // it to read-only by reloading the conversation row.
+        if (
+          _chatActive &&
+          _state.conversation.workstream_code === workstream.code
+        ) {
+          try {
+            await convFetch.loadConversation(_state.conversation, workstream.code);
+            convRender.draw(_state.conversation, _state.client.workstreams || []);
+          } catch (e) {
+            console.warn("conversation reload after archive failed:", e);
+          }
+        }
+      }
       showToast("Workstream marked done");
       close();
       // Refresh both surfaces — the workstream may show up on either.
@@ -2616,6 +2648,11 @@ async function loadClientView(clientCode) {
   clearLiveStatusTimer();
   clearCalendarTimer();
 
+  // Switching clients drops any open chat surface so the new client's
+  // standard view paints from a clean slot.
+  _chatActive = false;
+  convRender.exitChat();
+
   todayEl?.setAttribute("hidden", "");
   clientEl.removeAttribute("hidden");
 
@@ -2635,6 +2672,57 @@ async function loadClientView(clientCode) {
   // Update title to the resolved client name (loadHeader filled it in).
   if (titleEl && _state.client.header?.name) {
     titleEl.textContent = _state.client.header.name;
+  }
+}
+
+// ─── Chat surface (v0.27 Block D) ────────────────────────────────────
+//
+// Replaces the per-client right pane with a workstream rail + chat pane.
+// Caller is responsible for the client view being in the right state
+// (workstreams loaded). The Back button on the rail returns to the
+// standard per-client view by re-rendering it.
+
+async function loadChatView(workstream) {
+  if (!isTauri) {
+    showToast("Open the Companion app to use the chat surface.");
+    return;
+  }
+  if (!workstream?.code) return;
+
+  // Make sure the per-client view container is visible. If we got here
+  // from the Today dashboard via a client-bound workstream click, the
+  // sidebar/loadClientView path already handled the switch. From the
+  // per-client view it's a no-op.
+  document.getElementById("today-view")?.setAttribute("hidden", "");
+  document.getElementById("client-view")?.removeAttribute("hidden");
+
+  _chatActive = true;
+  _state.conversation = emptyConversationState();
+  _state.conversation.workstream_code = workstream.code;
+  _state.conversation.workstream_title = workstream.title || workstream.code;
+  convRender.drawLoading();
+
+  try {
+    await convFetch.loadConversation(_state.conversation, workstream.code);
+  } catch (e) {
+    showToast(`Open conversation failed: ${e}`);
+  }
+
+  // Workstream rail draws from the per-client view's already-loaded list
+  // when available. If it's empty (chat opened from Today before client
+  // view loaded) we still render with the single workstream so the user
+  // has something.
+  const rail = (_state.client.workstreams && _state.client.workstreams.length > 0)
+    ? _state.client.workstreams
+    : [workstream];
+  convRender.draw(_state.conversation, rail);
+}
+
+function exitChatToClientView() {
+  _chatActive = false;
+  convRender.exitChat();
+  if (_state.client?.code) {
+    clientRender.draw(_state.client);
   }
 }
 
@@ -2719,13 +2807,15 @@ document.addEventListener("DOMContentLoaded", () => {
     showDecisionCaptureModal(e.detail?.decision);
   });
 
-  document.addEventListener("today:workstream-click", (e) => {
+  document.addEventListener("today:workstream-click", async (e) => {
     const w = e.detail?.workstream;
     if (w?._client_codes?.length) {
-      // Tagged to a client — jump to that client view.
+      // Tagged to a client — load that client view, then drop the user
+      // straight into the chat surface for the workstream they clicked.
       const code = w._client_codes[0];
       activateClientSidebar(code);
-      loadClientView(code);
+      await loadClientView(code);
+      loadChatView(w);
       return;
     }
     // Untagged workstream — open the detail modal in place.
@@ -2734,7 +2824,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // ─── Per-client view event handlers ─────────────────────────────────
   document.addEventListener("client:workstream-click", (e) => {
-    showWorkstreamDetailModal(e.detail?.workstream);
+    const w = e.detail?.workstream;
+    if (!w) return;
+    // v0.27: workstream click from per-client view opens the chat surface
+    // directly. The standalone metadata modal is still available via the
+    // workstream-info button (today/decision flows still use it).
+    loadChatView(w);
   });
 
   document.addEventListener("client:decision-click", (e) => {
@@ -2757,6 +2852,58 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!_state.client?.code) return;
     await clientFetch.loadAll(_state.client, _state.client.code);
     clientRender.draw(_state.client);
+  });
+
+  // ─── Chat surface event handlers (v0.27 Block D) ─────────────────────
+  document.addEventListener("conversation:back-click", () => {
+    exitChatToClientView();
+  });
+
+  document.addEventListener("conversation:info-click", (e) => {
+    const w = e.detail?.workstream;
+    if (w) showWorkstreamDetailModal(w);
+  });
+
+  document.addEventListener("conversation:rail-click", (e) => {
+    const w = e.detail?.workstream;
+    if (!w) return;
+    if (_state.conversation.sending) {
+      showToast("Hang on, still sending the previous message.");
+      return;
+    }
+    loadChatView(w);
+  });
+
+  document.addEventListener("conversation:send", async (e) => {
+    const text = (e.detail?.text || "").trim();
+    if (!text) return;
+    if (!_state.conversation.workstream_code) return;
+    if (_state.conversation.sending) return;
+    if (_state.conversation.status === "archived") {
+      showToast("This conversation is archived.");
+      return;
+    }
+
+    // Optimistic append: show the user's message immediately, mark
+    // sending=true so the composer disables and the "Thinking…" bubble
+    // appears. The Rust call returns the full updated transcript, which
+    // overwrites our optimistic state.
+    const nowIso = new Date().toISOString();
+    _state.conversation.messages.push({ role: "user", content: text, ts: nowIso });
+    _state.conversation.sending = true;
+    convRender.draw(_state.conversation, _state.client.workstreams || []);
+
+    try {
+      await convFetch.sendMessage(_state.conversation, text);
+    } catch (err) {
+      _state.conversation.sending = false;
+      // Pop the optimistic user message so we don't double up if she
+      // retries — the next successful send will append it cleanly.
+      _state.conversation.messages.pop();
+      showToast(`Send failed: ${err}`);
+    }
+
+    convRender.draw(_state.conversation, _state.client.workstreams || []);
   });
 
   document.addEventListener("client:workflow-click", (e) => {

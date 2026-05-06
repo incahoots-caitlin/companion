@@ -11,6 +11,7 @@
 //   tick_item(receipt_id, idx)    -> Result<String, String>  (returns updated JSON)
 
 mod calendar;
+mod conversations;
 mod drift;
 mod drive;
 mod gmail;
@@ -37,9 +38,9 @@ const KEYRING_USER: &str = "anthropic-api-key";
 const KEYRING_SLACK: &str = "slack-webhook-url";
 const KEYRING_AIRTABLE_KEY: &str = "airtable-api-key";
 const KEYRING_AIRTABLE_BASE: &str = "airtable-base-id";
-const ANTHROPIC_API: &str = "https://api.anthropic.com/v1/messages";
+pub(crate) const ANTHROPIC_API: &str = "https://api.anthropic.com/v1/messages";
 const AIRTABLE_API: &str = "https://api.airtable.com/v0";
-const MODEL_ID: &str = "claude-opus-4-7";
+pub(crate) const MODEL_ID: &str = "claude-opus-4-7";
 
 // Beta header for the Anthropic Messages API native MCP connector.
 // When this is sent, the request body may include `mcp_servers` and
@@ -219,7 +220,7 @@ fn cache_secret(account: &str, value: &str) {
 
 // ── Auth ────────────────────────────────────────────────────────────────
 
-fn read_anthropic_key() -> Option<String> {
+pub(crate) fn read_anthropic_key() -> Option<String> {
     // 1. Env var (dev convenience).
     if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
         let trimmed = key.trim();
@@ -320,7 +321,7 @@ fn save_airtable_credentials(api_key: String, base_id: String) -> Result<(), Str
 // filing as best-effort. If the user is offline or the PAT is rotated,
 // the workflow still completes locally — we just lose the cloud copy.
 
-async fn airtable_create_record(
+pub(crate) async fn airtable_create_record(
     table: &str,
     fields: serde_json::Value,
 ) -> Result<String, String> {
@@ -354,7 +355,7 @@ async fn airtable_create_record(
     Ok(record_id)
 }
 
-async fn airtable_update_record(
+pub(crate) async fn airtable_update_record(
     table: &str,
     record_id: &str,
     fields: serde_json::Value,
@@ -399,7 +400,7 @@ async fn airtable_find_client_by_code(code: &str) -> Result<Option<String>, Stri
     Ok(data["records"][0]["id"].as_str().map(String::from))
 }
 
-fn urlencode(s: &str) -> String {
+pub(crate) fn urlencode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
@@ -513,7 +514,7 @@ async fn airtable_find_receipt_record_id(receipt_id: &str) -> Result<Option<Stri
     Ok(data["records"][0]["id"].as_str().map(String::from))
 }
 
-async fn airtable_get(table: &str, query: &str) -> Result<serde_json::Value, String> {
+pub(crate) async fn airtable_get(table: &str, query: &str) -> Result<serde_json::Value, String> {
     let (api_key, base_id) = read_airtable_creds().ok_or("Airtable not configured")?;
     let qs = if query.is_empty() {
         String::new()
@@ -3465,6 +3466,34 @@ async fn list_slack_for_client(input: serde_json::Value) -> Result<String, Strin
     serde_json::to_string(&activity).map_err(|e| format!("Serialise: {}", e))
 }
 
+// ── Conversations (v0.27 Block D) ──────────────────────────────────────
+//
+// Chat surface bound to a Workstream. Three commands cover the full
+// surface: load, send, archive. Streaming (SSE) is queued for v0.27.1
+// per the brief — non-streaming was the durable surface to ship first.
+
+#[tauri::command]
+async fn load_conversation(
+    workstream_code: String,
+) -> Result<conversations::ConversationPayload, String> {
+    conversations::load(workstream_code).await
+}
+
+#[tauri::command]
+async fn send_message(
+    workstream_code: String,
+    user_message: String,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<conversations::ConversationPayload, String> {
+    check_rate_limit(&rate_limit)?;
+    conversations::send(workstream_code, user_message).await
+}
+
+#[tauri::command]
+async fn archive_conversation(workstream_code: String) -> Result<(), String> {
+    conversations::archive(workstream_code).await
+}
+
 // ── Tauri entry ─────────────────────────────────────────────────────────
 
 fn toggle_main_window(app: &tauri::AppHandle) {
@@ -3625,7 +3654,11 @@ pub fn run() {
             connect_slack,
             disconnect_slack,
             list_slack_unreads,
-            list_slack_for_client
+            list_slack_for_client,
+            // v0.27 Block D — Conversations chat surface
+            load_conversation,
+            send_message,
+            archive_conversation
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
