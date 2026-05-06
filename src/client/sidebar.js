@@ -19,6 +19,7 @@ const CACHE_TTL = 60 * 1000; // 60s
 let _cache = {
   records: null,
   projects_by_code: null, // { CODE: ProjectSummary[] }
+  subcontractors: null, // [{ code, name, role }]
   fetched_at: 0,
 };
 
@@ -107,8 +108,30 @@ async function fetchProjectsForClient(code) {
   return list;
 }
 
+// Pull active subcontractors. Returns [] on any error so the Team entry
+// still renders the (empty) list. Cached on `_cache.subcontractors` for
+// the same TTL as the client list.
+async function fetchActiveSubcontractors() {
+  if (_cache.subcontractors) return _cache.subcontractors;
+  let list = [];
+  try {
+    list = await safeInvoke("list_active_subcontractors");
+  } catch (e) {
+    console.warn("sidebar list_active_subcontractors failed:", e);
+    list = [];
+  }
+  if (!Array.isArray(list)) list = [];
+  _cache.subcontractors = list;
+  return list;
+}
+
 export function clearCache() {
-  _cache = { records: null, projects_by_code: null, fetched_at: 0 };
+  _cache = {
+    records: null,
+    projects_by_code: null,
+    subcontractors: null,
+    fetched_at: 0,
+  };
 }
 
 export async function loadClients() {
@@ -129,9 +152,17 @@ export async function loadClients() {
     studioSection.appendChild(
       el("a", { class: "sidebar-item", "data-view": "pipeline", href: "#" }, ["Pipeline"])
     );
-    studioSection.appendChild(
-      el("a", { class: "sidebar-item", "data-view": "team", href: "#" }, ["Team"])
-    );
+    const teamItem = el("a", {
+      class: "sidebar-item",
+      "data-view": "team",
+      href: "#",
+    }, ["Team"]);
+    studioSection.appendChild(teamItem);
+    const subsWrapDisc = el("div", {
+      class: "sidebar-subitems",
+      "data-subcontractors-wrap": "1",
+    });
+    studioSection.appendChild(subsWrapDisc);
     return;
   }
 
@@ -196,13 +227,44 @@ export async function loadClients() {
       href: "#",
     }, ["Pipeline"])
   );
-  studioSection.appendChild(
-    el("a", {
-      class: "sidebar-item",
-      "data-view": "team",
+  const teamItem = el("a", {
+    class: "sidebar-item",
+    "data-view": "team",
+    href: "#",
+  }, ["Team"]);
+  studioSection.appendChild(teamItem);
+
+  // v0.38: Team entry expands to active subcontractors. Today this is
+  // just Rose; future hires appear automatically. Fire-and-forget so the
+  // sidebar paints even when Airtable is slow.
+  const subsWrap = el("div", {
+    class: "sidebar-subitems",
+    "data-subcontractors-wrap": "1",
+  });
+  studioSection.appendChild(subsWrap);
+  fetchActiveSubcontractors()
+    .then((subs) => renderSubcontractorSubitems(subsWrap, subs))
+    .catch(() => {
+      // already logged in fetcher — leave the wrap empty.
+    });
+}
+
+function renderSubcontractorSubitems(wrap, subs) {
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  if (!subs || subs.length === 0) return;
+  subs.forEach((s) => {
+    const code = (s.code || "").toUpperCase();
+    if (!code) return;
+    const label = s.name ? `${s.name}` : code;
+    const sub = el("a", {
+      class: "sidebar-subitem",
+      "data-subcontractor-code": code,
       href: "#",
-    }, ["Team"])
-  );
+      title: code,
+    }, [label]);
+    wrap.appendChild(sub);
+  });
 }
 
 function renderProjectSubitems(wrap, clientCode, projects) {

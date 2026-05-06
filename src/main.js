@@ -17,6 +17,9 @@ import { emptyConversationState } from "./conversations/state.js";
 import * as projectFetch from "./projects/fetch.js";
 import * as projectRender from "./projects/render.js";
 import { emptyProjectState } from "./projects/state.js";
+import * as subcontractorFetch from "./subcontractor/fetch.js";
+import * as subcontractorRender from "./subcontractor/render.js";
+import { emptyState as emptySubcontractorState } from "./subcontractor/state.js";
 import * as forms from "./forms/index.js";
 import { createState as createPickerState } from "./source-picker/state.js";
 import { mountSourcePicker } from "./source-picker/render.js";
@@ -39,6 +42,7 @@ const _state = {
   conversation: emptyConversationState(),
   project: emptyProjectState(),
   cfo: emptyCfoState(),
+  subcontractor: emptySubcontractorState(),
 };
 
 // Track whether the chat surface is mounted on top of #client-view. Set
@@ -424,6 +428,10 @@ async function showSettingsModal() {
   let granolaStatus = { connected: false, has_client_id: false, last_pull_at: null };
   let googleStatus = { connected: false, has_client_id: false, last_sync_at: null };
   let slackOauthStatus = { connected: false, has_client_id: false, has_client_secret: false, last_sync_at: null };
+  // v0.38: "I am" identity. Defaults to "auto" — read OS user via whoami
+  // and map it to a Subcontractor code at runtime.
+  let iAmCurrent = "auto";
+  let osUser = "";
   if (isTauri) {
     try { apiSet = await invoke("get_api_key_status"); } catch {}
     try { slackSet = await invoke("get_slack_status"); } catch {}
@@ -431,6 +439,8 @@ async function showSettingsModal() {
     try { granolaStatus = await invoke("get_granola_status"); } catch {}
     try { googleStatus = await invoke("get_google_status"); } catch {}
     try { slackOauthStatus = await invoke("get_slack_oauth_status"); } catch {}
+    try { iAmCurrent = await invoke("get_i_am"); } catch {}
+    try { osUser = await invoke("whoami_user"); } catch {}
   }
 
   const body = el("div", { class: "settings-body" });
@@ -653,6 +663,35 @@ async function showSettingsModal() {
     slackOauthActions,
   ]));
 
+  // "I am" identity (v0.38). Companion has no user concept yet, but Rose
+  // is about to start. We default to OS-user mapping (`whoami` →
+  // caitlinreilly = Caitlin, rose = Rose, anything else = Other), and
+  // the dropdown lets either of them override on a shared machine.
+  const iAmOptions = [
+    ["auto", `Auto (OS user: ${osUser || "unknown"})`],
+    ["caitlin", "Caitlin"],
+    ["rose", "Rose"],
+    ["other", "Other"],
+  ];
+  const iAmSelect = el("select", { id: "settings-i-am", class: "settings-input" });
+  iAmOptions.forEach(([value, label]) => {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    if (value === iAmCurrent) opt.selected = true;
+    iAmSelect.appendChild(opt);
+  });
+  body.appendChild(el("div", { class: "settings-section" }, [
+    el("div", { class: "settings-label" }, ["I am"]),
+    el("div", { class: "settings-meta" }, [
+      "Tells Companion who's logged in so receipts get tagged with the right subcontractor and the per-Subcontractor view defaults to your row. Auto reads the macOS user.",
+    ]),
+    el("div", { class: "settings-row" }, [
+      iAmSelect,
+      el("button", { class: "button", id: "settings-i-am-save" }, ["Save"]),
+    ]),
+  ]));
+
   // Forms (v0.30 Block F). Six Airtable Forms Caitlin builds once in
   // the Airtable web UI (the API doesn't expose form creation). She
   // pastes each URL here; Companion stores them in CompanionSettings
@@ -787,6 +826,18 @@ async function showSettingsModal() {
       document.getElementById("settings-airtable-base").value = "";
       // Refresh the sidebar so the new client list shows up.
       loadStudioSidebar();
+    } catch (e) { showToast(`Save failed: ${e}`); }
+  });
+
+  document.getElementById("settings-i-am-save")?.addEventListener("click", async () => {
+    const value = document.getElementById("settings-i-am").value;
+    if (!isTauri) {
+      showToast("Open the Companion app to save settings.");
+      return;
+    }
+    try {
+      await invoke("save_i_am", { value });
+      showToast("Identity saved");
     } catch (e) { showToast(`Save failed: ${e}`); }
   });
 
@@ -4523,6 +4574,8 @@ function showTodayView() {
   document.getElementById("pipeline-view")?.setAttribute("hidden", "");
   // Drop the Studio CFO view if it was open (v0.37).
   document.getElementById("studio-cfo-view")?.setAttribute("hidden", "");
+  // Drop the per-Subcontractor view if it was open (v0.38).
+  document.getElementById("subcontractor-view")?.setAttribute("hidden", "");
   // Drop any skills-only views (Team, Social launch) if open.
   document
     .querySelectorAll('[data-view-kind="skills-only"]')
@@ -4552,6 +4605,7 @@ function showSkillsOnlyView({ id, title, emoji, intro, context }) {
   document.getElementById("client-view")?.setAttribute("hidden", "");
   document.getElementById("pipeline-view")?.setAttribute("hidden", "");
   document.getElementById("studio-cfo-view")?.setAttribute("hidden", "");
+  document.getElementById("subcontractor-view")?.setAttribute("hidden", "");
 
   const viewId = `skills-only-${id}`;
   // Hide every previously-rendered skills-only view container so we don't
@@ -4646,6 +4700,7 @@ async function showPipelineView() {
   document.getElementById("today-view")?.setAttribute("hidden", "");
   document.getElementById("client-view")?.setAttribute("hidden", "");
   document.getElementById("studio-cfo-view")?.setAttribute("hidden", "");
+  document.getElementById("subcontractor-view")?.setAttribute("hidden", "");
   document
     .querySelectorAll('[data-view-kind="skills-only"]')
     .forEach((n) => n.setAttribute("hidden", ""));
@@ -4764,6 +4819,55 @@ async function showPipelineView() {
 // section. Renders monthly financial intelligence (totals, per-client
 // breakdown, hour-creep alerts, next-month outlook) from existing
 // Airtable tables. Read-only; no writes.
+// v0.38: per-Subcontractor view. Click a Subcontractor in the sidebar to
+// open a view scoped to that person — header, assigned workstreams, open
+// commitments, hours-this-month, recent receipts, and a Skills strip.
+async function showSubcontractorView(code) {
+  const upper = (code || "").trim().toUpperCase();
+  if (!upper) return;
+
+  _chatActive = false;
+  _projectActive = false;
+  convRender.exitChat();
+  projectRender.exitProject();
+  clearLiveStatusTimer();
+  clearCalendarTimer();
+
+  document.getElementById("today-view")?.setAttribute("hidden", "");
+  document.getElementById("client-view")?.setAttribute("hidden", "");
+  document.getElementById("pipeline-view")?.setAttribute("hidden", "");
+  document.getElementById("studio-cfo-view")?.setAttribute("hidden", "");
+  document
+    .querySelectorAll('[data-view-kind="skills-only"]')
+    .forEach((n) => n.setAttribute("hidden", ""));
+
+  let view = document.getElementById("subcontractor-view");
+  if (!view) {
+    view = document.createElement("section");
+    view.id = "subcontractor-view";
+    document.querySelector("main.main")?.appendChild(view);
+  }
+  view.removeAttribute("hidden");
+
+  _state.subcontractor = emptySubcontractorState(upper);
+  subcontractorRender.drawLoading(view, upper);
+
+  const titleEl = document.querySelector(".main-title");
+  if (titleEl) titleEl.textContent = upper;
+
+  if (!isTauri) {
+    _state.subcontractor.error =
+      "Open the Companion app to load this view. Preview is read-only.";
+    subcontractorRender.draw(view, _state.subcontractor);
+    return;
+  }
+  await subcontractorFetch.loadAll(_state.subcontractor, upper);
+  subcontractorRender.draw(view, _state.subcontractor);
+  if (titleEl && _state.subcontractor.header?.name) {
+    titleEl.textContent = _state.subcontractor.header.name;
+  }
+}
+
 async function showStudioCfoView() {
   _chatActive = false;
   _projectActive = false;
@@ -4775,6 +4879,7 @@ async function showStudioCfoView() {
   document.getElementById("today-view")?.setAttribute("hidden", "");
   document.getElementById("client-view")?.setAttribute("hidden", "");
   document.getElementById("pipeline-view")?.setAttribute("hidden", "");
+  document.getElementById("subcontractor-view")?.setAttribute("hidden", "");
   document
     .querySelectorAll('[data-view-kind="skills-only"]')
     .forEach((n) => n.setAttribute("hidden", ""));
@@ -5094,8 +5199,11 @@ async function loadClientView(clientCode) {
 
   todayEl?.setAttribute("hidden", "");
   clientEl.removeAttribute("hidden");
-  // Hide pipeline + skills-only views if either was previously visible.
+  // Hide pipeline + skills-only + subcontractor views if any were
+  // previously visible.
   document.getElementById("pipeline-view")?.setAttribute("hidden", "");
+  document.getElementById("studio-cfo-view")?.setAttribute("hidden", "");
+  document.getElementById("subcontractor-view")?.setAttribute("hidden", "");
   document
     .querySelectorAll('[data-view-kind="skills-only"]')
     .forEach((n) => n.setAttribute("hidden", ""));
@@ -5861,6 +5969,25 @@ document.addEventListener("DOMContentLoaded", () => {
       const parentClient = projectItem.closest("[data-client-code]");
       if (parentClient) activateSidebar(parentClient);
       loadProjectView(projectCode, { preloadClient: true });
+      return;
+    }
+
+    // v0.38: Subcontractor sub-items under the Team entry. Clicking opens
+    // the per-Subcontractor view scoped to that person.
+    const subcontractorItem = e.target.closest(
+      ".sidebar-subitem[data-subcontractor-code]"
+    );
+    if (subcontractorItem) {
+      e.preventDefault();
+      e.stopPropagation();
+      const subCode = subcontractorItem.dataset.subcontractorCode;
+      if (!subCode) return;
+      // Activate the parent Team entry visually.
+      const teamItem = document.querySelector(
+        '.sidebar-item[data-view="team"]'
+      );
+      if (teamItem) activateSidebar(teamItem);
+      showSubcontractorView(subCode);
       return;
     }
 

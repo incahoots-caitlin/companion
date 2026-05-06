@@ -15,6 +15,7 @@
 //                   client        — per-client view's Skills section
 //                   project       — per-project view's Skills section
 //                   team          — Team view's Skills section
+//                   subcontractor — per-Subcontractor view's Skills section (v0.38)
 //                   social_launch — Personal: Social launch Skills section
 //                   overflow      — appears in the More skills modal
 //                  (overflow is implicit for every skill — the modal lists
@@ -45,7 +46,7 @@ export const SKILLS = [
     label: "Subcontractor Onboarding",
     description: "CSA + role + pre-start info",
     category: "onboard",
-    contexts: ["team"],
+    contexts: ["team", "subcontractor"],
     needs: "none",
   },
   {
@@ -224,7 +225,7 @@ export const SKILLS = [
     label: "Log time",
     description: "Hours → TimeLogs",
     category: "quick",
-    contexts: ["today_quick"],
+    contexts: ["today_quick", "subcontractor"],
     needs: "none",
   },
   {
@@ -232,7 +233,7 @@ export const SKILLS = [
     label: "Schedule social post",
     description: "Drafts to SocialPosts",
     category: "quick",
-    contexts: ["today_quick"],
+    contexts: ["today_quick", "subcontractor"],
     needs: "none",
   },
   {
@@ -240,7 +241,7 @@ export const SKILLS = [
     label: "Edit project",
     description: "Update fields, file diff",
     category: "quick",
-    contexts: ["client", "project"],
+    contexts: ["client", "project", "subcontractor"],
     needs: "client_code",
   },
 ];

@@ -4050,6 +4050,279 @@ async fn list_airtable_subcontractors() -> Result<String, String> {
     serde_json::to_string(&data).map_err(|e| e.to_string())
 }
 
+// ── Per-Subcontractor view (v0.38) ─────────────────────────────────────
+//
+// Rose's home in Companion. Sidebar shows active subcontractors; clicking
+// one opens a view scoped to that person — header, assigned workstreams,
+// open commitments, hours-this-month, recent receipts, and a small skill
+// strip. The two commands below feed that view.
+
+// Trim list of active subcontractors used for the sidebar. Same data as
+// list_airtable_subcontractors above but pre-shaped so the JS layer can
+// render without parsing Airtable's record envelope.
+#[derive(serde::Serialize)]
+struct SubcontractorSummary {
+    code: String,
+    name: String,
+    role: String,
+}
+
+#[tauri::command]
+async fn list_active_subcontractors() -> Result<Vec<SubcontractorSummary>, String> {
+    let data = airtable_get(
+        "Subcontractors",
+        "filterByFormula=%7Bstatus%7D%3D%27active%27\
+&fields%5B%5D=code\
+&fields%5B%5D=name\
+&fields%5B%5D=role\
+&fields%5B%5D=status",
+    )
+    .await?;
+    let mut out: Vec<SubcontractorSummary> = Vec::new();
+    if let Some(records) = data["records"].as_array() {
+        for r in records {
+            let f = &r["fields"];
+            let code = f["code"].as_str().unwrap_or("").trim().to_uppercase();
+            if code.is_empty() {
+                continue;
+            }
+            out.push(SubcontractorSummary {
+                code,
+                name: f["name"].as_str().unwrap_or("").to_string(),
+                role: f["role"].as_str().unwrap_or("").to_string(),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.code.cmp(&b.code));
+    Ok(out)
+}
+
+// Find the full Subcontractors row by code. Returns the raw Airtable
+// record so the caller can read whatever fields it needs.
+async fn airtable_find_subcontractor_record_by_code(
+    code: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    if code.is_empty() {
+        return Ok(None);
+    }
+    let escaped = code.replace('\'', "");
+    let formula = format!("{{code}}='{}'", escaped);
+    let qs = format!(
+        "filterByFormula={}&maxRecords=1\
+&fields%5B%5D=code\
+&fields%5B%5D=name\
+&fields%5B%5D=role\
+&fields%5B%5D=hourly_rate\
+&fields%5B%5D=email\
+&fields%5B%5D=status\
+&fields%5B%5D=start_date\
+&fields%5B%5D=notes",
+        urlencode(&formula)
+    );
+    let data = airtable_get("Subcontractors", &qs).await?;
+    Ok(data["records"]
+        .as_array()
+        .and_then(|a| a.first().cloned()))
+}
+
+// Build the {date} >= "YYYY-MM-01" formula so we can pull hours for the
+// current calendar month. Airtable's formula language treats date strings
+// as ISO 8601 when compared with IS_AFTER / DATETIME_PARSE.
+fn first_of_this_month_iso() -> String {
+    let now = chrono::Local::now();
+    format!("{:04}-{:02}-01", now.format("%Y"), now.format("%m"))
+}
+
+#[tauri::command]
+async fn load_subcontractor_view(code: String) -> Result<serde_json::Value, String> {
+    let upper = code.trim().to_uppercase();
+    if upper.is_empty() {
+        return Err("Empty subcontractor code".to_string());
+    }
+
+    // 1. Header — full Subcontractors row.
+    let record = airtable_find_subcontractor_record_by_code(&upper)
+        .await?
+        .ok_or_else(|| format!("Subcontractor {} not found", upper))?;
+    let record_id = record["id"].as_str().unwrap_or("").to_string();
+    let f = &record["fields"];
+    let header = serde_json::json!({
+        "code": f["code"].as_str().unwrap_or(&upper),
+        "name": f["name"].as_str().unwrap_or(""),
+        "role": f["role"].as_str().unwrap_or(""),
+        "hourly_rate": f["hourly_rate"].as_f64(),
+        "email": f["email"].as_str().unwrap_or(""),
+        "start_date": f["start_date"].as_str().unwrap_or(""),
+        "status": f["status"].as_str().unwrap_or(""),
+        "notes": f["notes"].as_str().unwrap_or(""),
+    });
+
+    // 2. Workstreams linked to this subcontractor. {subcontractor} is
+    //    a multipleRecordLinks field on Workstreams. FIND() over the
+    //    rendered string returns >0 when our record id is in the list.
+    let escaped_id = record_id.replace('\'', "");
+    let ws_formula = format!(
+        "AND(OR({{status}}='active',{{status}}='blocked'),FIND('{}',ARRAYJOIN({{subcontractor}})))",
+        escaped_id
+    );
+    let ws_qs = format!(
+        "filterByFormula={}&pageSize=50\
+&fields%5B%5D=code\
+&fields%5B%5D=title\
+&fields%5B%5D=status\
+&fields%5B%5D=phase\
+&fields%5B%5D=next_action\
+&fields%5B%5D=last_touch_at\
+&fields%5B%5D=client\
+&fields%5B%5D=project",
+        urlencode(&ws_formula)
+    );
+    let workstreams = match airtable_get("Workstreams", &ws_qs).await {
+        Ok(v) => v["records"].clone(),
+        Err(e) => {
+            eprintln!("load_subcontractor_view: workstreams fetch failed: {}", e);
+            serde_json::Value::Array(vec![])
+        }
+    };
+
+    // 3. Open commitments owned by this subcontractor.
+    let cm_formula = format!(
+        "AND(OR({{status}}='open',{{status}}='overdue'),FIND('{}',ARRAYJOIN({{subcontractor}})))",
+        escaped_id
+    );
+    let cm_qs = format!(
+        "filterByFormula={}&pageSize=50\
+&fields%5B%5D=id\
+&fields%5B%5D=title\
+&fields%5B%5D=due_at\
+&fields%5B%5D=status\
+&fields%5B%5D=priority\
+&fields%5B%5D=client\
+&fields%5B%5D=project",
+        urlencode(&cm_formula)
+    );
+    let commitments = match airtable_get("Commitments", &cm_qs).await {
+        Ok(v) => v["records"].clone(),
+        // Subcontractor link on Commitments is optional in the schema
+        // (older bases may not have it). Treat missing field as empty.
+        Err(e) => {
+            eprintln!(
+                "load_subcontractor_view: commitments fetch failed (non-fatal): {}",
+                e
+            );
+            serde_json::Value::Array(vec![])
+        }
+    };
+
+    // 4. Hours this month. TimeLogs filtered by the linked subcontractor
+    //    record + date >= first of month. Sum across logs, group by
+    //    client_code from the linked rollup field.
+    let month_start = first_of_this_month_iso();
+    let tl_formula = format!(
+        "AND(IS_AFTER({{date}},'{}'),FIND('{}',ARRAYJOIN({{subcontractor}})))",
+        month_start, escaped_id
+    );
+    // Fetch enough rows to cover a busy month without paging.
+    let tl_qs = format!(
+        "filterByFormula={}&pageSize=100\
+&fields%5B%5D=date\
+&fields%5B%5D=hours\
+&fields%5B%5D=client_code\
+&fields%5B%5D=client\
+&fields%5B%5D=billable",
+        urlencode(&tl_formula)
+    );
+    let timelogs = match airtable_get("TimeLogs", &tl_qs).await {
+        Ok(v) => v["records"].clone(),
+        Err(e) => {
+            eprintln!("load_subcontractor_view: timelogs fetch failed: {}", e);
+            serde_json::Value::Array(vec![])
+        }
+    };
+
+    // 5. Recent receipts created by this person. Today this is best-effort
+    //    on the JSON payload — some receipts carry `created_by` /
+    //    `subcontractor` in the JSON, others (legacy) don't. Newest 50;
+    //    JS layer filters down by JSON contents.
+    let rec_qs = "pageSize=50\
+&fields%5B%5D=id\
+&fields%5B%5D=title\
+&fields%5B%5D=date\
+&fields%5B%5D=workflow\
+&fields%5B%5D=ticked_count\
+&fields%5B%5D=json\
+&sort%5B0%5D%5Bfield%5D=date\
+&sort%5B0%5D%5Bdirection%5D=desc";
+    let receipts = match airtable_get("Receipts", rec_qs).await {
+        Ok(v) => v["records"].clone(),
+        Err(e) => {
+            eprintln!("load_subcontractor_view: receipts fetch failed: {}", e);
+            serde_json::Value::Array(vec![])
+        }
+    };
+
+    Ok(serde_json::json!({
+        "record_id": record_id,
+        "header": header,
+        "workstreams": workstreams,
+        "commitments": commitments,
+        "timelogs": timelogs,
+        "receipts": receipts,
+        "month_start": month_start,
+    }))
+}
+
+// "I am" identity. Companion has no users today — but Rose is about to
+// start using it from her own Mac, so we need to know which Subcontractor
+// is logged in for receipt filtering and per-Subcontractor view picking.
+//
+// Two layers:
+//   1. OS user from `whoami` (read-only fallback).
+//   2. An override stored in the Keychain ("caitlin", "rose", or "other").
+//
+// JS uses get_i_am to populate the Settings dropdown and to scope filters
+// like "receipts by Rose". Default is "auto" — read OS user via whoami_user.
+
+const KEYRING_I_AM: &str = "i-am-override";
+
+#[tauri::command]
+async fn whoami_user() -> Result<String, String> {
+    let output = tokio::process::Command::new("whoami")
+        .output()
+        .await
+        .map_err(|e| format!("whoami failed: {}", e))?;
+    if !output.status.success() {
+        return Err("whoami exited non-zero".to_string());
+    }
+    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(s)
+}
+
+#[tauri::command]
+fn get_i_am() -> String {
+    cached_secret(KEYRING_I_AM).unwrap_or_else(|| "auto".to_string())
+}
+
+#[tauri::command]
+fn save_i_am(value: String) -> Result<(), String> {
+    let trimmed = value.trim().to_lowercase();
+    let allowed = ["auto", "caitlin", "rose", "other"];
+    if !allowed.contains(&trimmed.as_str()) {
+        return Err(format!(
+            "Unknown identity {}. Use one of: {}",
+            trimmed,
+            allowed.join(", ")
+        ));
+    }
+    let entry = Entry::new(KEYRING_SERVICE, KEYRING_I_AM)
+        .map_err(|e| format!("Keychain error: {}", e))?;
+    entry
+        .set_password(&trimmed)
+        .map_err(|e| format!("Keychain write error: {}", e))?;
+    cache_secret(KEYRING_I_AM, &trimmed);
+    Ok(())
+}
+
 // ── Pure-Airtable workflows (v0.21) ────────────────────────────────────
 //
 // Three workflows that don't hit Anthropic — pure forms that write to
@@ -6689,6 +6962,12 @@ pub fn run() {
             create_airtable_client,
             create_airtable_project,
             list_airtable_subcontractors,
+            // v0.38 Block F — per-Subcontractor view (Rose's home)
+            list_active_subcontractors,
+            load_subcontractor_view,
+            whoami_user,
+            get_i_am,
+            save_i_am,
             // v0.33 Block F — Lead-to-Client one-click promotion
             list_airtable_leads,
             promote_lead,
