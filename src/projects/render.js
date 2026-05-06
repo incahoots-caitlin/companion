@@ -308,12 +308,14 @@ function renderProjectForms(state) {
 
 function renderProjectSkills(state) {
   const status = String(state.header?.status || "").toLowerCase();
+  const type = String(state.header?.campaign_type || "").toLowerCase();
   const clientCode = state.header?.client_code || "";
   const projectCode = state.header?.code || state.project_code || "";
 
   const skills = skillsForContext("project", {
     client_code: clientCode,
     project_status: status,
+    project_type: type,
   });
   if (skills.length === 0) return null;
 

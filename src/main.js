@@ -2168,6 +2168,329 @@ async function showWrapReportModal(prefillProjectCode) {
   });
 }
 
+// ── Campaign Launch Checklist (v0.35) ─────────────────────────────────
+//
+// Walks the six-phase pre-launch SOP for paid campaigns. Deterministic
+// L3 workflow — no Claude call. Caitlin ticks items, adds notes, hits
+// Run; the backend builds a Receipt envelope, persists, files to
+// Airtable, and posts a launch-ready summary to #client-work.
+const CAMPAIGN_LAUNCH_PHASES = [
+  {
+    title: "Strategy and approvals",
+    items: [
+      "Campaign objective confirmed (ticket sales / awareness / engagement / other)",
+      "Target audience defined",
+      "Key messaging approved by client",
+      "Campaign timeline confirmed (start date, end date, key milestones)",
+      "Budget confirmed (ad spend separate from service fee)",
+      "Ad spend approved and transferred (or payment method confirmed)",
+      "Creative brief written (if designer or photographer involved)",
+      "All stakeholder approvals received",
+    ],
+  },
+  {
+    title: "Creative and content",
+    items: [
+      "Ad creative received or produced (images, video, copy)",
+      "Creative meets platform specs (Meta, Instagram, TikTok, etc.)",
+      "Copy proofread (artist names, dates, venue, ticket price, ticket link)",
+      "Ticket link tested and working",
+      "Landing page or event page live and correct",
+      "UTMs built and applied to all links (see Ad Naming and UTM Conventions)",
+      "Social posts drafted and scheduled (if part of campaign)",
+      "EDM drafted and tested (if part of campaign)",
+    ],
+  },
+  {
+    title: "Paid ads setup",
+    items: [
+      "Campaign named using naming convention (see Ad Naming SOP)",
+      "Pixel and tracking installed and firing on destination page",
+      "Custom audiences built (if applicable)",
+      "Targeting reviewed (location, age, interests, exclusions)",
+      "Budget set correctly (daily vs lifetime)",
+      "Schedule set (start and end dates)",
+      "Placements reviewed (auto vs manual)",
+      "Ad preview checked on mobile and desktop",
+      "Conversion event selected correctly",
+      "Advantage+ audience expansion setting confirmed (ON for prospecting, OFF for retargeting)",
+    ],
+  },
+  {
+    title: "Tracking and measurement",
+    items: [
+      "UTM parameters confirmed",
+      "Google Analytics goals or events set up (if applicable)",
+      "Ticket sales baseline recorded (current sales before campaign starts)",
+      "Reporting cadence confirmed with client",
+      "First report date scheduled",
+      "/grill <client> baseline pulled (if account is known to the skill)",
+    ],
+  },
+  {
+    title: "Go live",
+    items: [
+      "Final review of all ads, posts, and EDMs",
+      "Ads submitted for review (allow 24 hrs for Meta approval)",
+      "Ads approved and live",
+      "Social posts published or scheduled",
+      "EDM sent or scheduled",
+      "Client notified that campaign is live",
+      "First 24-hour performance check scheduled",
+    ],
+  },
+  {
+    title: "Post-launch (first 48 hours)",
+    items: [
+      "All ads delivering correctly (no disapprovals, budget pacing OK)",
+      "No broken links or tracking issues",
+      "Early performance snapshot taken",
+      "Any underperforming ads flagged for optimisation",
+      "Client updated on launch results",
+    ],
+  },
+];
+
+async function showCampaignLaunchChecklistModal(prefillProjectCode) {
+  if (document.getElementById("launch-checklist-modal")) return;
+
+  // Pull projects: campaigns or active. The skill is gated to those at
+  // the registry level, but we re-filter here so the picker matches.
+  let projects = [];
+  if (isTauri) {
+    try {
+      const raw = await invoke("list_airtable_projects");
+      const data = JSON.parse(raw);
+      projects = (data.records || [])
+        .map((r) => ({
+          code: r.fields?.code || "",
+          name: r.fields?.name || r.fields?.code || "Untitled",
+          status: String(r.fields?.status || "").toLowerCase(),
+          campaign_type: String(r.fields?.campaign_type || "").toLowerCase(),
+          client: r.fields?.client_code || r.fields?.client || "",
+        }))
+        .filter((p) => p.code)
+        .filter(
+          (p) => p.campaign_type === "campaign" || p.status === "active"
+        );
+    } catch (e) {
+      console.warn("list_airtable_projects failed:", e);
+    }
+  }
+
+  if (projects.length === 0) {
+    showToast(
+      "No campaign or active projects to launch. Mark a project type=campaign or status=active first.",
+      { ttl: 6000 }
+    );
+    return;
+  }
+
+  const overlay = el("div", {
+    id: "launch-checklist-modal",
+    class: "modal-overlay",
+  });
+  const modal = el("div", { class: "modal modal-wide" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(
+    el("div", { class: "modal-header" }, [
+      el("div", { class: "modal-title" }, ["Campaign Launch Checklist"]),
+      el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+    ])
+  );
+  modal.appendChild(
+    el("div", { class: "modal-meta" }, [
+      "Six-phase pre-launch verification. Tick what's done, note what's outstanding. Files a Receipt, prints to Munbyn, posts a launch-ready summary to #client-work. The Publish click in Meta Ads Manager stays manual.",
+    ])
+  );
+
+  // Project picker
+  const grid = el("div", { class: "modal-field-grid" });
+  const projectPicker = el("select", { class: "settings-input" });
+  projects.forEach((p) => {
+    const opt = document.createElement("option");
+    opt.value = p.code;
+    const meta = [p.campaign_type, p.status].filter(Boolean).join(" · ");
+    opt.textContent = meta
+      ? `${p.code} — ${p.name} (${meta})`
+      : `${p.code} — ${p.name}`;
+    projectPicker.appendChild(opt);
+  });
+  if (
+    prefillProjectCode &&
+    projects.some((p) => p.code === prefillProjectCode)
+  ) {
+    projectPicker.value = prefillProjectCode;
+  }
+  grid.appendChild(
+    el("label", { class: "modal-field" }, [
+      el("div", { class: "settings-label" }, ["Project"]),
+      projectPicker,
+    ])
+  );
+  modal.appendChild(grid);
+
+  // Phase sections — each <details> collapsible with checkbox + note rows.
+  const phasesPad = el("div", {
+    class: "modal-pad",
+    style: "margin-top: 16px;",
+  });
+
+  // Track tick state in plain JS so the summary can read it.
+  const tickState = CAMPAIGN_LAUNCH_PHASES.map((phase) => ({
+    title: phase.title,
+    items: phase.items.map((text) => ({ text, ticked: false, note: "" })),
+  }));
+
+  // Re-render the launch-ready summary on any change.
+  let summaryEl = null;
+  function updateSummary() {
+    if (!summaryEl) return;
+    const totalItems = tickState.reduce((n, p) => n + p.items.length, 0);
+    const tickedItems = tickState.reduce(
+      (n, p) => n + p.items.filter((i) => i.ticked).length,
+      0
+    );
+    const phasesAllDone = tickState.filter((p) =>
+      p.items.every((i) => i.ticked)
+    ).length;
+    summaryEl.innerHTML = "";
+    const headline =
+      tickedItems === totalItems
+        ? "Launch ready. Hit Publish in Ads Manager."
+        : `${tickedItems} of ${totalItems} ticked across ${tickState.length} phases.`;
+    summaryEl.appendChild(
+      el("div", { class: "settings-label" }, ["Launch ready summary"])
+    );
+    summaryEl.appendChild(el("div", {}, [headline]));
+    const phaseLines = el("div", { style: "margin-top: 6px;" });
+    tickState.forEach((p) => {
+      const done = p.items.filter((i) => i.ticked).length;
+      const status = done === p.items.length ? "✓" : `${done}/${p.items.length}`;
+      phaseLines.appendChild(
+        el("div", {}, [`${status} ${p.title}`])
+      );
+    });
+    summaryEl.appendChild(phaseLines);
+    summaryEl.appendChild(
+      el("div", { style: "margin-top: 6px; opacity: 0.7;" }, [
+        `${phasesAllDone} of ${tickState.length} phases fully ticked.`,
+      ])
+    );
+  }
+
+  CAMPAIGN_LAUNCH_PHASES.forEach((phase, phaseIdx) => {
+    const details = document.createElement("details");
+    details.className = "modal-details";
+    if (phaseIdx === 0) details.open = true;
+    const summary = document.createElement("summary");
+    summary.className = "settings-label";
+    summary.textContent = `${phaseIdx + 1}. ${phase.title}`;
+    details.appendChild(summary);
+
+    phase.items.forEach((itemText, itemIdx) => {
+      const row = el("div", {
+        class: "modal-field",
+        style: "margin-top: 6px;",
+      });
+      const cbWrap = el("label", {
+        style: "display: flex; align-items: flex-start; gap: 8px;",
+      });
+      const cb = el("input", { type: "checkbox" });
+      cb.addEventListener("change", () => {
+        tickState[phaseIdx].items[itemIdx].ticked = cb.checked;
+        updateSummary();
+      });
+      cbWrap.appendChild(cb);
+      cbWrap.appendChild(el("div", {}, [itemText]));
+      row.appendChild(cbWrap);
+
+      const note = el("input", {
+        type: "text",
+        class: "settings-input",
+        placeholder: "Note (optional)",
+        style: "margin-top: 4px;",
+      });
+      note.addEventListener("input", () => {
+        tickState[phaseIdx].items[itemIdx].note = note.value;
+      });
+      row.appendChild(note);
+
+      details.appendChild(row);
+    });
+    phasesPad.appendChild(details);
+  });
+  modal.appendChild(phasesPad);
+
+  // Extra notes
+  const extraPad = el("div", {
+    class: "modal-pad",
+    style: "margin-top: 16px;",
+  });
+  extraPad.appendChild(
+    el("div", { class: "settings-label" }, ["Extra notes (optional)"])
+  );
+  const extra = el("textarea", {
+    class: "modal-textarea",
+    rows: 3,
+    placeholder:
+      "Anything the phases didn't cover. Goes into the Receipt and the Slack post.",
+  });
+  extraPad.appendChild(extra);
+  modal.appendChild(extraPad);
+
+  // Live summary block
+  summaryEl = el("div", {
+    class: "modal-pad",
+    style: "margin-top: 16px;",
+  });
+  modal.appendChild(summaryEl);
+  updateSummary();
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, [
+    "Cancel",
+  ]);
+  const runBtn = el("button", { class: "button" }, ["File checklist"]);
+  modal.appendChild(
+    el("div", { class: "modal-actions" }, [cancelBtn, runBtn])
+  );
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  projectPicker.focus();
+
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    const project_code = projectPicker.value;
+    if (!project_code) return showToast("Pick a project first");
+    runBtn.disabled = true;
+    runBtn.textContent = "Filing...";
+    try {
+      const json = await invoke("run_campaign_launch_checklist", {
+        input: {
+          project_code,
+          phases: tickState,
+          extra_notes: extra.value.trim() || null,
+        },
+      });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Launch checklist filed. Munbyn print queued.");
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "File checklist";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
 async function showBuildScopeModal(prefillClientCode) {
   if (document.getElementById("scope-modal")) return;
 
@@ -5193,6 +5516,7 @@ document.addEventListener("DOMContentLoaded", () => {
       showClientEmailModal,
       showHumaniserModal,
       showCopyEditorModal,
+      showCampaignLaunchChecklistModal,
     },
     toast: showToast,
     requireApiKey: async () => {

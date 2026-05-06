@@ -1,6 +1,6 @@
 [package]
 name = "studio"
-version = "0.34.0"
+version = "0.35.0"
 description = "Companion - operating system for In Cahoots"
 authors = ["Caitlin Reilly <caitlin@incahoots.marketing>"]
 edition = "2021"

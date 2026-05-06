@@ -2152,6 +2152,241 @@ fn wrap_report_path(project_code: &str) -> String {
     )
 }
 
+// ── Campaign Launch Checklist (v0.35) ──────────────────────────────────
+//
+// Deterministic L3 workflow. The frontend sends the tick state per item,
+// we build a Receipt envelope from the SOP's six phases, persist it,
+// file to Airtable, and post a "Launch ready" summary to #client-work.
+// No Anthropic call. The Meta Ads Manager publish click stays manual at
+// L5 — the receipt notes the launch is ready, Caitlin clicks Publish in
+// the third-party tool herself.
+
+#[derive(Deserialize, Debug)]
+struct CampaignLaunchChecklistItem {
+    text: String,
+    #[serde(default)]
+    ticked: bool,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct CampaignLaunchChecklistPhase {
+    title: String,
+    items: Vec<CampaignLaunchChecklistItem>,
+}
+
+#[derive(Deserialize, Debug)]
+struct CampaignLaunchChecklistInput {
+    project_code: String,
+    phases: Vec<CampaignLaunchChecklistPhase>,
+    extra_notes: Option<String>,
+}
+
+#[tauri::command]
+async fn run_campaign_launch_checklist(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    let parsed: CampaignLaunchChecklistInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    let project_code = parsed.project_code.trim().to_string();
+    if project_code.is_empty() {
+        return Err("Pick a project first".to_string());
+    }
+    if parsed.phases.is_empty() {
+        return Err("No phases supplied".to_string());
+    }
+
+    // Pull project metadata so the receipt's paid_block.customer is the
+    // client's actual name, not the code.
+    let qs = format!(
+        "filterByFormula={}&maxRecords=1\
+&fields%5B%5D=code\
+&fields%5B%5D=name\
+&fields%5B%5D=status\
+&fields%5B%5D=campaign_type\
+&fields%5B%5D=client",
+        urlencode(&format!("{{code}}='{}'", project_code))
+    );
+    let project_data = airtable_get("Projects", &qs)
+        .await
+        .unwrap_or(serde_json::Value::Null);
+    let project_record = &project_data["records"][0]["fields"];
+    let project_name = project_record["name"]
+        .as_str()
+        .unwrap_or(&project_code)
+        .to_string();
+    let campaign_type = project_record["campaign_type"]
+        .as_str()
+        .unwrap_or("campaign")
+        .to_string();
+
+    // Tally totals.
+    let total_items: usize = parsed.phases.iter().map(|p| p.items.len()).sum();
+    let ticked_items: usize = parsed
+        .phases
+        .iter()
+        .map(|p| p.items.iter().filter(|i| i.ticked).count())
+        .sum();
+    let phases_done: usize = parsed
+        .phases
+        .iter()
+        .filter(|p| !p.items.is_empty() && p.items.iter().all(|i| i.ticked))
+        .count();
+    let total_phases = parsed.phases.len();
+    let launch_ready = ticked_items == total_items;
+
+    // Build receipt sections. Each phase becomes a section with task-type
+    // items so Caitlin can keep ticking after filing if she wants to.
+    let mut sections: Vec<serde_json::Value> = Vec::new();
+    for (idx, phase) in parsed.phases.iter().enumerate() {
+        let header = format!("{} — {}", idx + 1, phase.title.to_uppercase());
+        let mut items: Vec<serde_json::Value> = Vec::new();
+        for item in &phase.items {
+            let note_suffix = match item.note.as_deref().map(|s| s.trim()) {
+                Some(n) if !n.is_empty() => format!(" — {}", n),
+                _ => String::new(),
+            };
+            let text = format!("{}{}", item.text, note_suffix);
+            items.push(serde_json::json!({
+                "type": "task",
+                "text": text,
+                "done": item.ticked,
+            }));
+        }
+        sections.push(serde_json::json!({
+            "header": header,
+            "items": items,
+        }));
+    }
+
+    // Action items: file the launch summary, schedule the day-1 check.
+    // The Slack post on the action item ticks via the existing on_done
+    // hook so a re-post can fire from the receipt later if needed.
+    let extra_notes_clean = parsed
+        .extra_notes
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(notes) = &extra_notes_clean {
+        sections.push(serde_json::json!({
+            "header": "EXTRA NOTES",
+            "items": [
+                { "qty": "·", "text": notes }
+            ],
+        }));
+    }
+    sections.push(serde_json::json!({
+        "header": "ACTION ITEMS",
+        "items": [
+            {
+                "type": "task",
+                "text": "Click Publish in Meta Ads Manager",
+                "done": false,
+            },
+            {
+                "type": "task",
+                "text": "Repost launch summary to #client-work",
+                "done": false,
+                "on_done": "slack:#client-work",
+            },
+            {
+                "type": "task",
+                "text": "Schedule first 24-hour performance check",
+                "done": false,
+                "on_done": "calendar:wip",
+            }
+        ],
+    }));
+
+    let position_quote = if launch_ready {
+        "Launch ready. Hit Publish in Ads Manager."
+    } else {
+        "Not launch-ready yet. Outstanding items above."
+    };
+    let status_line = if launch_ready {
+        "launch ready".to_string()
+    } else {
+        format!("{} of {} items outstanding", total_items - ticked_items, total_items)
+    };
+
+    let id = format!(
+        "rcpt_{}",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    let receipt = serde_json::json!({
+        "id": id,
+        "project": project_code,
+        "workflow": "campaign-launch-checklist",
+        "title": "RECEIPT — CAMPAIGN LAUNCH CHECKLIST",
+        "date": chrono::Local::now().format("%A %d %B %Y").to_string(),
+        "sections": sections,
+        "position": {
+            "header": "LAUNCH READY",
+            "quote": position_quote,
+        },
+        "totals": [
+            { "label": "TICKED", "value": ticked_items.to_string() },
+            { "label": "ITEMS", "value": total_items.to_string() },
+            { "label": "PHASES DONE", "value": format!("{}/{}", phases_done, total_phases), "grand": true }
+        ],
+        "paid_block": {
+            "stamp": if launch_ready { "LAUNCH READY" } else { "PRE-LAUNCH" },
+            "method": "six-phase pre-launch SOP",
+            "issued_by": "the studio",
+            "customer": project_name,
+            "status": status_line,
+        },
+        "footer_note": "Run it every time. Non-negotiable.",
+    });
+
+    let json_raw = serde_json::to_string(&receipt)
+        .map_err(|e| format!("Serialise receipt: {}", e))?;
+    let json = stamp_autonomy_level(&json_raw, "L3");
+
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+    file_receipt_to_airtable(&json).await;
+
+    // Best-effort Slack post to #client-work. Doesn't fail the workflow
+    // if Slack isn't configured.
+    if let Some(webhook) = read_slack_webhook() {
+        let mut summary = String::new();
+        if launch_ready {
+            summary.push_str(&format!(
+                ":rocket: *Launch ready: {} ({})*\n",
+                project_name, project_code
+            ));
+        } else {
+            summary.push_str(&format!(
+                ":construction: *Pre-launch: {} ({})*\n",
+                project_name, project_code
+            ));
+        }
+        summary.push_str(&format!(
+            "{} of {} items ticked across {} phases ({}/{} fully done).\n",
+            ticked_items, total_items, total_phases, phases_done, total_phases
+        ));
+        summary.push_str(&format!("Type: {}.\n", campaign_type));
+        if let Some(notes) = &extra_notes_clean {
+            summary.push_str(&format!("Notes: {}\n", notes));
+        }
+        if launch_ready {
+            summary.push_str("Next: hit Publish in Ads Manager.");
+        } else {
+            summary.push_str("Outstanding items in the receipt.");
+        }
+        if let Err(e) = post_to_slack(&webhook, &summary).await {
+            eprintln!("run_campaign_launch_checklist: Slack post failed: {}", e);
+        }
+    }
+
+    Ok(json)
+}
+
 // Strip the trailing fenced ```json ... ``` block from a raw model
 // response, returning whatever sits above it. Used for skill workflows
 // that need both the human-readable markdown and the receipt JSON.
@@ -6395,6 +6630,8 @@ pub fn run() {
             run_in_cahoots_social_post,
             run_campaign_wrap_report,
             run_scope_of_work,
+            // v0.35 Block F — Campaign Launch Checklist (deterministic L3)
+            run_campaign_launch_checklist,
             // v0.32 Block F — Skills batch 2
             run_press_release,
             run_edm_writer,

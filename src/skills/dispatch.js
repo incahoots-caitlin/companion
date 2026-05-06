@@ -62,6 +62,8 @@ export async function dispatch(skillId, options = {}, ctx = {}) {
       return ctx.modals.showNewClientOnboardingModal?.();
     case "subcontractor-onboarding":
       return ctx.modals.showSubcontractorOnboardingModal?.();
+    case "campaign-launch-checklist":
+      return ctx.modals.showCampaignLaunchChecklistModal?.(projectCode);
     case "monthly-checkin":
       return ctx.modals.showMonthlyCheckinModal?.(clientCode);
     case "quarterly-review":

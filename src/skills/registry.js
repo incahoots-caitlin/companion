@@ -49,6 +49,20 @@ export const SKILLS = [
     needs: "none",
   },
   {
+    id: "campaign-launch-checklist",
+    label: "Campaign Launch Checklist",
+    description: "Six-phase pre-launch verification",
+    category: "onboard",
+    contexts: ["project"],
+    gates: {
+      project_type_or_status: {
+        types: ["campaign"],
+        statuses: ["active"],
+      },
+    },
+    needs: "project_code",
+  },
+  {
     id: "promote-lead",
     label: "Promote Lead",
     description: "Cascade lead → client + discovery project",
@@ -244,17 +258,25 @@ export const CATEGORIES = [
 // Skills that should appear in a given context. Optional `filter` args:
 //   client_code     — uppercase code to test only_for_client gates
 //   project_status  — lowercase status to test project_status gates
+//   project_type    — lowercase campaign_type to test project_type_or_status
 //   has_existing    — bool, true when client already exists (hides
 //                     client_only_at_create skills like NCO)
 export function skillsForContext(context, filter = {}) {
   const code = (filter.client_code || "").toUpperCase();
   const status = String(filter.project_status || "").toLowerCase();
+  const type = String(filter.project_type || "").toLowerCase();
   const hasExisting = filter.has_existing !== false; // default true
   return SKILLS.filter((s) => {
     if (!s.contexts.includes(context)) return false;
     if (s.gates?.only_for_client && s.gates.only_for_client !== code) return false;
     if (s.gates?.project_status && !s.gates.project_status.includes(status)) return false;
     if (s.gates?.client_only_at_create && hasExisting) return false;
+    if (s.gates?.project_type_or_status) {
+      const { types = [], statuses = [] } = s.gates.project_type_or_status;
+      const typeOk = types.length === 0 ? false : types.includes(type);
+      const statusOk = statuses.length === 0 ? false : statuses.includes(status);
+      if (!typeOk && !statusOk) return false;
+    }
     return true;
   });
 }
