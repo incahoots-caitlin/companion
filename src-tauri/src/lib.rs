@@ -43,6 +43,30 @@ pub(crate) const ANTHROPIC_API: &str = "https://api.anthropic.com/v1/messages";
 const AIRTABLE_API: &str = "https://api.airtable.com/v0";
 pub(crate) const MODEL_ID: &str = "claude-opus-4-7";
 
+// Cheap model used for background enrichment (auto-tag + auto-summary on
+// receipt write, drift filtering, etc). Calls are short and we don't need
+// Opus for them.
+const HAIKU_MODEL_ID: &str = "claude-haiku-4-5-20251001";
+
+// The 12 canonical Receipts.tags choices. Companion's auto-tagger picks
+// 1-3 from this list per receipt. Airtable's create_record uses
+// typecast: true so any new tag will be added to the field, but we
+// constrain the prompt to this list to keep tag noise down.
+const RECEIPT_TAG_CHOICES: &[&str] = &[
+    "strategy",
+    "scope",
+    "creative",
+    "reporting",
+    "onboarding",
+    "review",
+    "decision",
+    "follow-up",
+    "win",
+    "blocker",
+    "internal",
+    "client-facing",
+];
+
 // Beta header for the Anthropic Messages API native MCP connector.
 // When this is sent, the request body may include `mcp_servers` and
 // Claude will invoke the listed MCP tools server-side.
@@ -414,6 +438,18 @@ pub(crate) fn urlencode(s: &str) -> String {
 
 // File a receipt to the Airtable Receipts table. Best-effort: errors
 // logged but never bubble up to fail the workflow.
+//
+// v0.29 (Block F foundation): after the row is created, fire two
+// additive enrichments in sequence:
+//   1. auto-link to a Project row when the receipt's `project` field is a
+//      full project code (e.g. NCT-2026-06-tour-launch) that matches a
+//      Projects.code in Airtable.
+//   2. auto-summarise + auto-tag via Haiku 4.5, then PATCH the row with
+//      the resulting `summary` and `tags`.
+//
+// Both enrichments are best-effort. The receipt is filed first; tagging
+// and linking are layered on after. A failure in either step logs and
+// returns silently — the row stays as-is.
 async fn file_receipt_to_airtable(receipt_json: &str) {
     let parsed: serde_json::Value = match serde_json::from_str(receipt_json) {
         Ok(v) => v,
@@ -431,11 +467,29 @@ async fn file_receipt_to_airtable(receipt_json: &str) {
     // Receipt's `project` field is a project code like NCT-2026-06-tour-launch
     // or a bare client code like NCT. Pull the leading 3-4 letters as the
     // client code.
-    let client_code = parsed["project"]
-        .as_str()
-        .and_then(|p| p.split('-').next())
-        .filter(|c| c.chars().all(|ch| ch.is_ascii_uppercase()) && c.len() <= 4)
-        .unwrap_or("INC");
+    let project_field = parsed["project"].as_str().unwrap_or("");
+    let client_code = project_field
+        .split('-')
+        .next()
+        .filter(|c| !c.is_empty() && c.chars().all(|ch| ch.is_ascii_uppercase()) && c.len() <= 4)
+        .unwrap_or("INC")
+        .to_string();
+
+    // A "full" project code looks like CLIENT-YYYY-MM-slug (4+ hyphen-
+    // separated parts). A bare client code like "NCT" or studio default
+    // "in-cahoots-studio" doesn't qualify and we skip the project link.
+    let project_code_candidate: Option<String> = {
+        let segs: Vec<&str> = project_field.split('-').collect();
+        if segs.len() >= 4
+            && segs[0].chars().all(|ch| ch.is_ascii_uppercase())
+            && segs[1].len() == 4
+            && segs[1].chars().all(|ch| ch.is_ascii_digit())
+        {
+            Some(project_field.to_string())
+        } else {
+            None
+        }
+    };
 
     let ticked = count_ticked(&parsed);
 
@@ -460,7 +514,7 @@ async fn file_receipt_to_airtable(receipt_json: &str) {
     });
 
     // Link to the client row if we can find it.
-    match airtable_find_client_by_code(client_code).await {
+    match airtable_find_client_by_code(&client_code).await {
         Ok(Some(client_record_id)) => {
             fields["client"] = serde_json::json!([client_record_id]);
         }
@@ -475,9 +529,195 @@ async fn file_receipt_to_airtable(receipt_json: &str) {
         }
     }
 
-    if let Err(e) = airtable_create_record("Receipts", fields).await {
-        eprintln!("file_receipt_to_airtable: create failed: {}", e);
+    // Link to the Project row if the receipt's project field is a full
+    // project code that matches an existing Projects.code.
+    if let Some(ref pcode) = project_code_candidate {
+        match airtable_find_project_by_code(pcode).await {
+            Ok(Some(project_record_id)) => {
+                fields["project"] = serde_json::json!([project_record_id]);
+            }
+            Ok(None) => {
+                eprintln!(
+                    "file_receipt_to_airtable: project code '{}' not found in Airtable",
+                    pcode
+                );
+            }
+            Err(e) => {
+                eprintln!("file_receipt_to_airtable: project lookup failed: {}", e);
+            }
+        }
     }
+
+    let receipt_record_id = match airtable_create_record("Receipts", fields).await {
+        Ok(rid) => rid,
+        Err(e) => {
+            eprintln!("file_receipt_to_airtable: create failed: {}", e);
+            return;
+        }
+    };
+
+    // Fire the auto-tag + auto-summary enrichment. This is additive — the
+    // row is already filed, so any failure here just leaves the row
+    // un-summarised and un-tagged. Drift will pick it up later.
+    if let Err(e) = enrich_receipt_with_haiku(&receipt_record_id, &parsed).await {
+        eprintln!("file_receipt_to_airtable: enrichment failed: {}", e);
+    }
+}
+
+// v0.29 — auto-tag + auto-summarise a freshly filed Receipt. Calls Haiku
+// 4.5 with the receipt body and the canonical tag list, parses the JSON
+// the model returns, then PATCHes the row with `summary` and `tags`.
+async fn enrich_receipt_with_haiku(
+    record_id: &str,
+    receipt: &serde_json::Value,
+) -> Result<(), String> {
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+
+    // Compact body for the prompt: title, workflow, project, sections.
+    let title = receipt["title"].as_str().unwrap_or("");
+    let workflow = receipt["workflow"].as_str().unwrap_or("");
+    let project = receipt["project"].as_str().unwrap_or("");
+    let sections = receipt["sections"].clone();
+    let position = receipt["position"].clone();
+
+    let body_for_prompt = serde_json::json!({
+        "title": title,
+        "workflow": workflow,
+        "project": project,
+        "sections": sections,
+        "position": position,
+    })
+    .to_string();
+
+    let tag_list = RECEIPT_TAG_CHOICES.join(", ");
+
+    let system = format!(
+        "You read In Cahoots receipts and return tagging metadata.\n\n\
+         You return ONLY a JSON object with two keys:\n\
+         - summary: one line, plain English, max 200 chars, no preamble. \
+         Australian spelling. Plain words (no 'lands', no 'the work', no \
+         'the room'). Describe what the receipt records.\n\
+         - tags: an array of 1 to 3 tags chosen ONLY from this fixed list: \
+         {}.\n\n\
+         Return the JSON object alone. No fenced block, no prose, no \
+         comment. Example: {{\"summary\": \"Locked the new client \
+         scope at $4,500 plus GST.\", \"tags\": [\"scope\", \"decision\"]}}",
+        tag_list
+    );
+
+    let body = AnthropicRequest {
+        model: HAIKU_MODEL_ID,
+        max_tokens: 300,
+        system: &system,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: body_for_prompt,
+        }],
+        mcp_servers: None,
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+
+    let response = client
+        .post(ANTHROPIC_API)
+        .header("x-api-key", &key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Haiku {}: {}", status.as_u16(), text));
+    }
+
+    let parsed_resp: AnthropicResponse =
+        response.json().await.map_err(|e| format!("Parse: {}", e))?;
+    let text = collect_text_blocks(&parsed_resp.content);
+
+    // Haiku usually returns a bare JSON object, but extract_json_block
+    // handles both a fenced block and a bare-braces variant.
+    let json_str = extract_json_block(&text)?;
+    let enrichment: serde_json::Value =
+        serde_json::from_str(&json_str).map_err(|e| format!("Enrichment parse: {}", e))?;
+
+    let mut summary = enrichment["summary"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if summary.chars().count() > 200 {
+        summary = summary.chars().take(200).collect();
+    }
+
+    let tags: Vec<String> = enrichment["tags"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| RECEIPT_TAG_CHOICES.contains(&s.as_str()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if summary.is_empty() && tags.is_empty() {
+        return Err("Haiku returned no usable enrichment".to_string());
+    }
+
+    let mut update_fields = serde_json::Map::new();
+    if !summary.is_empty() {
+        update_fields.insert("summary".to_string(), serde_json::Value::String(summary));
+    }
+    if !tags.is_empty() {
+        update_fields.insert(
+            "tags".to_string(),
+            serde_json::Value::Array(tags.into_iter().map(serde_json::Value::String).collect()),
+        );
+    }
+
+    airtable_update_record(
+        "Receipts",
+        record_id,
+        serde_json::Value::Object(update_fields),
+    )
+    .await?;
+    Ok(())
+}
+
+// v0.29 — stamp the autonomy level onto a receipt JSON string. Used by
+// every workflow at the point we either parse Claude's response or build
+// a pure-Airtable receipt. Receipts that already carry a level (e.g. a
+// future workflow that nests a different level per section) are left
+// alone; otherwise we add one at the envelope.
+//
+// L1 read-only inferences. L2 internal state changes. L3 internal comms.
+// L4 drafts of external content. L5 external actions.
+//
+// Defaults across the existing workflows:
+//   strategic-thinking, new-client-onboarding, new-campaign-scope,
+//   subcontractor-onboarding, monthly-checkin, quarterly-review → L4
+//   schedule-social-post, log-time, edit-project → L2
+fn stamp_autonomy_level(receipt_json: &str, level: &str) -> String {
+    let mut parsed: serde_json::Value = match serde_json::from_str(receipt_json) {
+        Ok(v) => v,
+        Err(_) => return receipt_json.to_string(),
+    };
+    if let Some(obj) = parsed.as_object_mut() {
+        if !obj.contains_key("autonomy_level") {
+            obj.insert(
+                "autonomy_level".to_string(),
+                serde_json::Value::String(level.to_string()),
+            );
+        }
+    }
+    serde_json::to_string(&parsed).unwrap_or_else(|_| receipt_json.to_string())
 }
 
 fn count_ticked(receipt: &serde_json::Value) -> u32 {
@@ -765,7 +1005,7 @@ async fn run_strategic_thinking(
 
     let text = collect_text_blocks(&parsed.content);
 
-    let json = extract_json_block(&text)?;
+    let json = stamp_autonomy_level(&extract_json_block(&text)?, "L4");
 
     // Persist to SQLite so it survives relaunches.
     {
@@ -866,7 +1106,7 @@ async fn run_new_client_onboarding(
 
     let text = collect_text_blocks(&api_response.content);
 
-    let json = extract_json_block(&text)?;
+    let json = stamp_autonomy_level(&extract_json_block(&text)?, "L4");
 
     {
         let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
@@ -1068,7 +1308,7 @@ async fn run_monthly_checkin(
 
     let text = collect_text_blocks(&api_response.content);
 
-    let json = extract_json_block(&text)?;
+    let json = stamp_autonomy_level(&extract_json_block(&text)?, "L4");
 
     {
         let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
@@ -1195,7 +1435,7 @@ async fn run_quarterly_review(
 
     let text = collect_text_blocks(&api_response.content);
 
-    let json = extract_json_block(&text)?;
+    let json = stamp_autonomy_level(&extract_json_block(&text)?, "L4");
 
     {
         let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
@@ -1345,7 +1585,7 @@ async fn run_new_campaign_scope(
 
     let text = collect_text_blocks(&api_response.content);
 
-    let json = extract_json_block(&text)?;
+    let json = stamp_autonomy_level(&extract_json_block(&text)?, "L4");
 
     {
         let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
@@ -1513,7 +1753,7 @@ async fn run_subcontractor_onboarding(
 
     let text = collect_text_blocks(&api_response.content);
 
-    let json = extract_json_block(&text)?;
+    let json = stamp_autonomy_level(&extract_json_block(&text)?, "L4");
 
     {
         let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
@@ -1798,12 +2038,15 @@ async fn create_social_post(
         items.push(serde_json::json!({ "qty": "1", "text": format!("Scheduled: {}", s) }));
     }
     let sections = serde_json::json!([{ "items": items }]);
-    let receipt_json = build_pure_receipt(
-        &receipt_id,
-        "schedule-social-post",
-        &format!("RECEIPT — SOCIAL POST · {}", title),
-        &receipt_project,
-        sections,
+    let receipt_json = stamp_autonomy_level(
+        &build_pure_receipt(
+            &receipt_id,
+            "schedule-social-post",
+            &format!("RECEIPT — SOCIAL POST · {}", title),
+            &receipt_project,
+            sections,
+        ),
+        "L2",
     );
 
     {
@@ -1982,12 +2225,15 @@ async fn create_time_log(
         items.push(serde_json::json!({ "qty": "1", "text": format!("Task: {}", t) }));
     }
     let sections = serde_json::json!([{ "items": items }]);
-    let receipt_json = build_pure_receipt(
-        &receipt_id,
-        "log-time",
-        &title,
-        &receipt_project,
-        sections,
+    let receipt_json = stamp_autonomy_level(
+        &build_pure_receipt(
+            &receipt_id,
+            "log-time",
+            &title,
+            &receipt_project,
+            sections,
+        ),
+        "L2",
     );
 
     {
@@ -2159,7 +2405,7 @@ async fn update_project(
         "sections": sections,
         "diff": diff_payload,
     });
-    let receipt_json = receipt_obj.to_string();
+    let receipt_json = stamp_autonomy_level(&receipt_obj.to_string(), "L2");
 
     {
         let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
