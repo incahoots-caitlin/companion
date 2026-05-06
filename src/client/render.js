@@ -107,6 +107,72 @@ function renderHeader(state) {
   return root;
 }
 
+// ── Forms toolbar (v0.30) ─────────────────────────────────────────────
+//
+// Two send-form buttons surfaced at the top of every per-client view:
+// "Send Discovery Pre-Brief" (always available — assumes the user picks
+// a project at click time) and "Send Post-Campaign Feedback" (only
+// surfaced when the client has at least one project at status = wrap
+// or done). Both dispatch CustomEvents the main.js listener handles by
+// composing a mailto: with the prefilled form URL.
+
+function projectsAtStatus(state, statuses) {
+  const items = state.projects || [];
+  return items.filter((p) =>
+    statuses.includes(String(p.status || "").toLowerCase())
+  );
+}
+
+function renderClientFormsToolbar(state) {
+  // Discovery Pre-Brief: client has any non-archived project.
+  const anyProject = (state.projects || []).length > 0;
+  // Post-campaign feedback: only when a project is wrapped/done.
+  const wrapped = projectsAtStatus(state, ["wrap", "done", "wrapped", "complete", "completed"]);
+
+  if (!anyProject && wrapped.length === 0) return null;
+
+  const root = el("section", {
+    class: "client-section client-forms-toolbar",
+    "data-section": "forms",
+  });
+  root.appendChild(el("div", { class: "section-label" }, ["✉️ SEND A FORM"]));
+
+  const row = el("div", { class: "client-forms-buttons" });
+
+  if (anyProject) {
+    const btn = el("button", {
+      class: "button button-secondary",
+      type: "button",
+      "data-form-action": "send-discovery-pre-brief",
+    }, ["Send Discovery Pre-Brief"]);
+    btn.addEventListener("click", () =>
+      dispatch("client:form-send", {
+        form_key: "form_discovery_pre_brief",
+        client_code: state.code,
+      })
+    );
+    row.appendChild(btn);
+  }
+
+  if (wrapped.length > 0) {
+    const btn = el("button", {
+      class: "button button-secondary",
+      type: "button",
+      "data-form-action": "send-post-campaign-feedback",
+    }, ["Send Post-Campaign Feedback"]);
+    btn.addEventListener("click", () =>
+      dispatch("client:form-send", {
+        form_key: "form_post_campaign_feedback",
+        client_code: state.code,
+      })
+    );
+    row.appendChild(btn);
+  }
+
+  root.appendChild(row);
+  return root;
+}
+
 // ── Workstreams ───────────────────────────────────────────────────────
 
 function renderWorkstreams(state) {
@@ -679,8 +745,11 @@ export function draw(state) {
   container.appendChild(renderHeader(state));
 
   // Sections in spec order. Empty workstreams/decisions/commitments
-  // collapse cleanly so a brand-new client view stays tidy.
+  // collapse cleanly so a brand-new client view stays tidy. Forms
+  // toolbar (v0.30) sits at the top so the "send the form" actions
+  // are reachable without scrolling.
   const sections = [
+    renderClientFormsToolbar(state),
     renderWorkstreams(state),
     renderDecisions(state),
     renderCommitments(state),

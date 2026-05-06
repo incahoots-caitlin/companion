@@ -2516,6 +2516,143 @@ async fn list_airtable_receipts_recent() -> Result<String, String> {
     serde_json::to_string(&data).map_err(|e| e.to_string())
 }
 
+// ── Form URLs (v0.30 Block F) ──────────────────────────────────────────
+//
+// Six Airtable Forms Caitlin builds once in the Airtable web UI (the API
+// doesn't expose form creation). Companion stores their URLs in the
+// `CompanionSettings` table and surfaces them as "Send Form" / "Share
+// Form" buttons across Today, per-client, per-project, Team and
+// Settings. One row per key. value is empty string until Caitlin fills.
+//
+// Keys:
+//   form_lead_intake          — public form on Leads
+//   form_discovery_pre_brief  — form on Projects, prefilled with project rec id
+//   form_content_approval     — form on SocialPosts, prefilled with post rec id
+//   form_post_campaign_feedback — form on Projects (post-wrap)
+//   form_subcontractor_intake — form on Subcontractors
+//   form_weekly_status        — Rose's weekly status (Receipts or
+//                               ContractorStatus)
+
+const COMPANION_SETTINGS_TABLE: &str = "CompanionSettings";
+const FORM_URL_KEYS: &[&str] = &[
+    "form_lead_intake",
+    "form_discovery_pre_brief",
+    "form_content_approval",
+    "form_post_campaign_feedback",
+    "form_subcontractor_intake",
+    "form_weekly_status",
+];
+
+fn validate_form_key(key: &str) -> Result<(), String> {
+    if FORM_URL_KEYS.contains(&key) {
+        Ok(())
+    } else {
+        Err(format!("Unknown form key: {}", key))
+    }
+}
+
+// Find the CompanionSettings row for a given key. Returns the Airtable
+// record id and the current value (or None if the row doesn't exist).
+async fn airtable_find_settings_row(
+    key: &str,
+) -> Result<Option<(String, String, Option<String>)>, String> {
+    let escaped = key.replace('\'', "");
+    let formula = format!("{{key}}='{}'", escaped);
+    let qs = format!(
+        "filterByFormula={}&maxRecords=1&fields%5B%5D=key&fields%5B%5D=value&fields%5B%5D=updated_at",
+        urlencode(&formula)
+    );
+    let data = airtable_get(COMPANION_SETTINGS_TABLE, &qs).await?;
+    let rec = &data["records"][0];
+    let id = rec["id"].as_str();
+    if id.is_none() {
+        return Ok(None);
+    }
+    let value = rec["fields"]["value"].as_str().unwrap_or("").to_string();
+    let updated_at = rec["fields"]["updated_at"].as_str().map(String::from);
+    Ok(Some((id.unwrap().to_string(), value, updated_at)))
+}
+
+#[tauri::command]
+async fn get_form_url(key: String) -> Result<Option<String>, String> {
+    validate_form_key(&key)?;
+    match airtable_find_settings_row(&key).await? {
+        Some((_, value, _)) if !value.trim().is_empty() => Ok(Some(value)),
+        _ => Ok(None),
+    }
+}
+
+#[tauri::command]
+async fn set_form_url(key: String, value: String) -> Result<(), String> {
+    validate_form_key(&key)?;
+    let trimmed = value.trim();
+    // Loose validation. Empty value clears the URL. Otherwise expect an
+    // https Airtable form URL — we don't pin the host strictly because
+    // Airtable has shipped a few form host variants over the years.
+    if !trimmed.is_empty() && !trimmed.starts_with("https://") {
+        return Err("Form URL must start with https://".to_string());
+    }
+    let now = chrono::Local::now().to_rfc3339();
+    let fields = serde_json::json!({
+        "value": trimmed,
+        "updated_at": now,
+    });
+    match airtable_find_settings_row(&key).await? {
+        Some((record_id, _, _)) => {
+            airtable_update_record(COMPANION_SETTINGS_TABLE, &record_id, fields).await
+        }
+        None => {
+            // Brand-new row. Should only happen if Caitlin's base is
+            // missing the seeded row (e.g. she ran v0.30 against a base
+            // without CompanionSettings).
+            let mut create_fields = fields.clone();
+            create_fields["key"] = serde_json::Value::String(key);
+            airtable_create_record(COMPANION_SETTINGS_TABLE, create_fields)
+                .await
+                .map(|_| ())
+        }
+    }
+}
+
+#[tauri::command]
+async fn list_form_urls() -> Result<String, String> {
+    // One Airtable list call, then filter to known keys client-side. The
+    // table only ever holds six rows so filterByFormula/key-by-key reads
+    // would be more expensive.
+    let qs = "pageSize=50&fields%5B%5D=key&fields%5B%5D=value&fields%5B%5D=updated_at";
+    let data = airtable_get(COMPANION_SETTINGS_TABLE, qs).await?;
+    let mut by_key: HashMap<String, serde_json::Value> = HashMap::new();
+    if let Some(records) = data["records"].as_array() {
+        for r in records {
+            if let Some(k) = r["fields"]["key"].as_str() {
+                by_key.insert(
+                    k.to_string(),
+                    serde_json::json!({
+                        "key": k,
+                        "value": r["fields"]["value"].as_str().unwrap_or(""),
+                        "updated_at": r["fields"]["updated_at"].as_str(),
+                    }),
+                );
+            }
+        }
+    }
+    // Return rows in canonical FORM_URL_KEYS order so the UI doesn't
+    // need to sort and missing keys still slot in cleanly.
+    let mut out = Vec::with_capacity(FORM_URL_KEYS.len());
+    for k in FORM_URL_KEYS {
+        if let Some(v) = by_key.remove(*k) {
+            out.push(v);
+        } else {
+            out.push(serde_json::json!({
+                "key": k,
+                "value": "",
+                "updated_at": null,
+            }));
+        }
+    }
+    serde_json::to_string(&out).map_err(|e| e.to_string())
+}
+
 // Generic Airtable record patch from JS. Used by the commitment-detail and
 // decision-capture modals. JS sends table name + record id + fields object,
 // we relay to Airtable. Restricts table names to the four chief-of-staff
@@ -3956,7 +4093,11 @@ pub fn run() {
             list_active_projects_for_client,
             create_project_note,
             update_project_note,
-            delete_project_note
+            delete_project_note,
+            // v0.30 Block F — Forms layer
+            get_form_url,
+            set_form_url,
+            list_form_urls
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

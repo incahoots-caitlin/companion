@@ -1305,3 +1305,45 @@ button.live-status-row {
   color: var(--text-muted);
   text-transform: lowercase;
 }
+
+/* ── Forms layer (v0.30) ──────────────────────────────────────────────
+ * Per-client and per-project send-form toolbars, plus the minimal
+ * Pipeline view's Lead Intake action row. */
+
+.client-forms-toolbar {
+  margin-bottom: var(--space-sm);
+}
+
+.client-forms-buttons,
+.project-forms-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs, 8px);
+}
+
+.project-forms {
+  background: var(--surface);
+  border: 1px solid var(--card-border-color);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+}
+
+.project-forms-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+#pipeline-view {
+  padding: var(--space-lg, 24px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md, 16px);
+}
+
+.pipeline-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+

@@ -226,6 +226,64 @@ function renderComposer(state) {
   return composer;
 }
 
+// ── Forms (v0.30) ─────────────────────────────────────────────────────
+//
+// Three send-form actions per project: Discovery Pre-Brief and Post-
+// Campaign Feedback (both prefilled with the Project record id), and
+// Content Approval (prefilled with a SocialPost record id the user
+// pastes in). v0.30 ships the buttons; v0.32 polishes the email
+// drafts and the SocialPost picker.
+
+function renderProjectForms(state) {
+  const root = el("section", {
+    class: "project-section project-forms",
+    "data-section": "forms",
+  });
+  root.appendChild(el("div", { class: "section-label" }, ["✉️ SEND A FORM"]));
+
+  const status = String(state.header?.status || "").toLowerCase();
+  const wrapped = ["wrap", "done", "wrapped", "complete", "completed"].includes(status);
+
+  const buttons = el("div", { class: "project-forms-buttons" });
+
+  const preBriefBtn = el("button", {
+    class: "button button-secondary",
+    type: "button",
+  }, ["Send Discovery Pre-Brief"]);
+  preBriefBtn.addEventListener("click", () =>
+    dispatch("project:form-send", { form_key: "form_discovery_pre_brief" })
+  );
+  buttons.appendChild(preBriefBtn);
+
+  const approvalBtn = el("button", {
+    class: "button button-secondary",
+    type: "button",
+  }, ["Send Content Approval"]);
+  approvalBtn.addEventListener("click", () =>
+    dispatch("project:form-send", { form_key: "form_content_approval" })
+  );
+  buttons.appendChild(approvalBtn);
+
+  if (wrapped) {
+    const wrapBtn = el("button", {
+      class: "button button-secondary",
+      type: "button",
+    }, ["Send Post-Campaign Feedback"]);
+    wrapBtn.addEventListener("click", () =>
+      dispatch("project:form-send", { form_key: "form_post_campaign_feedback" })
+    );
+    buttons.appendChild(wrapBtn);
+  }
+
+  root.appendChild(buttons);
+  root.appendChild(
+    el("div", { class: "project-forms-meta" }, [
+      "Discovery and Post-Campaign drafts attach this project's record id. Content Approval asks for the SocialPost record id when you click.",
+    ])
+  );
+  return root;
+}
+
 // ── Updates feed ──────────────────────────────────────────────────────
 
 function renderTagPills(tags) {
@@ -481,6 +539,7 @@ export function draw(state) {
 
   const layout = el("div", { class: "project-layout" });
   layout.appendChild(renderHeader(state));
+  layout.appendChild(renderProjectForms(state));
   layout.appendChild(renderComposer(state));
   layout.appendChild(renderUpdates(state));
   if (state.error) {

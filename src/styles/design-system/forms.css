@@ -197,3 +197,47 @@ textarea.settings-input {
   flex-direction: column;
   gap: 6px;
 }
+
+/* ── Forms list (v0.30) ───────────────────────────────
+ * Six form URL rows in the Settings modal. Each row has
+ * a label + meta header, blurb line, and an input + 3
+ * actions (Save / Open / Copy). */
+.settings-forms-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin-top: 6px;
+}
+
+.settings-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--space-sm);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface-soft, var(--surface-deep));
+}
+
+.settings-form-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+.settings-form-row-label {
+  font: var(--type-body-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-form-row-meta {
+  font: var(--type-meta);
+  color: var(--text-muted);
+}
+
+.settings-form-row-blurb {
+  font: var(--type-meta);
+  color: var(--text-muted);
+}

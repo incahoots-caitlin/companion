@@ -17,6 +17,7 @@ import { emptyConversationState } from "./conversations/state.js";
 import * as projectFetch from "./projects/fetch.js";
 import * as projectRender from "./projects/render.js";
 import { emptyProjectState } from "./projects/state.js";
+import * as forms from "./forms/index.js";
 
 // Global state container. Today dashboard owns _state.today; per-client
 // view owns _state.client. Switching clients overwrites _state.client.
@@ -641,6 +642,97 @@ async function showSettingsModal() {
     slackOauthActions,
   ]));
 
+  // Forms (v0.30 Block F). Six Airtable Forms Caitlin builds once in
+  // the Airtable web UI (the API doesn't expose form creation). She
+  // pastes each URL here; Companion stores them in CompanionSettings
+  // and surfaces them as "Send Form" buttons on the right pages.
+  let formsList = [];
+  if (isTauri && airtableSet) {
+    try {
+      const urls = await forms.loadForms();
+      formsList = forms.FORM_KEYS.map((key) => ({
+        key,
+        meta: forms.FORM_META[key],
+        value: urls.get(key)?.value || "",
+        updated_at: urls.get(key)?.updated_at || null,
+      }));
+    } catch (e) {
+      console.warn("forms.loadForms in Settings failed:", e);
+    }
+  }
+
+  const formsRows = el("div", { class: "settings-forms-list" });
+  if (!isTauri) {
+    formsRows.appendChild(
+      el("div", { class: "settings-meta" }, [
+        "Open the Companion app to manage form URLs.",
+      ])
+    );
+  } else if (!airtableSet) {
+    formsRows.appendChild(
+      el("div", { class: "settings-meta" }, [
+        "Connect Airtable above first. Form URLs live in the CompanionSettings table.",
+      ])
+    );
+  } else if (!formsList.length) {
+    formsRows.appendChild(
+      el("div", { class: "settings-meta" }, [
+        "Couldn't reach Airtable. Try again once the connection is healthy.",
+      ])
+    );
+  } else {
+    formsList.forEach((row) => {
+      const inputId = `settings-form-${row.key}`;
+      const meta = row.meta || { label: row.key, blurb: "" };
+      const labelLine = meta.label;
+      const blurbLine = meta.blurb;
+      const updatedLine = row.updated_at
+        ? `Updated ${formatGranolaTimestamp(row.updated_at)}`
+        : "Not set yet.";
+      const rowEl = el("div", { class: "settings-form-row" }, [
+        el("div", { class: "settings-form-row-head" }, [
+          el("div", { class: "settings-form-row-label" }, [labelLine]),
+          el("div", { class: "settings-form-row-meta" }, [updatedLine]),
+        ]),
+        el("div", { class: "settings-form-row-blurb" }, [blurbLine]),
+        el("div", { class: "settings-row" }, [
+          el("input", {
+            id: inputId,
+            type: "url",
+            placeholder: row.value ? "(URL set — paste again to overwrite)" : "https://airtable.com/app.../shr...",
+            class: "settings-input",
+          }),
+          el("button", {
+            class: "button button-secondary",
+            "data-form-action": "save",
+            "data-form-key": row.key,
+          }, ["Save"]),
+          el("button", {
+            class: "button button-secondary",
+            "data-form-action": "open",
+            "data-form-key": row.key,
+            disabled: row.value ? null : "disabled",
+          }, ["Open"]),
+          el("button", {
+            class: "button button-secondary",
+            "data-form-action": "copy",
+            "data-form-key": row.key,
+            disabled: row.value ? null : "disabled",
+          }, ["Copy"]),
+        ]),
+      ]);
+      formsRows.appendChild(rowEl);
+    });
+  }
+
+  body.appendChild(el("div", { class: "settings-section" }, [
+    el("div", { class: "settings-label" }, ["Forms"]),
+    el("div", { class: "settings-meta" }, [
+      "Build each form once in Airtable's web UI, then paste its share URL here. See forms-setup-checklist.md in the Companion folder for click-by-click steps.",
+    ]),
+    formsRows,
+  ]));
+
   modal.appendChild(body);
   modal.appendChild(el("div", { class: "modal-actions" }, [
     el("button", { class: "button button-secondary", id: "settings-close" }, ["Done"]),
@@ -824,6 +916,44 @@ async function showSettingsModal() {
       } catch (e) { showToast(`Disconnect failed: ${e}`); }
     });
   }
+
+  // Forms section button handlers (v0.30). Delegated click — each row's
+  // Save / Open / Copy carries data-form-action and data-form-key.
+  body.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-form-action]");
+    if (!btn) return;
+    const action = btn.dataset.formAction;
+    const key = btn.dataset.formKey;
+    if (!key) return;
+    if (action === "save") {
+      const input = document.getElementById(`settings-form-${key}`);
+      const value = (input?.value || "").trim();
+      try {
+        await forms.setFormUrl(key, value);
+        showToast(value ? "Form URL saved" : "Form URL cleared");
+        reopenSettings();
+      } catch (err) {
+        showToast(`Save failed: ${err}`, { ttl: 5000 });
+      }
+      return;
+    }
+    if (action === "open") {
+      try {
+        const url = await forms.getFormUrl(key);
+        if (!url) return showToast("No URL set for this form");
+        forms.openUrl(url);
+      } catch (err) { showToast(`Open failed: ${err}`); }
+      return;
+    }
+    if (action === "copy") {
+      try {
+        const url = await forms.getFormUrl(key);
+        if (!url) return showToast("No URL set for this form");
+        await forms.copyToClipboard(url);
+        showToast("Copied to clipboard");
+      } catch (err) { showToast(`Copy failed: ${err}`); }
+    }
+  });
 }
 
 // Render an RFC3339 timestamp as "Mon 5 May, 2:14pm" for the Granola
@@ -2614,6 +2744,100 @@ function activateClientSidebar(clientCode) {
   }
 }
 
+// ─── Form helpers (v0.30) ────────────────────────────────────────────
+//
+// pickProject: cheap modal that returns the chosen project. Auto-picks
+// when there's only one. Returns null on cancel.
+function pickProject(projects, formLabel) {
+  return new Promise((resolve) => {
+    if (!Array.isArray(projects) || projects.length === 0) {
+      resolve(null);
+      return;
+    }
+    if (projects.length === 1) {
+      resolve(projects[0]);
+      return;
+    }
+    const overlay = el("div", { class: "modal-overlay" });
+    const modal = el("div", { class: "modal" });
+    const close = (val) => {
+      overlay.remove();
+      resolve(val);
+    };
+    modal.appendChild(el("div", { class: "modal-header" }, [
+      el("div", { class: "modal-title" }, [`Pick a project for ${formLabel}`]),
+      el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+    ]));
+    const list = el("div", { class: "modal-body modal-body-list" });
+    projects.forEach((p) => {
+      const row = el("button", {
+        class: "client-shortcut",
+        type: "button",
+      }, [
+        el("div", { class: "client-shortcut-title" }, [p.name || p.code || "(untitled)"]),
+        el("div", { class: "client-shortcut-meta" }, [
+          [p.code, p.status, p.campaign_type].filter(Boolean).join(" · "),
+        ]),
+      ]);
+      row.addEventListener("click", () => close(p));
+      list.appendChild(row);
+    });
+    modal.appendChild(list);
+    modal.appendChild(el("div", { class: "modal-actions" }, [
+      el("button", { class: "button button-secondary", id: "form-pick-cancel" }, ["Cancel"]),
+    ]));
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
+    modal.querySelector(".modal-close").addEventListener("click", () => close(null));
+    document.getElementById("form-pick-cancel").addEventListener("click", () => close(null));
+  });
+}
+
+// Body of the email draft for a given form. Plain text, signed off
+// with Caitlin's voice — short, friendly, no marketing fluff. Mailto
+// will percent-encode line breaks for us.
+function buildFormEmailBody(formKey, ctx) {
+  const projectLabel = ctx.project?.name || ctx.project?.code || "the project";
+  if (formKey === "form_discovery_pre_brief") {
+    return [
+      "Hi,",
+      "",
+      `Before our discovery call I'd love a few quick answers — should take 5 minutes. It helps me come in already up to speed for ${projectLabel}.`,
+      "",
+      ctx.url,
+      "",
+      "Thanks!",
+      "Caitlin",
+    ].join("\n");
+  }
+  if (formKey === "form_post_campaign_feedback") {
+    return [
+      "Hi,",
+      "",
+      `Now that ${projectLabel} has wrapped, would you mind dropping me a quick bit of feedback? It helps me improve the next one and shape what we do together going forward.`,
+      "",
+      ctx.url,
+      "",
+      "Thanks for the run, much appreciated.",
+      "Caitlin",
+    ].join("\n");
+  }
+  if (formKey === "form_content_approval") {
+    return [
+      "Hi,",
+      "",
+      "A draft post for your sign-off. The form has the copy and image attached — tick approve, request changes, or leave a comment.",
+      "",
+      ctx.url,
+      "",
+      "Cheers,",
+      "Caitlin",
+    ].join("\n");
+  }
+  return ctx.url || "";
+}
+
 // Inline toast (replaces alert()).
 function showToast(message, opts = {}) {
   let root = document.getElementById("toast-root");
@@ -2644,6 +2868,8 @@ function showTodayView() {
 
   document.getElementById("today-view")?.removeAttribute("hidden");
   document.getElementById("client-view")?.setAttribute("hidden", "");
+  // Drop any pipeline view if it was open.
+  document.getElementById("pipeline-view")?.setAttribute("hidden", "");
   const titleEl = document.querySelector(".main-title");
   if (titleEl) titleEl.textContent = "Today";
   // Re-render with whatever's already in state, then refresh stale slices.
@@ -2651,6 +2877,116 @@ function showTodayView() {
   todayFetch.refreshStale(_state.today).then(() => todayRender.draw(_state.today));
   startLiveStatusTimer();
   startCalendarTimer();
+}
+
+// v0.30 Block F: minimal Pipeline view. Shows the "Share Lead Intake
+// form" button as the headline action. Future versions will surface
+// active leads, lead status, and value estimates.
+async function showPipelineView() {
+  _chatActive = false;
+  _projectActive = false;
+  convRender.exitChat();
+  projectRender.exitProject();
+  clearLiveStatusTimer();
+  clearCalendarTimer();
+
+  document.getElementById("today-view")?.setAttribute("hidden", "");
+  document.getElementById("client-view")?.setAttribute("hidden", "");
+
+  let view = document.getElementById("pipeline-view");
+  if (!view) {
+    view = document.createElement("section");
+    view.id = "pipeline-view";
+    document.querySelector("main.main")?.appendChild(view);
+  }
+  view.removeAttribute("hidden");
+  view.innerHTML = "";
+
+  const header = document.createElement("header");
+  header.className = "main-header";
+  header.appendChild(
+    Object.assign(document.createElement("div"), {
+      className: "main-title",
+      textContent: "Pipeline",
+    })
+  );
+  view.appendChild(header);
+
+  const intro = document.createElement("section");
+  intro.className = "today-section";
+  const label = document.createElement("div");
+  label.className = "section-label";
+  label.textContent = "📥 LEAD INTAKE";
+  intro.appendChild(label);
+
+  const blurb = document.createElement("div");
+  blurb.className = "today-section-meta";
+  blurb.textContent =
+    "Public Airtable Form. Share with prospects. New entries land in Leads at status = cold, ready for triage.";
+  intro.appendChild(blurb);
+
+  const buttonRow = document.createElement("div");
+  buttonRow.className = "today-list pipeline-actions";
+  buttonRow.style.flexDirection = "row";
+  buttonRow.style.gap = "8px";
+
+  const shareBtn = document.createElement("button");
+  shareBtn.className = "button";
+  shareBtn.type = "button";
+  shareBtn.textContent = "Share Lead Intake form";
+
+  const openBtn = document.createElement("button");
+  openBtn.className = "button button-secondary";
+  openBtn.type = "button";
+  openBtn.textContent = "Open form";
+
+  buttonRow.appendChild(shareBtn);
+  buttonRow.appendChild(openBtn);
+  intro.appendChild(buttonRow);
+
+  const status = document.createElement("div");
+  status.className = "today-section-meta";
+  status.style.marginTop = "8px";
+  intro.appendChild(status);
+  view.appendChild(intro);
+
+  const placeholder = document.createElement("section");
+  placeholder.className = "today-section";
+  placeholder.appendChild(
+    Object.assign(document.createElement("div"), {
+      className: "empty",
+      textContent: "Lead list and value estimates land in a future build.",
+    })
+  );
+  view.appendChild(placeholder);
+
+  // Wire buttons. Read the URL eagerly so we can disable when unset.
+  let url = "";
+  try {
+    if (isTauri) url = await forms.getFormUrl("form_lead_intake");
+  } catch (e) {
+    console.warn("getFormUrl(form_lead_intake) failed:", e);
+  }
+  if (!url) {
+    shareBtn.disabled = true;
+    openBtn.disabled = true;
+    status.textContent =
+      "No URL set yet. Add the Lead Intake form URL in Settings → Forms.";
+  } else {
+    status.textContent = "URL ready. Share copies to clipboard; Open opens it in your browser.";
+  }
+
+  shareBtn.addEventListener("click", async () => {
+    if (!url) return showToast("No URL set. Add it in Settings → Forms.");
+    try {
+      await forms.copyToClipboard(url);
+      showToast("Lead Intake URL copied to clipboard");
+    } catch (e) { showToast(`Copy failed: ${e}`); }
+  });
+  openBtn.addEventListener("click", () => {
+    if (!url) return;
+    forms.openUrl(url);
+  });
 }
 
 async function loadClientView(clientCode) {
@@ -2961,6 +3297,69 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // v0.30 Forms layer: per-project "Send Form" buttons. Discovery and
+  // Post-Campaign Feedback prefill with the current project's record
+  // id. Content Approval prompts for a SocialPost record id (the
+  // proper SocialPost picker lands in v0.32 alongside the email-draft
+  // polish).
+  document.addEventListener("project:form-send", async (e) => {
+    const formKey = e.detail?.form_key;
+    if (!formKey) return;
+    if (!isTauri) return showToast("Open the Companion app to send forms.");
+    const header = _state.project?.header;
+    if (!header) return showToast("Project not loaded yet.");
+
+    const meta = forms.FORM_META[formKey];
+    if (!meta) return showToast(`Unknown form: ${formKey}`);
+
+    let url;
+    try {
+      url = await forms.getFormUrl(formKey);
+    } catch (err) {
+      return showToast(`Couldn't read form URL: ${err}`, { ttl: 5000 });
+    }
+    if (!url) {
+      return showToast(
+        `${meta.label} URL isn't set yet. Add it in Settings → Forms.`,
+        { ttl: 5000 }
+      );
+    }
+
+    let recordId = header.project_record_id || null;
+    if (formKey === "form_content_approval") {
+      const promptVal = window.prompt(
+        "Paste the SocialPost record id (rec...) to bind this approval to a draft post:",
+        ""
+      );
+      const trimmed = (promptVal || "").trim();
+      if (!trimmed) return; // cancelled
+      if (!/^rec[A-Za-z0-9]{14}$/.test(trimmed)) {
+        return showToast("That doesn't look like a record id (rec...)");
+      }
+      recordId = trimmed;
+    }
+
+    if (!recordId) return showToast("Missing record id for prefill.");
+
+    const prefilled = forms.buildPrefillUrl(url, meta.prefill, recordId);
+    const projectLabel = header.name || header.code || "this project";
+    const subject =
+      formKey === "form_post_campaign_feedback"
+        ? `${header.client_name || header.client_code || "Hi"}: Post-campaign feedback (${projectLabel})`
+        : formKey === "form_content_approval"
+        ? `Quick approval needed: ${projectLabel}`
+        : `${header.client_name || header.client_code || "Hi"}: A few quick questions before our discovery call`;
+    const body = buildFormEmailBody(formKey, {
+      project: { name: header.name, code: header.code },
+      url: prefilled,
+    });
+    // We don't always have an email address on the project header. The
+    // user fills it in their mail client.
+    const mailto = forms.buildMailto({ to: "", subject, body });
+    forms.openUrl(mailto);
+    showToast(`Email draft opened for ${meta.label}`);
+  });
+
   document.addEventListener("project:note-save", async (e) => {
     const body = (e.detail?.body || "").trim();
     const tags = Array.isArray(e.detail?.tags) ? e.detail.tags : [];
@@ -2995,6 +3394,67 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!_state.client?.code) return;
     await clientFetch.loadAll(_state.client, _state.client.code);
     clientRender.draw(_state.client);
+  });
+
+  // v0.30 Forms layer: per-client "Send Form" buttons. Both Discovery
+  // Pre-Brief and Post-Campaign Feedback prefill the Project record id,
+  // so we ask the user to pick a project from the active list when
+  // there's more than one.
+  document.addEventListener("client:form-send", async (e) => {
+    const formKey = e.detail?.form_key;
+    if (!formKey) return;
+    if (!isTauri) return showToast("Open the Companion app to send forms.");
+    if (!_state.client?.recordId) return showToast("Load a client first.");
+
+    const meta = forms.FORM_META[formKey];
+    if (!meta) return showToast(`Unknown form: ${formKey}`);
+
+    let url;
+    try {
+      url = await forms.getFormUrl(formKey);
+    } catch (err) {
+      return showToast(`Couldn't read form URL: ${err}`, { ttl: 5000 });
+    }
+    if (!url) {
+      return showToast(
+        `${meta.label} URL isn't set yet. Add it in Settings → Forms.`,
+        { ttl: 5000 }
+      );
+    }
+
+    // Pick a project. For Post-Campaign Feedback we filter to wrapped/done.
+    const allProjects = _state.client.projects || [];
+    const wantWrapped = formKey === "form_post_campaign_feedback";
+    const candidates = wantWrapped
+      ? allProjects.filter((p) =>
+          ["wrap", "done", "wrapped", "complete", "completed"].includes(
+            String(p.status || "").toLowerCase()
+          )
+        )
+      : allProjects;
+
+    if (candidates.length === 0) {
+      return showToast("No projects to attach the form to.");
+    }
+
+    const project = await pickProject(candidates, meta.label);
+    if (!project) return; // user cancelled
+
+    const prefilled = forms.buildPrefillUrl(url, meta.prefill, project.id);
+    const clientName = _state.client.header?.name || _state.client.code;
+    const contactEmail = _state.client.header?.primary_contact_email || "";
+    const subject =
+      formKey === "form_post_campaign_feedback"
+        ? `${clientName}: Post-campaign feedback (${project.code || project.name || "project"})`
+        : `${clientName}: A few quick questions before our discovery call`;
+    const body = buildFormEmailBody(formKey, {
+      clientName,
+      project,
+      url: prefilled,
+    });
+    const mailto = forms.buildMailto({ to: contactEmail, subject, body });
+    forms.openUrl(mailto);
+    showToast(`Email draft opened for ${meta.label}`);
   });
 
   // ─── Chat surface event handlers (v0.27 Block D) ─────────────────────
@@ -3209,7 +3669,16 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    // Anything else (Pipeline, Products, Personal items): keep on Today and toast.
+    // v0.30: Pipeline gets a tiny dedicated view with the Lead Intake
+    // form button at the top. Everything else (Products, Personal) is
+    // still a future surface.
+    if (view === "pipeline") {
+      showPipelineView();
+      if (titleEl) titleEl.textContent = "Pipeline";
+      return;
+    }
+
+    // Anything else (Products, Personal items): keep on Today and toast.
     showTodayView();
     if (titleEl) titleEl.textContent = item.textContent.trim();
     showToast(`${item.textContent.trim()} isn't wired yet. Today is the live view this build.`);
