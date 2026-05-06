@@ -273,6 +273,20 @@ function renderProjectForms(state) {
       dispatch("project:form-send", { form_key: "form_post_campaign_feedback" })
     );
     buttons.appendChild(wrapBtn);
+
+    // v0.31: when a project is at wrap or done, offer the wrap report
+    // skill. Routed through main.js via project:wrap-report-click so the
+    // modal stays in the central catalogue.
+    const wrapReportBtn = el("button", {
+      class: "button",
+      type: "button",
+    }, ["Draft Wrap Report"]);
+    wrapReportBtn.addEventListener("click", () =>
+      dispatch("project:wrap-report-click", {
+        project_code: state.header?.code || "",
+      })
+    );
+    buttons.appendChild(wrapReportBtn);
   }
 
   root.appendChild(buttons);

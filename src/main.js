@@ -1724,6 +1724,527 @@ async function showQuarterlyReviewModal(prefillClientCode) {
   });
 }
 
+// ─── v0.31 Block F — Skills batch 1 modals ───────────────────────────
+//
+// Five workflows wired to the SKILL.md prompts under
+// ~/.claude/skills/anthropic-skills/. Each modal collects inputs, fires
+// the matching backend run_* command, prepends the receipt, and shows a
+// "Next:" handoff button (per pillar 3) routing to the natural follow-up.
+// monthly-checkin keeps its existing modal — only the system prompt
+// changed in lib.rs.
+
+// Show a small banner above the latest receipt with a "Next:" handoff
+// action. Fires the supplied callback when clicked. Auto-dismisses once
+// clicked or when the user clicks Dismiss.
+function showHandoffBanner({ label, onClick, secondary }) {
+  const feed = document.getElementById("feed");
+  if (!feed) return;
+  // Drop any prior banner so we never stack them.
+  feed.querySelectorAll(".handoff-banner").forEach((b) => b.remove());
+
+  const banner = el("div", { class: "handoff-banner" });
+  const text = el("div", { class: "handoff-banner-text" }, [
+    secondary ? `${secondary} · ` : "",
+    el("strong", {}, [label]),
+  ]);
+  const actBtn = el("button", { class: "button", type: "button" }, ["Next"]);
+  const dismissBtn = el("button", {
+    class: "button button-secondary",
+    type: "button",
+  }, ["Dismiss"]);
+
+  banner.appendChild(text);
+  banner.appendChild(el("div", { class: "handoff-banner-actions" }, [
+    dismissBtn,
+    actBtn,
+  ]));
+
+  actBtn.addEventListener("click", () => {
+    banner.remove();
+    onClick?.();
+  });
+  dismissBtn.addEventListener("click", () => banner.remove());
+
+  feed.prepend(banner);
+}
+
+// Pick the first item text from a receipt (used to grab the chosen
+// caption/draft when handing off to Schedule social post). Receipts from
+// these workflows put the variants/draft as items in sections[0].
+function firstItemText(receipt) {
+  const items = receipt?.sections?.[0]?.items || [];
+  for (const item of items) {
+    if (item && typeof item.text === "string" && item.text.trim()) {
+      return item.text;
+    }
+  }
+  return "";
+}
+
+async function showNctCaptionModal(_prefillClientCode) {
+  if (document.getElementById("nct-cap-modal")) return;
+  const overlay = el("div", { id: "nct-cap-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, ["Draft NCT social caption"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+  modal.appendChild(el("div", { class: "modal-meta" }, [
+    "Northcote Theatre venue voice. Returns three caption variants. Pick one and hand off to Schedule social post.",
+  ]));
+
+  const grid = el("div", { class: "modal-field-grid" });
+
+  const refUrl = el("input", {
+    type: "url",
+    class: "settings-input",
+    placeholder: "https://... (optional)",
+  });
+  const voice = el("select", { class: "settings-input" });
+  ["default", "playful", "serious", "urgent"].forEach((v) => {
+    const opt = document.createElement("option");
+    opt.value = v;
+    opt.textContent = v;
+    voice.appendChild(opt);
+  });
+
+  [
+    ["Reference URL (optional)", refUrl],
+    ["Voice override", voice],
+  ].forEach(([label, input]) => {
+    grid.appendChild(el("label", { class: "modal-field" }, [
+      el("div", { class: "settings-label" }, [label]),
+      input,
+    ]));
+  });
+
+  modal.appendChild(grid);
+
+  const topicPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+    el("div", { class: "settings-label" }, ["Topic"]),
+  ]);
+  const topic = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "What the post is about. Show announcement, on-sale reminder, sold out, post-show, etc. Include artist name, date, doors/start times if relevant.",
+    rows: 6,
+  });
+  topicPad.appendChild(topic);
+  modal.appendChild(topicPad);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Run"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  topic.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    const input = {
+      topic: topic.value.trim(),
+      reference_url: refUrl.value.trim() || null,
+      voice_override: voice.value,
+    };
+    if (!input.topic) return showToast("Topic required");
+    runBtn.disabled = true;
+    runBtn.textContent = "Drafting captions...";
+    try {
+      const json = await invoke("run_nct_caption", { input });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Three caption variants ready");
+      showHandoffBanner({
+        secondary: "Caption draft filed",
+        label: "Schedule the post",
+        onClick: () => {
+          const caption = firstItemText(receipt);
+          showScheduleSocialPostModal("NCT", {
+            prefillCopy: caption,
+            prefillPlatform: "Instagram",
+          });
+        },
+      });
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
+async function showInCahootsSocialModal(_prefillClientCode) {
+  if (document.getElementById("inc-soc-modal")) return;
+  const overlay = el("div", { id: "inc-soc-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, ["In Cahoots social post"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+  modal.appendChild(el("div", { class: "modal-meta" }, [
+    "Founder-led draft for the @incahoots.marketing brand. Caitlin's voice — observational, peer-to-peer, anti-corporate. Hands off to Schedule social post when you're happy with it.",
+  ]));
+
+  const grid = el("div", { class: "modal-field-grid" });
+
+  const platform = el("select", { class: "settings-input" });
+  ["Instagram", "LinkedIn", "Threads", "X", "TikTok", "Other"].forEach((p) => {
+    const opt = document.createElement("option");
+    opt.value = p;
+    opt.textContent = p;
+    platform.appendChild(opt);
+  });
+
+  const pillar = el("select", { class: "settings-input" });
+  [
+    "announcement",
+    "case study",
+    "behind-the-scenes",
+    "value",
+    "share",
+  ].forEach((p) => {
+    const opt = document.createElement("option");
+    opt.value = p;
+    opt.textContent = p;
+    pillar.appendChild(opt);
+  });
+
+  [
+    ["Platform", platform],
+    ["Content pillar", pillar],
+  ].forEach(([label, input]) => {
+    grid.appendChild(el("label", { class: "modal-field" }, [
+      el("div", { class: "settings-label" }, [label]),
+      input,
+    ]));
+  });
+
+  modal.appendChild(grid);
+
+  const topicPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+    el("div", { class: "settings-label" }, ["Topic / observation"]),
+  ]);
+  const topic = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "What you're noticing this week, a thing from the MBA, a campaign observation (anonymised), a sector reaction. One idea per post.",
+    rows: 6,
+  });
+  topicPad.appendChild(topic);
+  modal.appendChild(topicPad);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Run"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  topic.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    const input = {
+      topic: topic.value.trim(),
+      platform: platform.value,
+      pillar: pillar.value,
+    };
+    if (!input.topic) return showToast("Topic required");
+    runBtn.disabled = true;
+    runBtn.textContent = "Drafting post...";
+    try {
+      const json = await invoke("run_in_cahoots_social_post", { input });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Draft post ready");
+      showHandoffBanner({
+        secondary: "In Cahoots draft filed",
+        label: "Schedule the post",
+        onClick: () => {
+          const draft = firstItemText(receipt);
+          showScheduleSocialPostModal(null, {
+            prefillCopy: draft,
+            prefillPlatform: input.platform,
+            prefillChannel: "incahoots-marketing",
+          });
+        },
+      });
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
+async function showWrapReportModal(prefillProjectCode) {
+  if (document.getElementById("wrap-modal")) return;
+
+  // Pull projects, filtered to wrap/done so the picker only offers
+  // campaigns ready for a wrap report.
+  let projects = [];
+  if (isTauri) {
+    try {
+      const raw = await invoke("list_airtable_projects");
+      const data = JSON.parse(raw);
+      projects = (data.records || [])
+        .map((r) => ({
+          code: r.fields?.code || "",
+          name: r.fields?.name || r.fields?.code || "Untitled",
+          status: String(r.fields?.status || "").toLowerCase(),
+        }))
+        .filter((p) => p.code)
+        .filter((p) =>
+          ["wrap", "done", "wrapped", "complete", "completed"].includes(p.status)
+        );
+    } catch (e) {
+      console.warn("list_airtable_projects failed:", e);
+    }
+  }
+
+  if (projects.length === 0) {
+    showToast(
+      "No projects with status wrap or done. Mark a project wrap first.",
+      { ttl: 6000 }
+    );
+    return;
+  }
+
+  const overlay = el("div", { id: "wrap-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, ["Draft Wrap Report"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+  modal.appendChild(el("div", { class: "modal-meta" }, [
+    "Companion pulls receipts and notes for the project, Claude returns a wrap report. Markdown saved to Dropbox/IN CAHOOTS/08 CAMPAIGN SNAPSHOTS/{code}-wrap.md for client delivery.",
+  ]));
+
+  const grid = el("div", { class: "modal-field-grid" });
+
+  const projectPicker = el("select", { class: "settings-input" });
+  projects.forEach((p) => {
+    const opt = document.createElement("option");
+    opt.value = p.code;
+    opt.textContent = `${p.code} — ${p.name}`;
+    projectPicker.appendChild(opt);
+  });
+  if (
+    prefillProjectCode &&
+    projects.some((p) => p.code === prefillProjectCode)
+  ) {
+    projectPicker.value = prefillProjectCode;
+  }
+
+  grid.appendChild(el("label", { class: "modal-field" }, [
+    el("div", { class: "settings-label" }, ["Project"]),
+    projectPicker,
+  ]));
+  modal.appendChild(grid);
+
+  const flagsPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+    el("div", { class: "settings-label" }, ["Extra notes (optional)"]),
+  ]);
+  const flags = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "Final ticket figure if not in receipts, audience read, anything that didn't show up in the receipts log.",
+    rows: 5,
+  });
+  flagsPad.appendChild(flags);
+  modal.appendChild(flagsPad);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Run"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  projectPicker.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    const input = {
+      project_code: projectPicker.value,
+      extra_notes: flags.value.trim() || null,
+    };
+    if (!input.project_code) return showToast("Pick a project first");
+    runBtn.disabled = true;
+    runBtn.textContent = "Reading the campaign...";
+    try {
+      const json = await invoke("run_campaign_wrap_report", { input });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Wrap report drafted and saved to Dropbox");
+      showHandoffBanner({
+        secondary: `Saved to Dropbox/08 CAMPAIGN SNAPSHOTS/${input.project_code}-wrap.md`,
+        label: "Send to client (v0.32)",
+        onClick: () => {
+          showToast(
+            "Client-email handoff ships in v0.32. For now, open the markdown and send manually.",
+            { ttl: 6000 }
+          );
+        },
+      });
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
+async function showBuildScopeModal(prefillClientCode) {
+  if (document.getElementById("scope-modal")) return;
+
+  const clients = await fetchClientsForPicker();
+
+  const overlay = el("div", { id: "scope-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, ["Build Scope"]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+  modal.appendChild(el("div", { class: "modal-meta" }, [
+    "Generates a Scope of Work in Caitlin's voice. Saves a JSON payload at 05 TEMPLATES/RECEIPT-DOCS/typst/data/scopes/ for typst rendering. CSA generation hands off in v0.33.",
+  ]));
+
+  const grid = el("div", { class: "modal-field-grid" });
+
+  const clientPicker = el("select", { class: "settings-input" });
+  const noClient = document.createElement("option");
+  noClient.value = "";
+  noClient.textContent = "(new client / lead)";
+  clientPicker.appendChild(noClient);
+  clients.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c.code;
+    opt.textContent = `${c.code} — ${c.name}`;
+    clientPicker.appendChild(opt);
+  });
+  if (prefillClientCode && clients.some((c) => c.code === prefillClientCode)) {
+    clientPicker.value = prefillClientCode;
+  }
+
+  const newClientName = el("input", {
+    type: "text",
+    class: "settings-input",
+    placeholder: "Only if (new client / lead) is selected above",
+  });
+
+  const projectType = el("select", { class: "settings-input" });
+  ["campaign", "retainer", "fractional", "capability building"].forEach((t) => {
+    const opt = document.createElement("option");
+    opt.value = t;
+    opt.textContent = t;
+    projectType.appendChild(opt);
+  });
+
+  const length = el("input", {
+    type: "text",
+    class: "settings-input",
+    placeholder: "e.g. 6 weeks, 3 months, ongoing fortnightly",
+  });
+
+  const budget = el("input", {
+    type: "text",
+    class: "settings-input",
+    placeholder: "e.g. $8k, ~$15k, TBC",
+  });
+
+  [
+    ["Client", clientPicker],
+    ["New client name (if lead)", newClientName],
+    ["Project type", projectType],
+    ["Engagement length", length],
+    ["Budget range", budget],
+  ].forEach(([label, input]) => {
+    grid.appendChild(el("label", { class: "modal-field" }, [
+      el("div", { class: "settings-label" }, [label]),
+      input,
+    ]));
+  });
+  modal.appendChild(grid);
+
+  const deliverablesPad = el("div", { class: "modal-pad", style: "margin-top: 16px;" }, [
+    el("div", { class: "settings-label" }, ["Deliverables / brief notes"]),
+  ]);
+  const deliverables = el("textarea", {
+    class: "modal-textarea",
+    placeholder: "What's included, what's not, what success looks like, what the client owns. Bullet form is fine.",
+    rows: 8,
+  });
+  deliverablesPad.appendChild(deliverables);
+  modal.appendChild(deliverablesPad);
+
+  const cancelBtn = el("button", { class: "button button-secondary" }, ["Cancel"]);
+  const runBtn = el("button", { class: "button" }, ["Run"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [cancelBtn, runBtn]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  deliverables.focus();
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+
+  runBtn.addEventListener("click", async () => {
+    const input = {
+      client_code: clientPicker.value || null,
+      new_client_name: newClientName.value.trim() || null,
+      project_type: projectType.value,
+      length: length.value.trim() || null,
+      deliverables: deliverables.value.trim(),
+      budget_range: budget.value.trim() || null,
+    };
+    if (!input.deliverables) return showToast("Deliverables required");
+    if (!input.client_code && !input.new_client_name) {
+      return showToast("Pick a client or enter a new client name");
+    }
+    runBtn.disabled = true;
+    runBtn.textContent = "Building scope...";
+    try {
+      const json = await invoke("run_scope_of_work", { input });
+      const receipt = JSON.parse(json);
+      document.getElementById("feed").prepend(renderReceipt(receipt));
+      close();
+      showToast("Scope drafted and saved to Dropbox");
+      showHandoffBanner({
+        secondary: "Scope JSON saved for typst rendering",
+        label: "Generate CSA (v0.33)",
+        onClick: () => {
+          showToast(
+            "CSA generation via Dropbox Sign ships in v0.33. For now, the markdown is in the receipt and the JSON is on disk.",
+            { ttl: 7000 }
+          );
+        },
+      });
+    } catch (e) {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run";
+      showToast(`Error: ${e.message || e}`, { ttl: 6000 });
+    }
+  });
+}
+
 // ─── Today: commitment detail modal ──────────────────────────────────
 //
 // Shown when a commitment row in Today is clicked. Two actions: tick-done
@@ -2157,7 +2678,7 @@ async function fetchSubcontractorsForPicker() {
 }
 
 // ─── Schedule social post modal (v0.21) ───────────────────────────────
-async function showScheduleSocialPostModal(prefillClientCode) {
+async function showScheduleSocialPostModal(prefillClientCode, opts = {}) {
   if (document.getElementById("ssp-modal")) return;
 
   const clients = await fetchClientsForPicker();
@@ -2256,8 +2777,24 @@ async function showScheduleSocialPostModal(prefillClientCode) {
     placeholder: "Full caption. First 60 chars become the title if you don't set one.",
     rows: 6,
   });
+  if (typeof opts.prefillCopy === "string" && opts.prefillCopy.trim()) {
+    copy.value = opts.prefillCopy;
+  }
   copyPad.appendChild(copy);
   modal.appendChild(copyPad);
+
+  if (typeof opts.prefillPlatform === "string") {
+    const want = opts.prefillPlatform;
+    for (const o of platform.options) {
+      if (o.value.toLowerCase() === want.toLowerCase()) {
+        platform.value = o.value;
+        break;
+      }
+    }
+  }
+  if (opts.prefillChannel === "incahoots-marketing") {
+    channel.value = "incahoots-marketing";
+  }
 
   const notesPad = el("div", { class: "modal-pad", style: "margin-top: 12px;" }, [
     el("div", { class: "settings-label" }, ["Notes (optional)"]),
@@ -3302,6 +3839,23 @@ document.addEventListener("DOMContentLoaded", () => {
   // id. Content Approval prompts for a SocialPost record id (the
   // proper SocialPost picker lands in v0.32 alongside the email-draft
   // polish).
+  // v0.31 Block F: Draft Wrap Report button on a wrapped project view.
+  // Centralised here so the modal catalogue stays in main.js.
+  document.addEventListener("project:wrap-report-click", async (e) => {
+    if (!isTauri) {
+      showToast("Open the Companion app to run live workflows. Preview is read-only.");
+      return;
+    }
+    const ready = await invoke("get_api_key_status");
+    if (!ready) {
+      showApiKeyBanner();
+      showToast("Set your Anthropic API key first");
+      return;
+    }
+    const projectCode = e.detail?.project_code || _state.project?.project_code;
+    showWrapReportModal(projectCode);
+  });
+
   document.addEventListener("project:form-send", async (e) => {
     const formKey = e.detail?.form_key;
     if (!formKey) return;
@@ -3520,6 +4074,9 @@ document.addEventListener("DOMContentLoaded", () => {
         showScheduleSocialPostModal,
         showLogTimeModal,
         showEditProjectModal,
+        // v0.31 Block F — Skills batch 1 modals.
+        showNctCaptionModal,
+        showBuildScopeModal,
       },
       toast: showToast,
       requireApiKey: async () => {
@@ -3778,6 +4335,23 @@ document.addEventListener("DOMContentLoaded", () => {
     showQuarterlyReviewModal();
   }
 
+  // v0.31 Block F: shared opener for the new skill-backed workflows.
+  // Same gate as the older Anthropic-backed workflows above — Tauri
+  // only, API key set, then call the supplied modal.
+  async function openSkillWorkflow(modalFn, ...args) {
+    if (!isTauri) {
+      showToast("Open the Companion app to run live workflows. Preview is read-only.");
+      return;
+    }
+    const ready = await invoke("get_api_key_status");
+    if (!ready) {
+      showApiKeyBanner();
+      showToast("Set your Anthropic API key first");
+      return;
+    }
+    modalFn(...args);
+  }
+
   document.querySelectorAll(".workflow-card").forEach((card) => {
     const name = card.querySelector(".workflow-card-title")?.textContent || "Workflow";
     card.addEventListener("click", () => {
@@ -3812,6 +4386,14 @@ document.addEventListener("DOMContentLoaded", () => {
           return;
         }
         showEditProjectModal();
+      } else if (name === "Draft NCT social caption") {
+        openSkillWorkflow(showNctCaptionModal);
+      } else if (name === "In Cahoots social post") {
+        openSkillWorkflow(showInCahootsSocialModal);
+      } else if (name === "Draft Wrap Report") {
+        openSkillWorkflow(showWrapReportModal);
+      } else if (name === "Build Scope") {
+        openSkillWorkflow(showBuildScopeModal);
       } else {
         showToast(`${name}: not wired yet.`);
       }

@@ -124,14 +124,38 @@ const STRATEGIC_THINKING_PROMPT: &str =
     include_str!("../prompts/strategic-thinking-system.md");
 const NEW_CLIENT_ONBOARDING_PROMPT: &str =
     include_str!("../prompts/new-client-onboarding-system.md");
-const MONTHLY_CHECKIN_PROMPT: &str =
-    include_str!("../prompts/monthly-checkin-system.md");
 const NEW_CAMPAIGN_SCOPE_PROMPT: &str =
     include_str!("../prompts/new-campaign-scope-system.md");
 const QUARTERLY_REVIEW_PROMPT: &str =
     include_str!("../prompts/quarterly-review-system.md");
 const SUBCONTRACTOR_ONBOARDING_PROMPT: &str =
     include_str!("../prompts/subcontractor-onboarding-system.md");
+
+// v0.31 Block F — Skills batch 1.
+//
+// Each skill's SKILL.md is bundled in at compile time alongside a shared
+// receipt envelope that explains how Companion expects the model to wrap
+// its output. The full system prompt is `SKILL_BODY + RECEIPT_ENVELOPE`,
+// joined at runtime by `skill_system_prompt`. Workflows wired to skills
+// in this release: northcote-theatre-caption-writer, in-cahoots-social-
+// manager, monthly-checkin (upgraded), campaign-wrap-report,
+// scope-of-work-builder.
+const SKILL_RECEIPT_ENVELOPE: &str =
+    include_str!("../prompts/skills/_receipt-envelope.md");
+const SKILL_NCT_CAPTION: &str =
+    include_str!("../prompts/skills/northcote-theatre-caption-writer.md");
+const SKILL_IN_CAHOOTS_SOCIAL: &str =
+    include_str!("../prompts/skills/in-cahoots-social-manager.md");
+const SKILL_MONTHLY_CHECKIN: &str =
+    include_str!("../prompts/skills/monthly-checkin.md");
+const SKILL_CAMPAIGN_WRAP_REPORT: &str =
+    include_str!("../prompts/skills/campaign-wrap-report.md");
+const SKILL_SCOPE_OF_WORK_BUILDER: &str =
+    include_str!("../prompts/skills/scope-of-work-builder.md");
+
+fn skill_system_prompt(skill_body: &str) -> String {
+    format!("{}\n\n{}", skill_body, SKILL_RECEIPT_ENVELOPE)
+}
 
 // ── DB state ───────────────────────────────────────────────────────────
 
@@ -1269,10 +1293,31 @@ async fn run_monthly_checkin(
         transcript_section,
     );
 
+    // v0.31: monthly-checkin now runs on the richer SKILL.md prompt
+    // (~/.claude/skills/anthropic-skills/monthly-checkin/SKILL.md), wrapped
+    // with the shared Companion receipt envelope so the model still emits
+    // a JSON receipt block alongside the markdown check-in doc.
+    let system = skill_system_prompt(SKILL_MONTHLY_CHECKIN);
+
+    let receipt_id = format!(
+        "rcpt_{}",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    let receipt_hint = format!(
+        "\n\n## Companion receipt envelope hints\n\n\
+         - id: {}\n\
+         - project: {}\n\
+         - workflow: monthly-checkin\n\
+         - title: RECEIPT — MONTHLY CHECK-IN\n\
+         - paid_block.customer: {}\n",
+        receipt_id, code, client_name
+    );
+    let user_message = format!("{}{}", user_message, receipt_hint);
+
     let body = AnthropicRequest {
         model: MODEL_ID,
         max_tokens: 4096,
-        system: MONTHLY_CHECKIN_PROMPT,
+        system: &system,
         messages: vec![AnthropicMessage {
             role: "user".to_string(),
             content: user_message,
@@ -1763,6 +1808,550 @@ async fn run_subcontractor_onboarding(
     file_receipt_to_airtable(&json).await;
 
     Ok(json)
+}
+
+// ── v0.31 Block F — Skills batch 1 workflows ──────────────────────────
+//
+// Five workflows wired to ~/.claude/skills/anthropic-skills/<skill>/SKILL.md
+// prompts (bundled into the binary at compile time). The shared receipt
+// envelope lives in prompts/skills/_receipt-envelope.md and gets appended
+// to every skill body, so the model produces (markdown content) +
+// (fenced JSON receipt). All workflows file at L4 — drafts requiring
+// Caitlin's sign-off before the external action.
+//
+// monthly-checkin was upgraded in place (see run_monthly_checkin above);
+// the four below are new.
+
+#[derive(Deserialize, Debug)]
+struct NctCaptionInput {
+    topic: String,
+    reference_url: Option<String>,
+    voice_override: Option<String>,
+}
+
+#[tauri::command]
+async fn run_nct_caption(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+
+    let parsed: NctCaptionInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    let topic = parsed.topic.trim();
+    if topic.is_empty() {
+        return Err("Topic required".to_string());
+    }
+
+    let receipt_id = format!(
+        "rcpt_{}",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    let voice = parsed
+        .voice_override
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && *s != "default")
+        .unwrap_or("default (venue voice)");
+    let user_message = format!(
+        "## Northcote Theatre social caption\n\n\
+         **Today's date:** {}\n\
+         **Topic / brief:** {}\n\
+         **Reference URL:** {}\n\
+         **Voice override:** {}\n\n\
+         Produce three caption variants Caitlin can choose from. Each \
+         variant should be a complete, post-ready caption following the \
+         skill's structure. Number them 1, 2, 3. Keep variants \
+         meaningfully different (e.g. one tighter, one warmer, one with \
+         more context).\n\n\
+         ## Companion receipt envelope hints\n\n\
+         - id: {}\n\
+         - project: NCT\n\
+         - workflow: nct-caption\n\
+         - title: RECEIPT — NCT SOCIAL CAPTION\n\
+         - paid_block.customer: Northcote Theatre\n\
+         - sections[0].header: CAPTION VARIANTS\n\
+         - For each of the 3 variants, include one item with `qty: \"1\"` \
+           and `text` set to the FULL caption text (line breaks allowed).\n",
+        chrono::Local::now().format("%A %d %B %Y"),
+        topic,
+        parsed.reference_url.as_deref().unwrap_or("(none)"),
+        voice,
+        receipt_id,
+    );
+
+    let system = skill_system_prompt(SKILL_NCT_CAPTION);
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 4096,
+        system: &system,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+        mcp_servers: None,
+    };
+
+    let json = call_anthropic_for_receipt(&key, &body, "L4").await?;
+
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+    file_receipt_to_airtable(&json).await;
+
+    Ok(json)
+}
+
+#[derive(Deserialize, Debug)]
+struct InCahootsSocialInput {
+    topic: String,
+    platform: String,
+    pillar: String,
+}
+
+#[tauri::command]
+async fn run_in_cahoots_social_post(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+
+    let parsed: InCahootsSocialInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    let topic = parsed.topic.trim();
+    if topic.is_empty() {
+        return Err("Topic required".to_string());
+    }
+
+    let receipt_id = format!(
+        "rcpt_{}",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    let user_message = format!(
+        "## In Cahoots social post draft\n\n\
+         **Today's date:** {}\n\
+         **Platform:** {}\n\
+         **Content pillar:** {}\n\
+         **Topic / observation:** {}\n\n\
+         Produce a single ready-to-post draft for the platform above, \
+         following the platform-specific guidance in the skill. Lead \
+         with the observation, not a preamble. Sound like Caitlin would \
+         say it out loud to a smart colleague.\n\n\
+         ## Companion receipt envelope hints\n\n\
+         - id: {}\n\
+         - project: INC\n\
+         - workflow: in-cahoots-social-post\n\
+         - title: RECEIPT — IN CAHOOTS SOCIAL POST\n\
+         - paid_block.customer: In Cahoots\n\
+         - sections[0].header: DRAFT POST\n\
+         - The first item in sections[0] must be `{{\"qty\": \"1\", \
+           \"text\": \"<the full draft post text, line breaks allowed>\"}}`.\n",
+        chrono::Local::now().format("%A %d %B %Y"),
+        parsed.platform.trim(),
+        parsed.pillar.trim(),
+        topic,
+        receipt_id,
+    );
+
+    let system = skill_system_prompt(SKILL_IN_CAHOOTS_SOCIAL);
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 4096,
+        system: &system,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+        mcp_servers: None,
+    };
+
+    let json = call_anthropic_for_receipt(&key, &body, "L4").await?;
+
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+    file_receipt_to_airtable(&json).await;
+
+    Ok(json)
+}
+
+#[derive(Deserialize, Debug)]
+struct CampaignWrapReportInput {
+    project_code: String,
+    extra_notes: Option<String>,
+}
+
+#[tauri::command]
+async fn run_campaign_wrap_report(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+
+    let parsed: CampaignWrapReportInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+    let project_code = parsed.project_code.trim().to_string();
+    if project_code.is_empty() {
+        return Err("Pick a project first".to_string());
+    }
+
+    // Pull project metadata from Airtable.
+    let qs = format!(
+        "filterByFormula={}&maxRecords=1\
+&fields%5B%5D=code\
+&fields%5B%5D=name\
+&fields%5B%5D=status\
+&fields%5B%5D=campaign_type\
+&fields%5B%5D=start_date\
+&fields%5B%5D=end_date\
+&fields%5B%5D=budget_total\
+&fields%5B%5D=notes\
+&fields%5B%5D=client",
+        urlencode(&format!("{{code}}='{}'", project_code))
+    );
+    let project_data = airtable_get("Projects", &qs)
+        .await
+        .unwrap_or(serde_json::Value::Null);
+    let project_record = &project_data["records"][0]["fields"];
+    let project_name = project_record["name"]
+        .as_str()
+        .unwrap_or(&project_code)
+        .to_string();
+    let campaign_type = project_record["campaign_type"]
+        .as_str()
+        .unwrap_or("(unspecified)")
+        .to_string();
+    let start_date = project_record["start_date"]
+        .as_str()
+        .unwrap_or("(unknown)")
+        .to_string();
+    let end_date = project_record["end_date"]
+        .as_str()
+        .unwrap_or("(unknown)")
+        .to_string();
+    let budget_total = project_record["budget_total"]
+        .as_f64()
+        .map(|n| format!("${:.0}", n))
+        .unwrap_or_else(|| "(unspecified)".to_string());
+
+    // Pull recent receipts for this project (last 365 days — campaigns
+    // run long).
+    let receipts: Vec<String> = {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        recent_receipts_for_client(&conn, &project_code, 365)?
+    };
+    let summaries: Vec<String> =
+        receipts.iter().map(|j| summarise_receipt(j)).collect();
+    let bundle = if summaries.is_empty() {
+        "(No receipts on file for this project.)".to_string()
+    } else {
+        summaries.join("\n\n")
+    };
+
+    let receipt_id = format!(
+        "rcpt_{}",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    let user_message = format!(
+        "## Campaign wrap report\n\n\
+         **Project:** {} ({})\n\
+         **Campaign type:** {}\n\
+         **Run dates:** {} → {}\n\
+         **Marketing budget:** {}\n\
+         **Today's date:** {}\n\n\
+         ## User flags / notes\n\n{}\n\n\
+         ## Receipts on file (newest first)\n\n{}\n\n\
+         ## Companion receipt envelope hints\n\n\
+         - id: {}\n\
+         - project: {}\n\
+         - workflow: campaign-wrap-report\n\
+         - title: RECEIPT — CAMPAIGN WRAP REPORT\n\
+         - paid_block.customer: {}\n\
+         - The markdown wrap report (above the JSON block) is the body \
+           Caitlin will save to Dropbox and adapt for the client. Use \
+           the full skill structure (Campaign Overview, Ticket Sales, \
+           Channel Performance, Paid Media, What Worked, What Didn't, \
+           Key Learnings, Recommendations).\n",
+        project_name,
+        project_code,
+        campaign_type,
+        start_date,
+        end_date,
+        budget_total,
+        chrono::Local::now().format("%A %d %B %Y"),
+        parsed.extra_notes.as_deref().unwrap_or("(none)"),
+        bundle,
+        receipt_id,
+        project_code,
+        project_name,
+    );
+
+    let system = skill_system_prompt(SKILL_CAMPAIGN_WRAP_REPORT);
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 8192,
+        system: &system,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+        mcp_servers: None,
+    };
+
+    // Need both the markdown body and the JSON receipt. The markdown is
+    // everything before the fenced ```json block.
+    let raw = call_anthropic_raw_text(&key, &body).await?;
+    let json = stamp_autonomy_level(&extract_json_block(&raw)?, "L4");
+    let markdown_body = strip_json_block(&raw);
+
+    // Write the wrap markdown to Dropbox for client delivery.
+    let wrap_path = wrap_report_path(&project_code);
+    if let Err(e) = std::fs::write(&wrap_path, markdown_body.as_bytes()) {
+        eprintln!(
+            "run_campaign_wrap_report: failed to write {}: {}",
+            wrap_path, e
+        );
+    }
+
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+    file_receipt_to_airtable(&json).await;
+
+    Ok(json)
+}
+
+fn wrap_report_path(project_code: &str) -> String {
+    format!(
+        "{}/Library/CloudStorage/Dropbox/IN CAHOOTS/08 CAMPAIGN SNAPSHOTS/{}-wrap.md",
+        std::env::var("HOME").unwrap_or_default(),
+        project_code
+    )
+}
+
+// Strip the trailing fenced ```json ... ``` block from a raw model
+// response, returning whatever sits above it. Used for skill workflows
+// that need both the human-readable markdown and the receipt JSON.
+fn strip_json_block(raw: &str) -> String {
+    if let Some(idx) = raw.find("```json") {
+        return raw[..idx].trim_end().to_string();
+    }
+    if let Some(idx) = raw.rfind("```") {
+        // Fallback: strip last fenced block of any kind.
+        if let Some(open) = raw[..idx].rfind("```") {
+            return raw[..open].trim_end().to_string();
+        }
+    }
+    raw.trim_end().to_string()
+}
+
+#[derive(Deserialize, Debug)]
+struct ScopeOfWorkInput {
+    client_code: Option<String>,
+    new_client_name: Option<String>,
+    project_type: String,
+    length: Option<String>,
+    deliverables: String,
+    budget_range: Option<String>,
+}
+
+#[tauri::command]
+async fn run_scope_of_work(
+    input: serde_json::Value,
+    state: State<'_, DbState>,
+    rate_limit: State<'_, RateLimit>,
+) -> Result<String, String> {
+    check_rate_limit(&rate_limit)?;
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+
+    let parsed: ScopeOfWorkInput = serde_json::from_value(input)
+        .map_err(|e| format!("Invalid input: {}", e))?;
+
+    if parsed.deliverables.trim().is_empty() {
+        return Err("Deliverables required".to_string());
+    }
+
+    // Resolve client identity. Either an existing client code or a free
+    // text "new client" name (lead pre-Client).
+    let (client_code, client_name) = match parsed.client_code.as_deref() {
+        Some(code) if !code.trim().is_empty() => {
+            let upper = code.trim().to_uppercase();
+            // Look up name from Airtable.
+            let qs = format!(
+                "filterByFormula={}&maxRecords=1&fields%5B%5D=code&fields%5B%5D=name",
+                urlencode(&format!("{{code}}='{}'", upper))
+            );
+            let data = airtable_get("Clients", &qs)
+                .await
+                .unwrap_or(serde_json::Value::Null);
+            let name = data["records"][0]["fields"]["name"]
+                .as_str()
+                .unwrap_or(&upper)
+                .to_string();
+            (upper, name)
+        }
+        _ => {
+            let name = parsed
+                .new_client_name
+                .as_deref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .ok_or("Pick a client or enter a new client name")?;
+            ("LEAD".to_string(), name)
+        }
+    };
+
+    let receipt_id = format!(
+        "rcpt_{}",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    let date_slug = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let user_message = format!(
+        "## Scope of Work\n\n\
+         **Client:** {} ({})\n\
+         **Project type:** {}\n\
+         **Engagement length:** {}\n\
+         **Budget range:** {}\n\
+         **Today's date:** {}\n\n\
+         ## Deliverables / brief notes\n\n{}\n\n\
+         ## Companion receipt envelope hints\n\n\
+         - id: {}\n\
+         - project: {}\n\
+         - workflow: scope-of-work\n\
+         - title: RECEIPT — SCOPE OF WORK\n\
+         - paid_block.customer: {}\n\
+         - The markdown SOW (above the JSON block) is what gets saved \
+           to Dropbox for typst rendering and CSA generation. Follow \
+           the full skill structure (Project Overview, Objectives, \
+           Scope of Work, Out of Scope, Deliverables and Timeline, \
+           Client Responsibilities, Fees, Approval and Revisions, \
+           Start Date and Duration). Use Caitlin's voice — clear, \
+           anti-corporate, peer-to-peer.\n",
+        client_name,
+        client_code,
+        parsed.project_type.trim(),
+        parsed.length.as_deref().unwrap_or("(unspecified)"),
+        parsed.budget_range.as_deref().unwrap_or("(unspecified)"),
+        chrono::Local::now().format("%A %d %B %Y"),
+        parsed.deliverables.trim(),
+        receipt_id,
+        client_code,
+        client_name,
+    );
+
+    let system = skill_system_prompt(SKILL_SCOPE_OF_WORK_BUILDER);
+    let body = AnthropicRequest {
+        model: MODEL_ID,
+        max_tokens: 8192,
+        system: &system,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_message,
+        }],
+        mcp_servers: None,
+    };
+
+    let raw = call_anthropic_raw_text(&key, &body).await?;
+    let json = stamp_autonomy_level(&extract_json_block(&raw)?, "L4");
+    let markdown_body = strip_json_block(&raw);
+
+    // Save SOW JSON envelope (markdown body + metadata) for typst
+    // rendering. v0.33 will pick this up to generate the CSA.
+    let scope_path = scope_payload_path(&client_code, &date_slug);
+    let payload = serde_json::json!({
+        "client_code": client_code,
+        "client_name": client_name,
+        "project_type": parsed.project_type.trim(),
+        "length": parsed.length,
+        "budget_range": parsed.budget_range,
+        "deliverables_brief": parsed.deliverables.trim(),
+        "scope_markdown": markdown_body,
+        "generated_at": chrono::Local::now().to_rfc3339(),
+        "receipt_id": receipt_id,
+    });
+    if let Some(parent) = std::path::Path::new(&scope_path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(&scope_path, payload.to_string().as_bytes()) {
+        eprintln!(
+            "run_scope_of_work: failed to write {}: {}",
+            scope_path, e
+        );
+    }
+
+    {
+        let conn = state.0.lock().map_err(|e| format!("DB lock: {}", e))?;
+        persist_receipt(&conn, &json)?;
+    }
+    file_receipt_to_airtable(&json).await;
+
+    Ok(json)
+}
+
+fn scope_payload_path(client_code: &str, date_slug: &str) -> String {
+    format!(
+        "{}/Library/CloudStorage/Dropbox/IN CAHOOTS/05 TEMPLATES/RECEIPT-DOCS/typst/data/scopes/{}-{}.json",
+        std::env::var("HOME").unwrap_or_default(),
+        client_code.to_lowercase(),
+        date_slug
+    )
+}
+
+// Shared HTTP path for skill workflows. Posts the request, parses the
+// response, extracts the fenced JSON receipt, and stamps the autonomy
+// level. Returns the receipt JSON ready to persist.
+async fn call_anthropic_for_receipt(
+    api_key: &str,
+    body: &AnthropicRequest<'_>,
+    autonomy_level: &str,
+) -> Result<String, String> {
+    let raw = call_anthropic_raw_text(api_key, body).await?;
+    let json = stamp_autonomy_level(&extract_json_block(&raw)?, autonomy_level);
+    Ok(json)
+}
+
+// As above but returns the raw concatenated text so callers can also
+// keep the markdown body that sits above the JSON block.
+async fn call_anthropic_raw_text(
+    api_key: &str,
+    body: &AnthropicRequest<'_>,
+) -> Result<String, String> {
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+
+    let response = http
+        .post(ANTHROPIC_API)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Anthropic API {}: {}", status.as_u16(), text));
+    }
+
+    let api_response: AnthropicResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    Ok(collect_text_blocks(&api_response.content))
 }
 
 #[derive(Deserialize, Debug)]
@@ -4044,6 +4633,11 @@ pub fn run() {
             run_new_campaign_scope,
             run_quarterly_review,
             run_subcontractor_onboarding,
+            // v0.31 Block F — Skills batch 1
+            run_nct_caption,
+            run_in_cahoots_social_post,
+            run_campaign_wrap_report,
+            run_scope_of_work,
             create_airtable_subcontractor,
             create_airtable_client,
             create_airtable_project,

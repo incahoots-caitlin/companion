@@ -25,6 +25,9 @@ export function launch(key, clientCode, ctx) {
     "schedule-social-post": () => ctx.modals.showScheduleSocialPostModal(clientCode),
     "log-time": () => ctx.modals.showLogTimeModal(clientCode),
     "edit-project": () => ctx.modals.showEditProjectModal(clientCode),
+    // v0.31 Block F — Skills batch 1.
+    "nct-caption": () => ctx.modals.showNctCaptionModal(clientCode),
+    "build-scope": () => ctx.modals.showBuildScopeModal(clientCode),
   };
 
   const fn = dispatchTable[key];
@@ -40,6 +43,8 @@ export function launch(key, clientCode, ctx) {
     "new-campaign-scope",
     "quarterly-review",
     "strategic-thinking",
+    "nct-caption",
+    "build-scope",
   ];
   if (needsKey.includes(key) && ctx.requireApiKey) {
     ctx.requireApiKey().then((ok) => {

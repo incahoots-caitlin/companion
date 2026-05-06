@@ -681,6 +681,11 @@ const WORKFLOW_CARDS = [
     meta: "Festival, venue, touring, capability",
   },
   {
+    key: "build-scope",
+    title: "Build Scope",
+    meta: "SOW in Caitlin's voice (v0.31)",
+  },
+  {
     key: "quarterly-review",
     title: "Quarterly Review",
     meta: "Last 90 days · QBR receipt",
@@ -706,13 +711,25 @@ const WORKFLOW_CARDS = [
     title: "Edit project",
     meta: "Update fields, file diff",
   },
+  // v0.31 Block F — Skills batch 1.
+  // NCT caption only surfaces on the NCT client view; gated by client_code.
+  {
+    key: "nct-caption",
+    title: "Draft NCT social caption",
+    meta: "Venue voice · 3 variants",
+    only_for_client: "NCT",
+  },
 ];
 
 function renderWorkflows(state) {
   const root = el("section", { class: "client-section", "data-section": "workflows" });
   root.appendChild(el("div", { class: "section-label" }, ["Workflows for this client"]));
   const grid = el("div", { class: "client-shortcut-grid" });
-  WORKFLOW_CARDS.forEach((w) => {
+  // v0.31: cards may declare `only_for_client` to gate per-client. When
+  // set, the card only renders for the matching client code (e.g. the
+  // NCT caption writer is NCT-only).
+  const code = (state.code || "").toUpperCase();
+  WORKFLOW_CARDS.filter((w) => !w.only_for_client || w.only_for_client === code).forEach((w) => {
     const card = el("button", {
       class: "client-shortcut" + (w.placeholder ? " client-shortcut-placeholder" : ""),
       type: "button",
