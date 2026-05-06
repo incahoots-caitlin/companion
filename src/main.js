@@ -31,6 +31,7 @@ import * as globalSearch from "./search/index.js";
 import * as cfoFetch from "./cfo/fetch.js";
 import * as cfoRender from "./cfo/render.js";
 import { emptyCfoState, shiftMonth as cfoShiftMonth } from "./cfo/state.js";
+import { poller, CADENCE_PRESETS, readCadencePreference, writeCadencePreference } from "./live/poller.js";
 
 // Global state container. Today dashboard owns _state.today; per-client
 // view owns _state.client. Switching clients overwrites _state.client.
@@ -52,43 +53,263 @@ let _chatActive = false;
 // Track whether the per-project view is mounted on top of #client-view.
 let _projectActive = false;
 
-// 60s timer for live-status row, reset on each Today mount.
-let _liveStatusTimer = null;
-// 5-min timer for calendar pulls, reset on each Today mount (v0.24).
-let _calendarTimer = null;
-
+// v0.40 — live mode. Polling is now driven by the central `poller`
+// instance from src/live/poller.js. Sections register themselves on
+// view mount and unregister on view switch. The poller handles
+// foreground/background pause, manual refresh, and per-section error
+// backoff. The legacy clearLiveStatusTimer / clearCalendarTimer names
+// are kept as no-op shims so the surrounding view-switch code still
+// reads cleanly; they delegate to poller.unregisterPrefix.
 function clearLiveStatusTimer() {
-  if (_liveStatusTimer) {
-    clearInterval(_liveStatusTimer);
-    _liveStatusTimer = null;
-  }
+  // v0.40 — drops only the today.* pollers (client/project lifecycles
+  // are managed by their own loaders).
+  poller.unregisterPrefix("today.");
 }
 
 function startLiveStatusTimer() {
-  clearLiveStatusTimer();
-  _liveStatusTimer = setInterval(async () => {
-    if (document.hidden) return; // pause while tab not visible
-    if (document.getElementById("today-view")?.hasAttribute("hidden")) return;
-    await todayFetch.loadLiveStatus(_state.today);
-    todayRender.drawLiveStatusOnly(_state.today);
-  }, 60_000);
+  // Wired from registerTodayPollers() — kept as a stub so the existing
+  // showTodayView path stays the same shape.
 }
 
 function clearCalendarTimer() {
-  if (_calendarTimer) {
-    clearInterval(_calendarTimer);
-    _calendarTimer = null;
-  }
+  // Calendar is now part of the today.* poller bundle and handled by
+  // clearLiveStatusTimer above.
 }
 
 function startCalendarTimer() {
-  clearCalendarTimer();
-  _calendarTimer = setInterval(async () => {
-    if (document.hidden) return;
-    if (document.getElementById("today-view")?.hasAttribute("hidden")) return;
-    await todayFetch.loadCalendar(_state.today);
-    todayRender.draw(_state.today);
-  }, 5 * 60_000);
+  // Calendar is now part of the today.* poller bundle.
+}
+
+// ── Today view: register live pollers ─────────────────────────────────
+//
+// Called from showTodayView and the initial mount. Each section gets its
+// own poller registration so a slow GitHub Actions check doesn't block
+// the workstreams refresh. The data sections share the "data" cadence
+// (default 30s); live status uses "status" cadence (default 10s).
+function registerTodayPollers() {
+  if (!isTauri) return;
+  const lookupRef = { value: null };
+  const ensureLookup = async () => {
+    if (lookupRef.value) return lookupRef.value;
+    lookupRef.value = await rebuildClientLookup();
+    return lookupRef.value;
+  };
+
+  poller.unregisterPrefix("today.");
+
+  poller.register({
+    id: "today.commitments",
+    kind: "data",
+    fetch: async () => {
+      const lookup = await ensureLookup();
+      await todayFetch.loadCommitments(_state.today, lookup);
+    },
+    onAfter: () => {
+      todayRender.drawSection(_state.today, "due-today");
+      todayRender.drawSection(_state.today, "overdue");
+    },
+    getHeader: () => todayRender.sectionHeader("due-today"),
+    getSignature: () => todaySignature("commitments", _state.today),
+  });
+
+  poller.register({
+    id: "today.decisions",
+    kind: "data",
+    fetch: async () => {
+      const lookup = await ensureLookup();
+      await todayFetch.loadDecisions(_state.today, lookup);
+    },
+    onAfter: () => {
+      todayRender.drawSection(_state.today, "decisions");
+    },
+    getHeader: () => todayRender.sectionHeader("decisions"),
+    getSignature: () => todaySignature("decisions", _state.today),
+  });
+
+  poller.register({
+    id: "today.workstreams",
+    kind: "data",
+    fetch: async () => {
+      const lookup = await ensureLookup();
+      await todayFetch.loadWorkstreams(_state.today, lookup);
+    },
+    onAfter: () => {
+      todayRender.drawSection(_state.today, "workstreams");
+    },
+    getHeader: () => todayRender.sectionHeader("workstreams"),
+    getSignature: () => todaySignature("workstreams", _state.today),
+  });
+
+  poller.register({
+    id: "today.receipts_pending",
+    kind: "data",
+    fetch: async () => {
+      const lookup = await ensureLookup();
+      await todayFetch.loadReceiptsPending(_state.today, lookup);
+    },
+    onAfter: () => {
+      todayRender.drawSection(_state.today, "receipts-pending");
+    },
+    getHeader: () => todayRender.sectionHeader("receipts-pending"),
+    getSignature: () => todaySignature("receipts_pending", _state.today),
+  });
+
+  poller.register({
+    id: "today.drift",
+    kind: "data",
+    fetch: async () => {
+      await todayFetch.loadDrift(_state.today);
+    },
+    onAfter: () => {
+      todayRender.drawSection(_state.today, "drift");
+    },
+    getHeader: () => todayRender.sectionHeader("drift"),
+    getSignature: () => todaySignature("drift", _state.today),
+  });
+
+  poller.register({
+    id: "today.notes",
+    // ProjectNotes don't have a today-level surface yet; the per-project
+    // updates feed handles them. Reserved id slot so the brief's "project
+    // notes refresh on Today" line has a registered owner if added later.
+    kind: "data",
+    fetch: async () => {},
+    onAfter: () => {},
+    getHeader: () => null,
+    getSignature: () => "",
+  });
+
+  poller.register({
+    id: "today.live_status",
+    kind: "status",
+    fetch: async () => {
+      await todayFetch.loadLiveStatus(_state.today);
+    },
+    onAfter: () => {
+      todayRender.drawSection(_state.today, "live-status");
+    },
+    getHeader: () => todayRender.sectionHeader("live-status"),
+    getSignature: () => todaySignature("live_status", _state.today),
+  });
+
+  // Calendar moves slowly; bucketed under "data" (30s) which is fine.
+  poller.register({
+    id: "today.calendar",
+    kind: "data",
+    fetch: async () => {
+      await todayFetch.loadCalendar(_state.today);
+    },
+    onAfter: () => {
+      todayRender.drawSection(_state.today, "calendar");
+    },
+    getHeader: () => todayRender.sectionHeader("calendar"),
+    getSignature: () => todaySignature("calendar", _state.today),
+  });
+}
+
+function todaySignature(kind, state) {
+  // Cheap fingerprint per section. Only fields we care about for "did
+  // anything change?" — id + status/due_at/total. Stringified so the
+  // poller's signature compare is a flat ===.
+  try {
+    switch (kind) {
+      case "commitments": {
+        const a = (state.due_today?.commitments || []).map((c) => `${c.id}:${c.status || ""}:${c.due_at || ""}`);
+        const b = (state.overdue || []).map((c) => `${c.id}:${c.status || ""}:${c.due_at || ""}`);
+        return a.join("|") + "#" + b.join("|");
+      }
+      case "decisions":
+        return (state.decisions_open || []).map((d) => `${d.id}:${d.status || ""}:${d.due_date || ""}`).join("|");
+      case "workstreams":
+        return (state.workstreams || []).map((w) => `${w.id}:${w.status || ""}:${w.last_touch_at || ""}`).join("|");
+      case "receipts_pending":
+        return (state.receipts_pending || []).map((r) => `${r.airtable_id}:${r.ticked}/${r.total}`).join("|");
+      case "drift":
+        return (state.drift || []).map((d) => `${d.severity || ""}:${d.title || ""}`).join("|");
+      case "live_status": {
+        const ls = state.live_status || {};
+        return [
+          ls.studio?.version,
+          ls.github_actions?.status,
+          ls.github_actions?.conclusion,
+          ls.contextfor_me?.ok,
+          typeof ls.margin?.margin === "number" ? Math.round(ls.margin.margin) : "",
+        ].join("|");
+      }
+      case "calendar":
+        return (state.calendar?.today || []).map((e) => `${e.id}:${e.start || ""}`).join("|");
+      default:
+        return "";
+    }
+  } catch {
+    return "";
+  }
+}
+
+// ── Per-client view: register live pollers ─────────────────────────────
+function registerClientPollers() {
+  if (!isTauri) return;
+  poller.unregisterPrefix("client.");
+  if (!_state.client?.recordId) {
+    // Header still loading. Caller re-registers once recordId exists.
+    return;
+  }
+
+  const sections = [
+    ["workstreams", clientFetch.loadWorkstreams, "workstreams"],
+    ["decisions", clientFetch.loadDecisions, "decisions"],
+    ["commitments", clientFetch.loadCommitments, "commitments"],
+    ["projects", clientFetch.loadProjects, "projects"],
+    ["receipts", clientFetch.loadReceipts, "receipts"],
+    ["meetings", clientFetch.loadMeetings, "meetings"],
+    ["emails", clientFetch.loadEmails, "emails"],
+    ["drive_files", clientFetch.loadDriveFiles, "drive"],
+    ["slack_activity", clientFetch.loadSlackActivity, "slack"],
+  ];
+
+  sections.forEach(([slot, loader, sectionName]) => {
+    poller.register({
+      id: `client.${slot}`,
+      kind: "data",
+      fetch: async () => loader(_state.client),
+      onAfter: () => clientRender.drawSection(_state.client, sectionName),
+      getHeader: () => clientRender.sectionHeader(sectionName),
+      getSignature: () => clientSignature(slot, _state.client),
+    });
+  });
+}
+
+function clientSignature(slot, state) {
+  try {
+    const arr = state[slot];
+    if (!Array.isArray(arr)) return "";
+    return arr.map((r) => `${r.id || r.code || r.name || ""}`).join("|");
+  } catch {
+    return "";
+  }
+}
+
+// ── Per-project view: register live poller ────────────────────────────
+function registerProjectPollers() {
+  if (!isTauri) return;
+  poller.unregisterPrefix("project.");
+  if (!_state.project?.project_code) return;
+
+  poller.register({
+    id: "project.updates",
+    kind: "data",
+    fetch: async () => {
+      await projectFetch.refreshUpdates(_state.project);
+    },
+    onAfter: () => {
+      projectRender.drawUpdatesSection(_state.project);
+    },
+    getHeader: () => projectRender.sectionHeader("updates"),
+    getSignature: () => {
+      const u = _state.project?.updates || [];
+      return u.map((x) => `${x.kind || ""}:${x.id || x.airtable_id || ""}:${x.created_at || x.timestamp || ""}`).join("|");
+    },
+  });
 }
 
 const STRATEGIC_THINKING = {
@@ -781,6 +1002,48 @@ async function showSettingsModal() {
       "Build each form once in Airtable's web UI, then paste its share URL here. See forms-setup-checklist.md in the Companion folder for click-by-click steps.",
     ]),
     formsRows,
+  ]));
+
+  // v0.40 — refresh cadence preset. Stored in localStorage so the
+  // setting takes effect instantly without an Airtable round-trip on
+  // every change.
+  const cadenceCurrent = readCadencePreference();
+  const cadenceRow = el("div", { class: "settings-row", style: "gap: 8px;" });
+  Object.entries(CADENCE_PRESETS).forEach(([key, preset]) => {
+    const btn = el("button", {
+      class: key === cadenceCurrent ? "button" : "button button-secondary",
+      type: "button",
+      "data-cadence-preset": key,
+    }, [preset.label]);
+    btn.addEventListener("click", () => {
+      writeCadencePreference(key);
+      poller.applyPreset(key);
+      cadenceRow.querySelectorAll("[data-cadence-preset]").forEach((b) => {
+        b.className = b.dataset.cadencePreset === key
+          ? "button"
+          : "button button-secondary";
+      });
+      const meta = key === "live"
+        ? "Live: data 30s, status 10s."
+        : key === "battery_saver"
+        ? "Battery saver: data 2 min, status 30s."
+        : "Off: refresh only when the window comes back into focus.";
+      cadenceMeta.textContent = meta;
+      showToast(`Refresh cadence: ${preset.label}`);
+    });
+    cadenceRow.appendChild(btn);
+  });
+  const cadenceMeta = el("div", { class: "settings-meta" }, [
+    cadenceCurrent === "live"
+      ? "Live: data 30s, status 10s."
+      : cadenceCurrent === "battery_saver"
+      ? "Battery saver: data 2 min, status 30s."
+      : "Off: refresh only when the window comes back into focus.",
+  ]);
+  body.appendChild(el("div", { class: "settings-section" }, [
+    el("div", { class: "settings-label" }, ["Refresh cadence"]),
+    cadenceMeta,
+    cadenceRow,
   ]));
 
   modal.appendChild(body);
@@ -3576,49 +3839,153 @@ function showCommitmentModal(commitment) {
   modal.querySelector(".modal-close").addEventListener("click", close);
   cancelBtn.addEventListener("click", close);
 
-  tickBtn.addEventListener("click", async () => {
-    tickBtn.disabled = true;
-    tickBtn.textContent = "Saving...";
-    try {
-      await invoke("update_airtable_record", {
-        args: {
-          table: "Commitments",
-          record_id: commitment.id, // commitment.id is the Airtable record id
-          fields: { status: "done" },
-        },
-      });
-      showToast("Commitment ticked");
-      close();
-      // Refresh commitments slot.
-      await todayFetch.loadCommitments(_state.today, await rebuildClientLookup());
-      todayRender.draw(_state.today);
-    } catch (e) {
-      tickBtn.disabled = false;
-      tickBtn.textContent = "Mark done";
-      showToast(`Update failed: ${e}`);
-    }
+  tickBtn.addEventListener("click", () => {
+    // v0.40 — optimistic: drop the row from local state, close modal,
+    // fire backend in background. On failure, revert and toast.
+    const snapshot = optimisticRemoveCommitment(commitment.id);
+    close();
+    showToast("Commitment ticked");
+    invoke("update_airtable_record", {
+      args: {
+        table: "Commitments",
+        record_id: commitment.id,
+        fields: { status: "done" },
+      },
+    }).catch((e) => {
+      restoreOptimisticSnapshot(snapshot);
+      showToast(`Failed to save. Try again. (${e})`, { ttl: 5000 });
+    });
   });
 
-  pushBtn.addEventListener("click", async () => {
-    pushBtn.disabled = true;
-    pushBtn.textContent = "Saving...";
-    try {
-      const next = new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
-      await invoke("update_airtable_record", {
-        args: {
-          table: "Commitments",
-          record_id: commitment.id,
-          fields: { next_check_at: next },
-        },
-      });
-      showToast("Pushed 4 hours");
-      close();
-    } catch (e) {
-      pushBtn.disabled = false;
-      pushBtn.textContent = "Push 4 hours";
-      showToast(`Update failed: ${e}`);
-    }
+  pushBtn.addEventListener("click", () => {
+    const next = new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
+    close();
+    showToast("Pushed 4 hours");
+    invoke("update_airtable_record", {
+      args: {
+        table: "Commitments",
+        record_id: commitment.id,
+        fields: { next_check_at: next },
+      },
+    }).catch((e) => {
+      showToast(`Failed to save. Try again. (${e})`, { ttl: 5000 });
+    });
   });
+}
+
+// v0.40 — local optimistic state helpers. Each returns a snapshot that
+// restoreOptimisticSnapshot can rewind on failure. Renders happen
+// synchronously so the UI updates before the network call returns.
+function optimisticRemoveCommitment(recordId) {
+  const before = {
+    today_due: _state.today.due_today?.commitments
+      ? [..._state.today.due_today.commitments]
+      : null,
+    today_overdue: _state.today.overdue ? [..._state.today.overdue] : null,
+    client_commitments: _state.client?.commitments
+      ? [..._state.client.commitments]
+      : null,
+  };
+  if (_state.today.due_today?.commitments) {
+    _state.today.due_today.commitments = _state.today.due_today.commitments
+      .filter((c) => c.id !== recordId);
+  }
+  if (_state.today.overdue) {
+    _state.today.overdue = _state.today.overdue.filter((c) => c.id !== recordId);
+  }
+  if (_state.client?.commitments) {
+    _state.client.commitments = _state.client.commitments.filter(
+      (c) => c.id !== recordId
+    );
+  }
+  todayRender.drawSection(_state.today, "due-today");
+  todayRender.drawSection(_state.today, "overdue");
+  if (_state.client?.code) clientRender.drawSection(_state.client, "commitments");
+  return { kind: "commitment-remove", recordId, before };
+}
+
+function optimisticRemoveDecision(recordId) {
+  const before = {
+    today_open: _state.today.decisions_open ? [..._state.today.decisions_open] : null,
+    today_due: _state.today.due_today?.decisions
+      ? [..._state.today.due_today.decisions]
+      : null,
+    client_decisions: _state.client?.decisions
+      ? [..._state.client.decisions]
+      : null,
+  };
+  if (_state.today.decisions_open) {
+    _state.today.decisions_open = _state.today.decisions_open.filter(
+      (d) => d.id !== recordId
+    );
+  }
+  if (_state.today.due_today?.decisions) {
+    _state.today.due_today.decisions = _state.today.due_today.decisions.filter(
+      (d) => d.id !== recordId
+    );
+  }
+  if (_state.client?.decisions) {
+    _state.client.decisions = _state.client.decisions.filter(
+      (d) => d.id !== recordId
+    );
+  }
+  todayRender.drawSection(_state.today, "decisions");
+  todayRender.drawSection(_state.today, "due-today");
+  if (_state.client?.code) clientRender.drawSection(_state.client, "decisions");
+  return { kind: "decision-remove", recordId, before };
+}
+
+function optimisticRemoveWorkstream(recordId) {
+  const before = {
+    today_workstreams: _state.today.workstreams ? [..._state.today.workstreams] : null,
+    client_workstreams: _state.client?.workstreams
+      ? [..._state.client.workstreams]
+      : null,
+  };
+  if (_state.today.workstreams) {
+    _state.today.workstreams = _state.today.workstreams.filter(
+      (w) => w.id !== recordId
+    );
+  }
+  if (_state.client?.workstreams) {
+    _state.client.workstreams = _state.client.workstreams.filter(
+      (w) => w.id !== recordId
+    );
+  }
+  todayRender.drawSection(_state.today, "workstreams");
+  if (_state.client?.code) clientRender.drawSection(_state.client, "workstreams");
+  return { kind: "workstream-remove", recordId, before };
+}
+
+function restoreOptimisticSnapshot(snapshot) {
+  if (!snapshot) return;
+  const { kind, before } = snapshot;
+  if (kind === "commitment-remove") {
+    if (before.today_due) _state.today.due_today.commitments = before.today_due;
+    if (before.today_overdue) _state.today.overdue = before.today_overdue;
+    if (before.client_commitments && _state.client) {
+      _state.client.commitments = before.client_commitments;
+    }
+    todayRender.drawSection(_state.today, "due-today");
+    todayRender.drawSection(_state.today, "overdue");
+    if (_state.client?.code) clientRender.drawSection(_state.client, "commitments");
+  } else if (kind === "decision-remove") {
+    if (before.today_open) _state.today.decisions_open = before.today_open;
+    if (before.today_due) _state.today.due_today.decisions = before.today_due;
+    if (before.client_decisions && _state.client) {
+      _state.client.decisions = before.client_decisions;
+    }
+    todayRender.drawSection(_state.today, "decisions");
+    todayRender.drawSection(_state.today, "due-today");
+    if (_state.client?.code) clientRender.drawSection(_state.client, "decisions");
+  } else if (kind === "workstream-remove") {
+    if (before.today_workstreams) _state.today.workstreams = before.today_workstreams;
+    if (before.client_workstreams && _state.client) {
+      _state.client.workstreams = before.client_workstreams;
+    }
+    todayRender.drawSection(_state.today, "workstreams");
+    if (_state.client?.code) clientRender.drawSection(_state.client, "workstreams");
+  }
 }
 
 // ─── Today: decision capture modal ───────────────────────────────────
@@ -3680,54 +4047,43 @@ function showDecisionCaptureModal(decision) {
   cancelBtn.addEventListener("click", close);
   decisionInput.focus();
 
-  saveBtn.addEventListener("click", async () => {
+  saveBtn.addEventListener("click", () => {
     const fields = {
       status: "made",
       decided_at: new Date().toISOString(),
       decision: decisionInput.value.trim(),
       reasoning: reasoningInput.value.trim(),
     };
-    saveBtn.disabled = true;
-    saveBtn.textContent = "Saving...";
-    try {
-      await invoke("update_airtable_record", {
-        args: {
-          table: "Decisions",
-          record_id: decision.id,
-          fields,
-        },
-      });
-      showToast("Decision filed");
-      close();
-      await todayFetch.loadDecisions(_state.today, await rebuildClientLookup());
-      todayRender.draw(_state.today);
-    } catch (e) {
-      saveBtn.disabled = false;
-      saveBtn.textContent = "Mark made";
-      showToast(`Update failed: ${e}`);
-    }
+    // v0.40 — optimistic: drop from open list, close, fire backend.
+    const snapshot = optimisticRemoveDecision(decision.id);
+    close();
+    showToast("Decision filed");
+    invoke("update_airtable_record", {
+      args: {
+        table: "Decisions",
+        record_id: decision.id,
+        fields,
+      },
+    }).catch((e) => {
+      restoreOptimisticSnapshot(snapshot);
+      showToast(`Failed to save. Try again. (${e})`, { ttl: 5000 });
+    });
   });
 
-  deferBtn.addEventListener("click", async () => {
-    deferBtn.disabled = true;
-    deferBtn.textContent = "Saving...";
-    try {
-      await invoke("update_airtable_record", {
-        args: {
-          table: "Decisions",
-          record_id: decision.id,
-          fields: { status: "deferred" },
-        },
-      });
-      showToast("Deferred");
-      close();
-      await todayFetch.loadDecisions(_state.today, await rebuildClientLookup());
-      todayRender.draw(_state.today);
-    } catch (e) {
-      deferBtn.disabled = false;
-      deferBtn.textContent = "Defer";
-      showToast(`Update failed: ${e}`);
-    }
+  deferBtn.addEventListener("click", () => {
+    const snapshot = optimisticRemoveDecision(decision.id);
+    close();
+    showToast("Deferred");
+    invoke("update_airtable_record", {
+      args: {
+        table: "Decisions",
+        record_id: decision.id,
+        fields: { status: "deferred" },
+      },
+    }).catch((e) => {
+      restoreOptimisticSnapshot(snapshot);
+      showToast(`Failed to save. Try again. (${e})`, { ttl: 5000 });
+    });
   });
 }
 
@@ -3784,60 +4140,50 @@ function showWorkstreamDetailModal(workstream) {
   modal.querySelector(".modal-close").addEventListener("click", close);
   cancelBtn.addEventListener("click", close);
 
-  doneBtn.addEventListener("click", async () => {
+  doneBtn.addEventListener("click", () => {
     if (!isTauri) {
       showToast("Open the Companion app to update Airtable from here.");
       return;
     }
-    doneBtn.disabled = true;
-    doneBtn.textContent = "Saving...";
-    try {
-      await invoke("update_airtable_record", {
-        args: {
-          table: "Workstreams",
-          record_id: workstream.id,
-          fields: {
-            status: "done",
-            last_touch_at: new Date().toISOString(),
-          },
+    // v0.40 — optimistic: drop the workstream from local state, close,
+    // fire backend in background. Best-effort archive runs after the
+    // primary write succeeds.
+    const snapshot = optimisticRemoveWorkstream(workstream.id);
+    close();
+    showToast("Workstream marked done");
+    invoke("update_airtable_record", {
+      args: {
+        table: "Workstreams",
+        record_id: workstream.id,
+        fields: {
+          status: "done",
+          last_touch_at: new Date().toISOString(),
         },
-      });
-      // v0.27: marking a workstream done also archives its bound chat,
-      // if any. Best-effort — never fails the mark-done flow.
-      if (workstream.code) {
+      },
+    }).then(async () => {
+      // Best-effort archive of any bound chat. Never reverts the
+      // mark-done — if archive fails we just log and move on.
+      if (!workstream.code) return;
+      try {
+        await invoke("archive_conversation", { workstreamCode: workstream.code });
+      } catch (e) {
+        console.warn("archive_conversation failed:", e);
+      }
+      if (
+        _chatActive &&
+        _state.conversation.workstream_code === workstream.code
+      ) {
         try {
-          await invoke("archive_conversation", { workstreamCode: workstream.code });
+          await convFetch.loadConversation(_state.conversation, workstream.code);
+          convRender.draw(_state.conversation, _state.client.workstreams || []);
         } catch (e) {
-          console.warn("archive_conversation failed:", e);
-        }
-        // If the chat surface is currently showing this workstream, flip
-        // it to read-only by reloading the conversation row.
-        if (
-          _chatActive &&
-          _state.conversation.workstream_code === workstream.code
-        ) {
-          try {
-            await convFetch.loadConversation(_state.conversation, workstream.code);
-            convRender.draw(_state.conversation, _state.client.workstreams || []);
-          } catch (e) {
-            console.warn("conversation reload after archive failed:", e);
-          }
+          console.warn("conversation reload after archive failed:", e);
         }
       }
-      showToast("Workstream marked done");
-      close();
-      // Refresh both surfaces — the workstream may show up on either.
-      if (_state.client?.code) {
-        await clientFetch.loadWorkstreams(_state.client);
-        clientRender.draw(_state.client);
-      }
-      await todayFetch.loadWorkstreams(_state.today, await rebuildClientLookup());
-      todayRender.draw(_state.today);
-    } catch (e) {
-      doneBtn.disabled = false;
-      doneBtn.textContent = "Mark done";
-      showToast(`Update failed: ${e}`);
-    }
+    }).catch((e) => {
+      restoreOptimisticSnapshot(snapshot);
+      showToast(`Failed to save. Try again. (${e})`, { ttl: 5000 });
+    });
   });
 }
 
@@ -4788,11 +5134,13 @@ function showTodayView() {
     .forEach((n) => n.setAttribute("hidden", ""));
   const titleEl = document.querySelector(".main-title");
   if (titleEl) titleEl.textContent = "Today";
+  // v0.40 — drop any client/project pollers from the previous view.
+  poller.unregisterPrefix("client.");
+  poller.unregisterPrefix("project.");
   // Re-render with whatever's already in state, then refresh stale slices.
   todayRender.draw(_state.today);
   todayFetch.refreshStale(_state.today).then(() => todayRender.draw(_state.today));
-  startLiveStatusTimer();
-  startCalendarTimer();
+  registerTodayPollers();
 }
 
 // v0.34 Skills restructure: minimal "Skills only" view used for Team
@@ -5395,6 +5743,8 @@ async function loadClientView(clientCode) {
   // Stop the live-status + calendar intervals — they only matter on the Today view.
   clearLiveStatusTimer();
   clearCalendarTimer();
+  // v0.40 — drop any project pollers from a previous project view.
+  poller.unregisterPrefix("project.");
 
   // Switching clients drops any open chat or project surface so the new
   // client's standard view paints from a clean slot.
@@ -5426,6 +5776,9 @@ async function loadClientView(clientCode) {
   // arrays into the slots so render always has something to read.
   await clientFetch.loadAll(_state.client, _state.client.code);
   clientRender.draw(_state.client);
+  // v0.40 — start live polling for this client. Poller pauses on blur,
+  // backs off on errors, and unregisters when we switch view.
+  registerClientPollers();
 
   // Update title to the resolved client name (loadHeader filled it in).
   if (titleEl && _state.client.header?.name) {
@@ -5502,6 +5855,9 @@ async function loadProjectView(projectCode, opts = {}) {
   // Stop dashboard timers; this view is a per-client child.
   clearLiveStatusTimer();
   clearCalendarTimer();
+  // v0.40 — pause client pollers while we're inside a project view.
+  // Project pollers register below.
+  poller.unregisterPrefix("client.");
 
   // Drop chat if it was open. Project view replaces #client-view.
   _chatActive = false;
@@ -5517,6 +5873,9 @@ async function loadProjectView(projectCode, opts = {}) {
 
   await projectFetch.loadProject(_state.project, code);
   projectRender.draw(_state.project);
+  // v0.40 — register the per-project Updates poller. The project view
+  // is otherwise a single feed; the poller refresh keeps it lively.
+  registerProjectPollers();
 
   const titleEl = document.querySelector(".main-title");
   if (titleEl) {
@@ -5543,10 +5902,14 @@ async function loadProjectView(projectCode, opts = {}) {
 function exitProjectToClientView() {
   _projectActive = false;
   projectRender.exitProject();
+  // v0.40 — drop the per-project poller and re-arm client pollers if
+  // we land on a client view.
+  poller.unregisterPrefix("project.");
   // Fall back to Today if we have no client context (e.g. opened from
   // a deep link, then back-pressed).
   if (_state.client?.code) {
     clientRender.draw(_state.client);
+    registerClientPollers();
     const titleEl = document.querySelector(".main-title");
     if (titleEl && _state.client.header?.name) {
       titleEl.textContent = _state.client.header.name;
@@ -5589,9 +5952,10 @@ document.addEventListener("DOMContentLoaded", () => {
   // populate as fetchers resolve. Each fetcher updates _state.today and
   // we redraw once everything settles.
   todayRender.draw(_state.today);
-  todayFetch.loadAll(_state.today).then(() => todayRender.draw(_state.today));
-  startLiveStatusTimer();
-  startCalendarTimer();
+  todayFetch.loadAll(_state.today).then(() => {
+    todayRender.draw(_state.today);
+    registerTodayPollers();
+  });
 
   document.getElementById("today-refresh-btn")?.addEventListener("click", async () => {
     const btn = document.getElementById("today-refresh-btn");
@@ -5599,9 +5963,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const prev = btn.innerHTML;
     btn.innerHTML = "<span aria-hidden=\"true\">…</span>";
     try {
-      await todayFetch.loadAll(_state.today);
-      todayRender.draw(_state.today);
-      showToast("Today refreshed");
+      await poller.refreshAll();
+      showToast("Refreshed");
     } catch (e) {
       showToast(`Refresh failed: ${e}`);
     } finally {
@@ -5610,12 +5973,21 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // Refocus refresh: if the user comes back after >5min, refresh stale
-  // slices. Cheap because each fetcher only fires when stale.
-  window.addEventListener("focus", async () => {
-    if (document.getElementById("today-view")?.hasAttribute("hidden")) return;
-    await todayFetch.refreshStale(_state.today);
-    todayRender.draw(_state.today);
+  // v0.40 — Cmd-R: window-level keydown shortcut for manual refresh of
+  // every registered section. Window-level (not OS-global) so it only
+  // fires when Companion is the focused window. Fires only when the
+  // user isn't typing into a field — letting Cmd-R reload an Airtable
+  // textarea would be hostile.
+  window.addEventListener("keydown", (e) => {
+    const meta = e.metaKey || e.ctrlKey;
+    if (!meta) return;
+    if ((e.key || "").toLowerCase() !== "r") return;
+    const t = e.target;
+    const tag = t?.tagName;
+    const editable = tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable;
+    if (editable) return;
+    e.preventDefault();
+    poller.refreshAll().then(() => showToast("Refreshed"));
   });
 
   // Click handlers dispatched by the Today render layer.
@@ -5811,22 +6183,43 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!_state.project?.project_code) return;
     if (_state.project.composer.saving) return;
 
-    _state.project.composer.saving = true;
-    _state.project.composer.error = null;
+    // v0.40 — optimistic: drop a fake "note" row at the top of the feed
+    // immediately, clear the composer, fire the backend write. On
+    // failure, drop the optimistic row and surface a toast.
+    const optimisticId = `optimistic-${Date.now()}`;
+    const optimisticRow = {
+      kind: "note",
+      id: optimisticId,
+      body,
+      tags,
+      created_at: new Date().toISOString(),
+      _optimistic: true,
+    };
+    const updatesBefore = Array.isArray(_state.project.updates)
+      ? [..._state.project.updates]
+      : [];
+    _state.project.updates = [optimisticRow, ...updatesBefore];
+    _state.project.composer = { body: "", tags: [], saving: false, error: null };
     projectRender.draw(_state.project);
 
     try {
       await projectFetch.createNote(_state.project.project_code, body, tags);
-      // Reset composer and refresh the feed so the new note appears.
-      _state.project.composer = { body: "", tags: [], saving: false, error: null };
+      // Refresh the feed so the optimistic row gets replaced by the
+      // server-canonical record (with proper id and timestamps).
       await projectFetch.refreshUpdates(_state.project);
-      projectRender.draw(_state.project);
+      projectRender.drawUpdatesSection(_state.project);
       showToast("Note saved");
     } catch (err) {
-      _state.project.composer.saving = false;
-      _state.project.composer.error = String(err);
+      // Rewind the optimistic insert and re-populate the composer.
+      _state.project.updates = updatesBefore;
+      _state.project.composer = {
+        body,
+        tags,
+        saving: false,
+        error: String(err),
+      };
       projectRender.draw(_state.project);
-      showToast(`Save failed: ${err}`, { ttl: 5000 });
+      showToast(`Failed to save. Try again. (${err})`, { ttl: 5000 });
     }
   });
 

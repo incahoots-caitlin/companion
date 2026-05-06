@@ -889,27 +889,32 @@ function renderQuickSkills() {
 
 // ── Top-level draw ────────────────────────────────────────────────────
 
+// v0.40 — per-section render registry. Each section's render fn is
+// referenced by name so the live poller can swap a single section in
+// place after a tick instead of redrawing the entire pane.
+const SECTION_RENDERERS = [
+  { name: "due-today", render: renderDueToday },
+  { name: "overdue", render: renderOverdue },
+  { name: "drift", render: renderDrift },
+  { name: "calendar", render: renderCalendar },
+  { name: "workstreams", render: renderWorkstreams },
+  { name: "decisions", render: renderDecisions },
+  { name: "pipeline", render: renderPipeline },
+  { name: "email", render: renderEmail },
+  { name: "slack", render: renderSlack },
+  { name: "live-status", render: renderLiveStatus },
+  { name: "receipts-pending", render: renderReceiptsPending },
+  { name: "morning-briefing", render: renderMorningBriefing },
+];
+
 export function draw(state) {
   const container = document.getElementById("today-sections");
   if (!container) return;
   container.innerHTML = "";
 
-  const sections = [
-    renderDueToday(state),
-    renderOverdue(state),
-    renderDrift(state),
-    renderCalendar(state),
-    renderWorkstreams(state),
-    renderDecisions(state),
-    renderPipeline(state),
-    renderEmail(state),
-    renderSlack(state),
-    renderLiveStatus(state),
-    renderReceiptsPending(state),
-    renderMorningBriefing(state),
-  ];
-  sections.forEach((s) => {
-    if (s) container.appendChild(s);
+  SECTION_RENDERERS.forEach(({ render }) => {
+    const node = render(state);
+    if (node) container.appendChild(node);
   });
 
   // Quick skills strip lives in its own static container (#today-quick-
@@ -918,12 +923,41 @@ export function draw(state) {
   renderQuickSkills();
 }
 
+// v0.40 — single-section redraw. Returns the fresh DOM node (or null
+// if the section is hidden in the current state). Used by the live
+// poller after each tick.
+export function drawSection(state, name) {
+  const container = document.getElementById("today-sections");
+  if (!container) return null;
+  const renderer = SECTION_RENDERERS.find((r) => r.name === name);
+  if (!renderer) return null;
+  const fresh = renderer.render(state);
+  const existing = container.querySelector(`[data-section="${name}"]`);
+  if (fresh && existing) {
+    existing.replaceWith(fresh);
+    return fresh;
+  }
+  if (fresh && !existing) {
+    container.appendChild(fresh);
+    return fresh;
+  }
+  if (!fresh && existing) {
+    existing.remove();
+    return null;
+  }
+  return null;
+}
+
 // Re-render a single live-status row (cheap, called every 60s by main.js).
 export function drawLiveStatusOnly(state) {
+  return drawSection(state, "live-status");
+}
+
+// Look up a section's header element. Used by the poller to paint
+// freshness badges and the pulse animation.
+export function sectionHeader(name) {
   const container = document.getElementById("today-sections");
-  if (!container) return;
-  const existing = container.querySelector('[data-section="live-status"]');
-  const fresh = renderLiveStatus(state);
-  if (existing) existing.replaceWith(fresh);
-  else container.appendChild(fresh);
+  if (!container) return null;
+  const sectionEl = container.querySelector(`[data-section="${name}"]`);
+  return sectionEl?.querySelector(".section-label") || null;
 }

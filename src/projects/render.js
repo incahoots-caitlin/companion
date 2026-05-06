@@ -642,3 +642,28 @@ export function exitProject() {
   const container = document.getElementById("client-view");
   if (container) container.classList.remove("client-view-project");
 }
+
+// v0.40 — replace the Updates section in place. Used by the live poller
+// so the 30s refresh doesn't blow away the composer text or skills row.
+export function drawUpdatesSection(state) {
+  const container = document.getElementById("client-view");
+  if (!container) return null;
+  const fresh = renderUpdates(state);
+  const existing = container.querySelector('[data-section="updates"]');
+  if (fresh && existing) {
+    existing.replaceWith(fresh);
+    return fresh;
+  }
+  if (fresh && !existing) {
+    container.appendChild(fresh);
+    return fresh;
+  }
+  return null;
+}
+
+export function sectionHeader(name) {
+  const container = document.getElementById("client-view");
+  if (!container) return null;
+  const sectionEl = container.querySelector(`[data-section="${name}"]`);
+  return sectionEl?.querySelector(".section-label") || null;
+}

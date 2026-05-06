@@ -729,6 +729,22 @@ function renderSkills(state) {
 
 // ── Top-level draw ────────────────────────────────────────────────────
 
+// v0.40 — per-section render registry. Mirrors the Today layout so the
+// live poller can swap a single section after each tick.
+const SECTION_RENDERERS = [
+  { name: "forms", render: renderClientFormsToolbar },
+  { name: "workstreams", render: renderWorkstreams },
+  { name: "decisions", render: renderDecisions },
+  { name: "commitments", render: renderCommitments },
+  { name: "meetings", render: renderMeetings },
+  { name: "emails", render: renderEmails },
+  { name: "slack", render: renderSlackActivity },
+  { name: "drive", render: renderDriveFiles },
+  { name: "projects", render: renderProjects },
+  { name: "receipts", render: renderReceipts },
+  { name: "skills", render: renderSkills },
+];
+
 export function draw(state) {
   const container = document.getElementById("client-view");
   if (!container) return;
@@ -741,21 +757,9 @@ export function draw(state) {
   // collapse cleanly so a brand-new client view stays tidy. Forms
   // toolbar (v0.30) sits at the top so the "send the form" actions
   // are reachable without scrolling.
-  const sections = [
-    renderClientFormsToolbar(state),
-    renderWorkstreams(state),
-    renderDecisions(state),
-    renderCommitments(state),
-    renderMeetings(state),
-    renderEmails(state),
-    renderSlackActivity(state),
-    renderDriveFiles(state),
-    renderProjects(state),
-    renderReceipts(state),
-    renderSkills(state),
-  ];
-  sections.forEach((s) => {
-    if (s) container.appendChild(s);
+  SECTION_RENDERERS.forEach(({ render }) => {
+    const node = render(state);
+    if (node) container.appendChild(node);
   });
 
   // Wire the refresh icon.
@@ -765,6 +769,36 @@ export function draw(state) {
       dispatch("client:refresh-click", { code: state.code })
     );
   }
+}
+
+// v0.40 — replace a single section in place. Used by the live poller.
+export function drawSection(state, name) {
+  const container = document.getElementById("client-view");
+  if (!container) return null;
+  const renderer = SECTION_RENDERERS.find((r) => r.name === name);
+  if (!renderer) return null;
+  const fresh = renderer.render(state);
+  const existing = container.querySelector(`[data-section="${name}"]`);
+  if (fresh && existing) {
+    existing.replaceWith(fresh);
+    return fresh;
+  }
+  if (fresh && !existing) {
+    container.appendChild(fresh);
+    return fresh;
+  }
+  if (!fresh && existing) {
+    existing.remove();
+    return null;
+  }
+  return null;
+}
+
+export function sectionHeader(name) {
+  const container = document.getElementById("client-view");
+  if (!container) return null;
+  const sectionEl = container.querySelector(`[data-section="${name}"]`);
+  return sectionEl?.querySelector(".section-label") || null;
 }
 
 export function drawLoading(code) {
