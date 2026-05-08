@@ -1,11 +1,24 @@
 /* ══════════════════════════════════════════════════
- *  In Cahoots Studio — app-specific layer
+ *  Companion — app-specific layer (v0.42)
  * ══════════════════════════════════════════════════
  * Loads after the design-system files. Keep only
- * Studio-specific surfaces here. Tokens, buttons,
+ * Companion-specific surfaces here. Tokens, buttons,
  * modals, forms, banners, toasts, sidebar, workflow
- * cards, status pills, scrollbar polish, and the
- * empty-state placeholder live in design-system/.
+ * cards, status pills, scrollbar polish, illustrations,
+ * receipt and the empty-state placeholder all live in
+ * design-system/.
+ *
+ * v0.42 changes vs v0.41:
+ *   - Receipt block (~210 lines) extracted to
+ *     design-system/receipt.css
+ *   - v0.41 .settings-status BEM block extracted to
+ *     design-system/status.css with modifier-suffix
+ *     naming (.status-card-neutral / -verified / -failing)
+ *   - Hardcoded font-sizes replaced with --type-* tokens
+ *   - Hardcoded spacing replaced with --space-* tokens
+ *   - Hardcoded colours replaced with brand and status
+ *     tokens
+ *   - Pulse and live-state colours pull from --status-*
  */
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -42,26 +55,25 @@ body {
 }
 
 .client-code {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font: var(--type-label);
   letter-spacing: 0.12em;
   color: var(--text-muted);
   text-transform: uppercase;
-  margin-bottom: 4px;
+  margin-bottom: var(--space-2xs);
 }
 
 .client-name {
-  font-size: 28px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  margin-bottom: 8px;
+  font: var(--type-display);
+  letter-spacing: -0.005em;
+  margin-bottom: var(--space-xs);
+  color: var(--text);
 }
 
 .client-meta {
   display: flex;
   gap: var(--space-md);
   flex-wrap: wrap;
-  font-size: 13px;
+  font: var(--type-body-sm);
   color: var(--text-muted);
 }
 
@@ -87,41 +99,40 @@ body {
 
 .client-shortcut:hover {
   border-color: var(--accent);
-  background: var(--surface2);
+  background: var(--surface-warm);
 }
 
 .client-shortcut-title {
-  font-weight: 500;
-  font-size: 14px;
-  margin-bottom: 2px;
+  font: var(--type-h3);
+  margin-bottom: var(--space-1xs);
 }
 
 .client-shortcut-meta {
-  font-size: 12px;
+  font: var(--type-meta);
   color: var(--text-muted);
 }
 
 .client-projects {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-3xs);
   margin-bottom: var(--space-lg);
 }
 
 .client-project {
   display: flex;
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: var(--space-xs) var(--space-3xs);
   background: var(--surface);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font: var(--type-body-sm);
 }
 
 .client-project-code { font-family: var(--font-mono); color: var(--text-muted); }
 .client-project-name { font-weight: 500; }
 .client-project-status {
-  font-size: 11px;
+  font: var(--type-label);
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -152,7 +163,7 @@ body {
 .client-projects-scroll {
   max-height: 300px;
   overflow-y: auto;
-  padding-right: 4px;
+  padding-right: var(--space-2xs);
 }
 
 .client-project-clickable {
@@ -168,19 +179,19 @@ body {
 
 .client-project-clickable:hover {
   border-color: var(--accent);
-  background: var(--surface2);
+  background: var(--surface-warm);
 }
 
 .client-project-main {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1xs);
   min-width: 0;
   flex: 1;
 }
 
 .client-project-meta {
-  font-size: 11px;
+  font: var(--type-meta);
   color: var(--text-muted);
 }
 
@@ -197,8 +208,8 @@ body {
 }
 
 .sidebar-empty {
-  padding: 4px var(--space-sm);
-  font-size: 12px;
+  padding: var(--space-2xs) var(--space-sm);
+  font: var(--type-meta);
   color: var(--text-muted);
   font-style: italic;
 }
@@ -223,223 +234,7 @@ body {
   overflow-y: auto;
 }
 
-/* ── Receipt rendering ──────────────────────────────── */
-.receipt {
-  background: var(--card-bg);
-  border: 1px solid var(--card-border-color);
-  border-radius: var(--card-radius);
-  padding: var(--card-padding);
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--text);
-}
-
-.receipt-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  border-bottom: 1px dashed var(--border);
-  padding-bottom: var(--space-sm);
-  margin-bottom: var(--space-sm);
-}
-
-.receipt-title {
-  font: var(--type-h3);
-  font-family: var(--font-sans);
-}
-
-.receipt-meta {
-  font: var(--type-meta);
-  color: var(--text-muted);
-}
-
-.receipt-meta-cluster {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.receipt-action-btn {
-  font: var(--type-meta);
-  font-family: var(--font-mono);
-  background: transparent;
-  border: 1px solid var(--border-soft);
-  color: var(--text-muted);
-  padding: 4px 10px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
-}
-
-.receipt-action-btn:hover:not(:disabled) {
-  background: var(--surface2);
-  color: var(--text);
-  border-color: var(--card-border-color-hover);
-}
-
-.receipt-action-btn:disabled {
-  opacity: 0.5;
-  cursor: progress;
-}
-
-.receipt-section-label {
-  font: var(--type-label);
-  text-transform: uppercase;
-  color: var(--text-muted);
-  margin: var(--space-sm) 0 var(--space-xs);
-}
-
-.receipt-item {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--space-sm);
-  padding: 4px 0;
-  align-items: baseline;
-}
-
-.receipt-item-text { color: var(--text); }
-
-.receipt-item-qty {
-  font-family: var(--font-mono);
-  color: var(--text-muted);
-  text-align: right;
-  min-width: 28px;
-}
-
-.receipt-item-task label {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.receipt-item-task input[type="checkbox"] {
-  margin: 0;
-  cursor: pointer;
-  accent-color: var(--accent);
-}
-
-.receipt-item-task.done .task-label {
-  text-decoration: line-through;
-  color: var(--text-muted);
-}
-
-.receipt-divider {
-  border-top: 1px dashed var(--border);
-  margin: var(--space-md) 0;
-}
-
-.receipt-position {
-  text-align: center;
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-size: 16px;
-  color: var(--text-mid);
-  padding: var(--space-md) var(--space-sm);
-  line-height: 1.5;
-}
-
-.receipt-totals {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--space-sm);
-  font-family: var(--font-mono);
-}
-
-.receipt-totals .total {
-  font-weight: 700;
-  border-top: 1px solid var(--text);
-  padding-top: 4px;
-}
-
-.receipt-stamp {
-  text-align: center;
-  font-family: var(--font-sans);
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  color: var(--accent);
-  border: 2px solid var(--accent);
-  border-radius: var(--radius-md);
-  padding: 8px 24px;
-  margin: var(--space-md) auto;
-  width: max-content;
-  transform: rotate(-1.5deg);
-}
-
-.receipt-paid-meta {
-  text-align: center;
-  font: var(--type-meta);
-  font-family: var(--font-mono);
-  color: var(--text-mid);
-  line-height: 1.7;
-}
-
-.receipt-footer {
-  text-align: center;
-  font: var(--type-meta);
-  color: var(--text-muted);
-  font-style: italic;
-  margin-top: var(--space-md);
-  padding-top: var(--space-sm);
-  border-top: 1px dashed var(--border);
-}
-
-.receipt-brand {
-  text-align: center;
-  padding: var(--space-xs) 0 var(--space-sm);
-}
-
-.receipt-wordmark {
-  width: 200px;
-  height: auto;
-  margin: 0 auto;
-  display: block;
-}
-
-.receipt-entity {
-  font: var(--type-meta);
-  font-family: var(--font-sans);
-  color: var(--text-muted);
-  margin-top: 6px;
-  letter-spacing: 0.02em;
-}
-
-.receipt-signoff {
-  text-align: center;
-  margin-top: var(--space-lg);
-  padding-top: var(--space-md);
-  border-top: 1px dashed var(--border);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-
-.receipt-tagline {
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-size: 18px;
-  color: var(--text-mid);
-  transform: rotate(-2deg);
-  margin-bottom: 4px;
-}
-
-.receipt-oslo {
-  width: 110px;
-  height: auto;
-  opacity: 0.85;
-}
-
-.receipt-entity-small {
-  font-family: var(--font-sans);
-  font-size: 10px;
-  color: var(--text-muted);
-  letter-spacing: 0.04em;
-  margin-top: 4px;
-}
+/* Receipt styles → design-system/receipt.css */
 
 /* ── Today dashboard ─────────────────────────────────── */
 .today-sections {
@@ -459,7 +254,7 @@ body {
 }
 
 .section-label-warn {
-  color: var(--red, rgb(220, 38, 38));
+  color: var(--status-error);
 }
 
 .today-section-meta {
@@ -508,7 +303,7 @@ button.today-row {
 .today-row-main {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1xs);
   min-width: 0;
   flex: 1;
 }
@@ -536,7 +331,7 @@ button.today-row {
 }
 
 .today-row-meta {
-  font-size: 12px;
+  font: var(--type-meta);
   color: var(--text-muted);
 }
 
@@ -552,12 +347,14 @@ button.today-row {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-muted);
+  font-feature-settings: 'tnum' on;
 }
 
 .today-row-tick-count {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-muted);
+  font-feature-settings: 'tnum' on;
 }
 
 /* Calendar — collapsible week-ahead block under today's events. */
@@ -567,7 +364,7 @@ button.today-row {
 
 .today-week-ahead-summary {
   cursor: pointer;
-  font-size: 12px;
+  font: var(--type-meta);
   color: var(--text-muted);
   padding: var(--space-xs) 0;
   list-style: none;
@@ -592,29 +389,29 @@ button.today-row {
   text-transform: uppercase;
   color: var(--text-muted);
   padding-top: var(--space-sm);
-  padding-bottom: 2px;
+  padding-bottom: var(--space-1xs);
 }
 
 /* Status pill modifiers — phase colours from Logan's framework. */
 .client-status-pill.status-sprint {
-  background: rgba(234, 88, 12, 0.12);
-  color: rgb(180, 70, 10);
+  background: var(--status-warn-soft);
+  color: var(--accent-dark);
 }
 
 .client-status-pill.status-sustainable {
-  background: rgba(34, 197, 94, 0.12);
-  color: rgb(20, 120, 60);
+  background: var(--status-ok-soft);
+  color: var(--status-ok);
 }
 
 .client-status-pill.status-recovery {
-  background: rgba(59, 130, 246, 0.12);
-  color: rgb(30, 80, 200);
+  background: var(--status-info-soft);
+  color: var(--status-info);
 }
 
 .client-status-pill.status-blocked,
 .client-status-pill.status-warn {
-  background: rgba(220, 38, 38, 0.10);
-  color: rgb(180, 30, 30);
+  background: var(--status-error-soft);
+  color: var(--status-error);
 }
 
 /* Live status grid. */
@@ -652,7 +449,7 @@ button.live-status-row {
 
 .live-status-row.clickable:hover {
   border-color: var(--card-border-color-hover);
-  background: var(--surface2);
+  background: var(--surface-warm);
 }
 
 .live-status-label {
@@ -667,11 +464,12 @@ button.live-status-row {
   font-family: var(--font-mono);
   font-size: 13px;
   color: var(--text);
+  font-feature-settings: 'tnum' on;
 }
 
-.live-status-ok    { color: rgb(20, 120, 60); }
-.live-status-bad   { color: rgb(180, 30, 30); }
-.live-status-warn  { color: rgb(180, 110, 0); }
+.live-status-ok    { color: var(--status-ok); }
+.live-status-bad   { color: var(--status-error); }
+.live-status-warn  { color: var(--accent-dark); }
 .live-status-muted { color: var(--text-muted); }
 
 /* Studio CFO (v0.37 Block F). */
@@ -687,6 +485,7 @@ button.live-status-row {
   color: var(--text);
   min-width: 140px;
   text-align: center;
+  font-feature-settings: 'tnum' on;
 }
 
 .cfo-client-table,
@@ -708,6 +507,7 @@ button.live-status-row {
   font-family: var(--font-mono);
   font-size: 13px;
   color: var(--text);
+  font-feature-settings: 'tnum' on, 'lnum' on;
 }
 
 .cfo-client-code {
@@ -737,6 +537,7 @@ button.live-status-row {
   border-radius: var(--card-radius);
   font-family: var(--font-mono);
   font-size: 13px;
+  font-feature-settings: 'tnum' on, 'lnum' on;
 }
 
 .cfo-creep-project {
@@ -748,9 +549,9 @@ button.live-status-row {
   text-align: right;
 }
 
-.cfo-burn-ok   { color: rgb(20, 120, 60); }
-.cfo-burn-warn { color: rgb(180, 110, 0); }
-.cfo-burn-bad  { color: rgb(180, 30, 30); }
+.cfo-burn-ok   { color: var(--status-ok); }
+.cfo-burn-warn { color: var(--accent-dark); }
+.cfo-burn-bad  { color: var(--status-error); }
 
 /* Briefing block. */
 .today-briefing-body {
@@ -781,7 +582,7 @@ button.live-status-row {
 .workflow-starters-compact .workflow-card-title {
   font: var(--type-body-sm);
   font-weight: 500;
-  margin-bottom: 2px;
+  margin-bottom: var(--space-1xs);
 }
 
 .workflow-starters-compact .workflow-card-meta {
@@ -797,7 +598,7 @@ button.live-status-row {
 /* v0.34: "More skills..." button row under the Today quick-skills strip. */
 .today-skills-overflow-row {
   margin-top: var(--space-sm);
-  padding: 0 var(--section-padding-x, var(--space-md));
+  padding: 0 var(--section-padding-x);
 }
 
 /* Overflow modal: tighter grid + group labels. */
@@ -834,7 +635,7 @@ button.live-status-row {
 }
 
 .button-icon:hover:not(:disabled) {
-  background: var(--surface2);
+  background: var(--surface-warm);
   color: var(--text);
   border-color: var(--card-border-color-hover);
 }
@@ -885,22 +686,21 @@ button.live-status-row {
   color: var(--text-mid);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 11px;
 }
 
 .chat-back-btn {
   background: transparent;
   border: 1px solid var(--card-border-color);
   color: var(--text-mid);
-  padding: 4px 10px;
+  padding: var(--space-2xs) var(--space-3xs);
   border-radius: var(--radius-md);
   cursor: pointer;
-  font-size: 12px;
+  font: var(--type-meta);
   transition: background var(--transition-fast), color var(--transition-fast);
 }
 
 .chat-back-btn:hover {
-  background: var(--surface2);
+  background: var(--surface-warm);
   color: var(--text);
 }
 
@@ -910,7 +710,7 @@ button.live-status-row {
   padding: var(--space-sm);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-2xs);
 }
 
 .chat-rail-item {
@@ -922,16 +722,16 @@ button.live-status-row {
   cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1xs);
   transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .chat-rail-item:hover {
-  background: var(--surface2);
+  background: var(--surface-warm);
 }
 
 .chat-rail-item.is-active {
-  background: var(--surface2);
+  background: var(--surface-warm);
   border-color: var(--card-border-color);
 }
 
@@ -958,7 +758,7 @@ button.live-status-row {
 
 .chat-rail-empty {
   padding: var(--space-md);
-  font-size: 12px;
+  font: var(--type-meta);
   color: var(--text-mid);
 }
 
@@ -984,28 +784,28 @@ button.live-status-row {
 .chat-header-title {
   font: var(--type-h3);
   color: var(--text);
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1xs);
 }
 
 .chat-header-action {
   background: transparent;
   border: 1px solid var(--card-border-color);
   color: var(--text-mid);
-  padding: 4px 10px;
+  padding: var(--space-2xs) var(--space-3xs);
   border-radius: var(--radius-md);
   cursor: pointer;
-  font-size: 12px;
+  font: var(--type-meta);
 }
 
 .chat-header-action:hover {
-  background: var(--surface2);
+  background: var(--surface-warm);
   color: var(--text);
 }
 
 .chat-header-meta {
   display: flex;
   gap: var(--space-sm);
-  font-size: 12px;
+  font: var(--type-meta);
   color: var(--text-mid);
   align-items: center;
 }
@@ -1018,9 +818,9 @@ button.live-status-row {
 }
 
 .chat-header-archived {
-  background: var(--surface2);
+  background: var(--surface-warm);
   color: var(--text-mid);
-  padding: 2px 8px;
+  padding: var(--space-1xs) var(--space-xs);
   border-radius: var(--radius-sm);
   font-size: 11px;
   text-transform: uppercase;
@@ -1038,7 +838,7 @@ button.live-status-row {
 
 .chat-empty {
   color: var(--text-mid);
-  font-size: 13px;
+  font: var(--type-body-sm);
   padding: var(--space-md);
   text-align: center;
 }
@@ -1052,7 +852,7 @@ button.live-status-row {
   max-width: 720px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1xs);
 }
 
 .chat-msg-user {
@@ -1074,7 +874,7 @@ button.live-status-row {
 }
 
 .chat-msg-user .chat-msg-body {
-  background: var(--surface2);
+  background: var(--surface-warm);
   color: var(--text);
   border: 1px solid var(--card-border-color);
 }
@@ -1121,7 +921,8 @@ button.live-status-row {
 
 .chat-input:focus {
   outline: none;
-  border-color: var(--card-border-color-hover);
+  border-color: var(--accent);
+  box-shadow: var(--focus-shadow);
 }
 
 .chat-input:disabled {
@@ -1136,9 +937,9 @@ button.live-status-row {
 .chat-archived-banner {
   border-top: 1px solid var(--border-soft);
   padding: var(--space-md) var(--space-lg);
-  background: var(--surface2);
+  background: var(--surface-warm);
   color: var(--text-mid);
-  font-size: 13px;
+  font: var(--type-body-sm);
   text-align: center;
 }
 
@@ -1152,7 +953,7 @@ button.live-status-row {
 .project-layout {
   max-width: 880px;
   margin: 0 auto;
-  padding: var(--space-lg) var(--section-padding-x, var(--space-lg));
+  padding: var(--space-lg) var(--section-padding-x);
   display: flex;
   flex-direction: column;
   gap: var(--space-lg);
@@ -1161,14 +962,14 @@ button.live-status-row {
 .project-loading,
 .project-empty {
   color: var(--text-muted);
-  font-size: 13px;
+  font: var(--type-body-sm);
   padding: var(--space-md) 0;
 }
 
 .project-error {
   color: var(--text-mid);
-  font-size: 12px;
-  background: var(--surface2);
+  font: var(--type-meta);
+  background: var(--surface-warm);
   border-radius: var(--radius-md);
   padding: var(--space-sm) var(--space-md);
 }
@@ -1192,20 +993,18 @@ button.live-status-row {
   border: none;
   color: var(--text-muted);
   cursor: pointer;
-  padding: 4px var(--space-xs);
+  padding: var(--space-2xs) var(--space-xs);
   border-radius: var(--radius-md);
   font: var(--type-body);
 }
 
 .project-back-btn:hover {
-  background: var(--surface2);
+  background: var(--surface-warm);
   color: var(--text);
 }
 
 .project-header-title {
-  font: var(--type-h2, var(--type-body));
-  font-size: 20px;
-  font-weight: 600;
+  font: var(--type-h2);
   color: var(--text);
 }
 
@@ -1214,15 +1013,15 @@ button.live-status-row {
   flex-wrap: wrap;
   gap: var(--space-md);
   color: var(--text-muted);
-  font-size: 12px;
+  font: var(--type-meta);
   align-items: center;
 }
 
 .project-header-code {
   font-family: var(--font-mono);
-  background: var(--surface2);
-  padding: 2px 6px;
-  border-radius: var(--radius-sm, 4px);
+  background: var(--surface-warm);
+  padding: var(--space-1xs) var(--space-3xs);
+  border-radius: var(--radius-sm);
   color: var(--text-mid);
   font-size: 11px;
 }
@@ -1232,9 +1031,9 @@ button.live-status-row {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 10px;
-  background: var(--surface2);
-  padding: 2px 6px;
-  border-radius: var(--radius-sm, 4px);
+  background: var(--surface-warm);
+  padding: var(--space-1xs) var(--space-3xs);
+  border-radius: var(--radius-sm);
 }
 
 .project-header-client {
@@ -1274,13 +1073,14 @@ button.live-status-row {
 
 .project-note-input:focus {
   outline: none;
-  border-color: var(--card-border-color-hover);
+  border-color: var(--accent);
+  box-shadow: var(--focus-shadow);
 }
 
 .project-note-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-3xs);
 }
 
 .project-tag-btn {
@@ -1289,8 +1089,8 @@ button.live-status-row {
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 11px;
-  padding: 3px 8px;
-  border-radius: 999px;
+  padding: var(--space-1xs) var(--space-xs);
+  border-radius: var(--radius-pill);
   cursor: pointer;
   transition: all var(--transition-fast);
 }
@@ -1319,7 +1119,7 @@ button.live-status-row {
 
 .project-note-error {
   color: var(--text-mid);
-  font-size: 12px;
+  font: var(--type-meta);
 }
 
 .project-updates {
@@ -1335,7 +1135,7 @@ button.live-status-row {
   padding: var(--space-sm) var(--space-md);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1xs);
 }
 
 .project-update-header {
@@ -1365,6 +1165,7 @@ button.live-status-row {
 .project-update-ts {
   margin-left: auto;
   font-family: var(--font-mono);
+  font-feature-settings: 'tnum' on;
 }
 
 .project-update-body {
@@ -1387,22 +1188,22 @@ button.live-status-row {
 
 .project-update-meta {
   color: var(--text-muted);
-  font-size: 12px;
+  font: var(--type-meta);
 }
 
 .project-update-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 2px;
+  gap: var(--space-2xs);
+  margin-top: var(--space-1xs);
 }
 
 .project-tag-pill {
   font-family: var(--font-mono);
   font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: var(--surface2);
+  padding: var(--space-1xs) var(--space-3xs);
+  border-radius: var(--radius-pill);
+  background: var(--surface-warm);
   color: var(--text-muted);
   text-transform: lowercase;
 }
@@ -1419,7 +1220,7 @@ button.live-status-row {
 .project-forms-buttons {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-xs, 8px);
+  gap: var(--space-xs);
 }
 
 .project-forms {
@@ -1431,21 +1232,21 @@ button.live-status-row {
 
 .project-forms-meta {
   color: var(--text-muted);
-  font-size: 12px;
-  margin-top: 4px;
+  font: var(--type-meta);
+  margin-top: var(--space-1xs);
 }
 
 #pipeline-view {
-  padding: var(--space-lg, 24px);
+  padding: var(--space-lg);
   display: flex;
   flex-direction: column;
-  gap: var(--space-md, 16px);
+  gap: var(--space-md);
 }
 
 .pipeline-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 8px;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
 }
 
 
@@ -1458,9 +1259,9 @@ button.live-status-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-md, 16px);
-  padding: var(--space-md, 16px);
-  margin-bottom: var(--space-md, 16px);
+  gap: var(--space-md);
+  padding: var(--space-md);
+  margin-bottom: var(--space-md);
   background: var(--surface);
   border: 1px dashed var(--card-border-color);
   border-radius: var(--radius-md);
@@ -1468,12 +1269,36 @@ button.live-status-row {
 
 .handoff-banner-text {
   color: var(--text);
-  font-size: 14px;
-  line-height: 1.4;
+  font: var(--type-body);
 }
 
 .handoff-banner-actions {
   display: flex;
-  gap: var(--space-xs, 8px);
+  gap: var(--space-xs);
   flex-shrink: 0;
+}
+
+/* Settings status block → design-system/status.css.
+   v0.42 renames v0.41's BEM (.settings-status--neutral)
+   to modifier-suffix (.status-card-neutral). The v0.41
+   verify-on-save logic and renderer in main.js map onto
+   the new class names; behaviour stays. */
+
+/* ── Today empty-state hero (v0.42) ──────────────────
+ * Used when a Today section is genuinely empty (no
+ * overdue, no due-today, all caught up). Layered on top
+ * of design-system/illustration.css's .empty-state base. */
+.today-empty-hero {
+  margin: var(--space-md) var(--section-padding-x);
+}
+
+.today-empty-hero .empty-state-text {
+  font: var(--type-h2);
+  color: var(--text);
+}
+
+.today-empty-hero .empty-state-text-meta {
+  font: var(--type-body-sm);
+  color: var(--text-muted);
+  margin-top: var(--space-xs);
 }

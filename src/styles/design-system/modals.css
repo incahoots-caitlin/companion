@@ -1,9 +1,9 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Modals
+ *  Design system — Modals (v0.42 brand alignment)
  * ══════════════════════════════════════════════════
- * The modal pattern Studio's six workflows use today.
- * Cleaner and lighter than Context's older .modal-box
- * (which stays in main.css for legacy surfaces).
+ * Modal title is now ABC Otto serif. Soft, warm shadow
+ * on the dialog box. Tokenised dimensions
+ * (--modal-max-width / --modal-max-height).
  *
  * Anatomy:
  *   .modal-overlay         — full-screen backdrop
@@ -20,43 +20,13 @@
  *                            directly to .modal need .modal-pad
  *                            wrapper or sit inside .modal-body).
  *       .modal-actions     — footer with Cancel / Run buttons
- *
- * Padding rule (the bug Studio's NCO modal hit):
- *   - .modal-header / .modal-meta / .modal-body / .modal-actions
- *     all carry their own horizontal padding.
- *   - .modal-field-grid carries its own padding.
- *   - Anything else appended directly to .modal MUST be wrapped
- *     in .modal-pad (or use .modal-body) to stay aligned with the
- *     header. A bare <label> appended to .modal sits flush against
- *     the modal edge — that's what produced the "First-call notes"
- *     bug in Studio's New Client Onboarding modal.
- *
- * Use:
- *   <div class="modal-overlay">
- *     <div class="modal" role="dialog">
- *       <div class="modal-header">
- *         <div class="modal-title">New Client</div>
- *         <button class="modal-close" aria-label="Close">×</button>
- *       </div>
- *       <div class="modal-meta">Drop the first-call notes in.</div>
- *       <div class="modal-field-grid">...</div>
- *       <div class="modal-pad">
- *         <label class="form-label">First-call notes</label>
- *         <textarea class="modal-textarea"></textarea>
- *       </div>
- *       <div class="modal-actions">
- *         <button class="button button-secondary">Cancel</button>
- *         <button class="button">Run</button>
- *       </div>
- *     </div>
- *   </div>
  */
 
 .modal-overlay {
   position: fixed;
   inset: 0;
   z-index: var(--z-modal);
-  background: rgba(31, 35, 40, 0.4);
+  background: rgba(0, 0, 0, 0.32);
   backdrop-filter: blur(var(--blur-sm));
   -webkit-backdrop-filter: blur(var(--blur-sm));
   display: flex;
@@ -74,12 +44,10 @@
 .modal {
   background: var(--surface);
   border-radius: var(--radius-lg);
-  box-shadow:
-    0 24px 64px rgba(31, 35, 40, 0.18),
-    0 4px 12px rgba(31, 35, 40, 0.10);
+  box-shadow: var(--shadow-lg);
   width: 100%;
-  max-width: 640px;
-  max-height: 90vh;
+  max-width: var(--modal-max-width);
+  max-height: var(--modal-max-height);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -103,7 +71,8 @@
 
 .modal-title {
   font: var(--type-h2);
-  letter-spacing: -0.01em;
+  letter-spacing: -0.005em;
+  color: var(--text);
 }
 
 .modal-close {
@@ -112,7 +81,7 @@
   font-size: 22px;
   color: var(--text-muted);
   cursor: pointer;
-  padding: 0 4px;
+  padding: 0 var(--space-2xs);
   line-height: 1;
   transition: color var(--transition-fast);
 }
@@ -164,7 +133,7 @@
 
 .modal-textarea:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  box-shadow: var(--focus-shadow);
 }
 
 .modal-textarea::placeholder {
@@ -191,7 +160,7 @@
 .modal-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-2xs);
 }
 
 @media (max-width: 540px) {
@@ -213,9 +182,7 @@
 
 /* If a child of .modal is a bare <label>, .form-label, .settings-label
    or text node directly under .modal (not wrapped), give it the
-   header's horizontal padding so it doesn't sit flush. This is the
-   safety net for the NCO bug — but the proper fix is to wrap such
-   children in .modal-pad or .modal-body. */
+   header's horizontal padding so it doesn't sit flush. */
 .modal > label,
 .modal > .form-label,
 .modal > .settings-label {

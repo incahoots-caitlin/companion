@@ -1,12 +1,16 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Animations (v0.40 live mode)
+ *  Design system — Animations (v0.42 brand alignment)
  * ══════════════════════════════════════════════════
  * Live-mode polling primitives. Used by the poller in
  * src/live/poller.js to communicate freshness on each
  * section header without rerendering the whole pane.
  *
+ * v0.42: pulse colour is now a warm Marigold tint rather
+ * than the v0.40 generic green. Stale and error states
+ * pull from the brand status palette.
+ *
  * Three states:
- *   .section-pulse — green pulse on header for 1.5s
+ *   .section-pulse — Marigold pulse on header for 1.5s
  *                    when the underlying data changed.
  *   .section-stale — greyed timestamp + warning when
  *                    the last poll failed.
@@ -16,13 +20,13 @@
 
 @keyframes section-pulse {
   0%   { background-color: transparent; }
-  20%  { background-color: rgba(22, 163, 74, 0.16); }
+  20%  { background-color: var(--accent-soft); }
   100% { background-color: transparent; }
 }
 
 .section-pulse {
-  animation: section-pulse 1.5s var(--ease-flow, ease-out);
-  border-radius: 4px;
+  animation: section-pulse 1.5s var(--ease-flow);
+  border-radius: var(--radius-sm);
 }
 
 /* Section label gains a wrapping flex layout so the
@@ -31,53 +35,53 @@
 .section-label-row {
   display: inline-flex;
   align-items: baseline;
-  gap: var(--space-xs, 8px);
+  gap: var(--space-xs);
   width: 100%;
 }
 
 .section-updated-badge {
   font: var(--type-meta);
-  color: var(--text-muted, #656D76);
+  color: var(--text-muted);
   font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
   margin-left: auto;
   user-select: none;
-  transition: color 200ms ease;
+  transition: color 200ms var(--ease-soft);
 }
 
 .section-updated-badge.section-stale {
-  color: var(--text-dim, #848D97);
+  color: var(--text-dim);
 }
 
 .section-updated-badge.section-stale::before {
   content: "⚠ ";
-  color: rgb(180, 83, 9);
-  margin-right: 2px;
+  color: var(--accent-dark);
+  margin-right: var(--space-1xs);
 }
 
 .section-updated-badge.section-error::before {
   content: "⚠ ";
-  color: rgb(220, 38, 38);
-  margin-right: 2px;
+  color: var(--status-error);
+  margin-right: var(--space-1xs);
 }
 
 .section-updated-badge.section-error {
-  color: rgb(220, 38, 38);
+  color: var(--status-error);
 }
 
 .section-retry-btn {
   appearance: none;
   background: transparent;
-  border: 1px solid var(--border-soft, rgba(31, 35, 40, 0.08));
-  border-radius: 4px;
-  padding: 2px 8px;
-  margin-left: 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1xs) var(--space-xs);
+  margin-left: var(--space-3xs);
   font: var(--type-meta);
-  color: var(--text-mid, #424A53);
+  color: var(--text-mid);
   cursor: pointer;
 }
 
 .section-retry-btn:hover {
-  background: var(--surface-deep, #F6F8FA);
+  background: var(--surface-warm);
 }

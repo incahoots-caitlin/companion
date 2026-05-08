@@ -99,6 +99,26 @@ const KEYRING_GOOGLE_GRANTED_SCOPES: &str = "google-granted-scopes";
 // the "Last sync" line under the Slack row.
 const KEYRING_SLACK_LAST_SYNC: &str = "slack-oauth-last-sync-at";
 
+// v0.41: per-integration verify-on-save metadata. Each integration gets
+// two Keychain entries — RFC3339 timestamp of the last successful
+// verification, and the human-readable failure reason from the last
+// attempted verification. Settings reads these to render the three-state
+// IntegrationStatus (not configured / verified / failing) without
+// hitting the integration's network on every render. See verify_*
+// helpers below for what counts as "verified".
+const KEYRING_AIRTABLE_LAST_VERIFIED_AT: &str = "airtable-last-verified-at";
+const KEYRING_AIRTABLE_LAST_ERROR: &str = "airtable-last-error";
+const KEYRING_ANTHROPIC_LAST_VERIFIED_AT: &str = "anthropic-last-verified-at";
+const KEYRING_ANTHROPIC_LAST_ERROR: &str = "anthropic-last-error";
+const KEYRING_SLACK_WEBHOOK_LAST_VERIFIED_AT: &str = "slack-webhook-last-verified-at";
+const KEYRING_SLACK_WEBHOOK_LAST_ERROR: &str = "slack-webhook-last-error";
+const KEYRING_SLACK_OAUTH_LAST_VERIFIED_AT: &str = "slack-oauth-last-verified-at";
+const KEYRING_SLACK_OAUTH_LAST_ERROR: &str = "slack-oauth-last-error";
+const KEYRING_GRANOLA_LAST_VERIFIED_AT: &str = "granola-last-verified-at";
+const KEYRING_GRANOLA_LAST_ERROR: &str = "granola-last-error";
+const KEYRING_GOOGLE_LAST_VERIFIED_AT: &str = "google-last-verified-at";
+const KEYRING_GOOGLE_LAST_ERROR: &str = "google-last-error";
+
 // Munbyn reprint paths. Both live in the team-shared Dropbox so Rose
 // also has them, but only Caitlin's Mac has the printer queue named
 // "Munbyn", so reprint will fail soft on Rose's machine.
@@ -287,6 +307,129 @@ fn cache_secret(account: &str, value: &str) {
     }
 }
 
+// ── Integration status (v0.41) ─────────────────────────────────────────
+//
+// Three-state status replaces the binary `bool` returns the v0.40
+// status commands used. Settings can now tell the truth: whether a
+// credential is missing, present-and-verified, or present-but-failing.
+//
+// Each integration's save command (or OAuth callback) runs a cheap
+// verification call against the provider. Success writes a fresh
+// `last_verified_at` and clears any cached error. Failure clears the
+// timestamp and writes the error message. Settings reads from the
+// cached timestamps and never hits the network on open — which keeps
+// the panel snappy and avoids a thundering herd of API calls every
+// time Caitlin glances at it.
+//
+// The `extra` field carries integration-specific metadata that doesn't
+// fit the shared shape: Google's granted scope list, Granola's
+// last_pull_at, Slack OAuth's last_sync_at, OAuth-flow `has_client_id`
+// flags. Frontend reads from here when rendering per-integration
+// extras below the shared status block.
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum IntegrationState {
+    NotConfigured,
+    Verified,
+    Failing,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct IntegrationStatus {
+    state: IntegrationState,
+    // RFC3339 — only set when state == Verified.
+    last_verified_at: Option<String>,
+    // Human-readable; only set when state == Failing.
+    error_reason: Option<String>,
+    // Per-integration extras (Google scopes, Granola last_pull_at, etc).
+    extra: serde_json::Value,
+}
+
+impl IntegrationStatus {
+    fn not_configured_with_extra(extra: serde_json::Value) -> Self {
+        IntegrationStatus {
+            state: IntegrationState::NotConfigured,
+            last_verified_at: None,
+            error_reason: None,
+            extra,
+        }
+    }
+
+    fn verified(last_verified_at: String, extra: serde_json::Value) -> Self {
+        IntegrationStatus {
+            state: IntegrationState::Verified,
+            last_verified_at: Some(last_verified_at),
+            error_reason: None,
+            extra,
+        }
+    }
+
+    fn failing(error_reason: String, extra: serde_json::Value) -> Self {
+        IntegrationStatus {
+            state: IntegrationState::Failing,
+            last_verified_at: None,
+            error_reason: Some(error_reason),
+            extra,
+        }
+    }
+}
+
+// Stamps "we just verified this" by writing now() to the verified-at
+// account and clearing any stale error account.
+fn record_verification_success(verified_at_account: &str, error_account: &str) {
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = oauth::write_keychain(verified_at_account, &now);
+    let _ = oauth::delete_keychain(error_account);
+    cache_secret(verified_at_account, &now);
+    invalidate_cached_secret(error_account);
+}
+
+// Stamps "we tried and it failed" by writing the error reason to the
+// error account and clearing any stale verified-at.
+fn record_verification_failure(
+    verified_at_account: &str,
+    error_account: &str,
+    reason: &str,
+) {
+    let _ = oauth::write_keychain(error_account, reason);
+    let _ = oauth::delete_keychain(verified_at_account);
+    cache_secret(error_account, reason);
+    invalidate_cached_secret(verified_at_account);
+}
+
+fn invalidate_cached_secret(account: &str) {
+    if let Ok(mut guard) = secrets_cache().lock() {
+        guard.remove(account);
+    }
+}
+
+// Reads the cached verified-at and error reason for an integration
+// and folds them into an IntegrationStatus, given the provided
+// "is configured?" check and the per-integration extra payload. Use
+// this in every get_*_status command so the shape stays consistent.
+fn build_status_from_cache(
+    configured: bool,
+    verified_at_account: &str,
+    error_account: &str,
+    extra: serde_json::Value,
+) -> IntegrationStatus {
+    if !configured {
+        return IntegrationStatus::not_configured_with_extra(extra);
+    }
+    let last_verified = oauth::read_keychain(verified_at_account);
+    let last_error = oauth::read_keychain(error_account);
+    if let Some(ts) = last_verified {
+        IntegrationStatus::verified(ts, extra)
+    } else {
+        // Configured but never verified (or last verify failed).
+        IntegrationStatus::failing(
+            last_error.unwrap_or_else(|| "Not yet verified".to_string()),
+            extra,
+        )
+    }
+}
+
 // ── Auth ────────────────────────────────────────────────────────────────
 
 pub(crate) fn read_anthropic_key() -> Option<String> {
@@ -301,13 +444,202 @@ pub(crate) fn read_anthropic_key() -> Option<String> {
     cached_secret(KEYRING_USER)
 }
 
-#[tauri::command]
-fn get_api_key_status() -> bool {
-    read_anthropic_key().is_some()
+// ── Verify-on-save helpers (v0.41) ──────────────────────────────────────
+//
+// Each helper does the cheapest call that proves the credential is
+// actually alive — not just that it exists in Keychain. Returns
+// Result<(), String> so callers can stamp success/failure metadata in
+// one spot. Errors flow through verbatim to the user; the goal is for
+// Settings to surface the real reason ("Invalid API key", "Base not
+// found", "missing scope") rather than pretending everything is fine.
+
+async fn verify_anthropic(api_key: &str) -> Result<(), String> {
+    // GET /v1/models is free and proves the key is valid.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let resp = client
+        .get("https://api.anthropic.com/v1/models")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .send()
+        .await
+        .map_err(|e| format!("Couldn't reach Anthropic: {}", e))?;
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let body = resp.text().await.unwrap_or_default();
+    if status.as_u16() == 401 {
+        return Err("Invalid API key (Anthropic returned 401)".to_string());
+    }
+    Err(format!("Anthropic {}: {}", status.as_u16(), body))
+}
+
+async fn verify_slack_webhook(url: &str) -> Result<(), String> {
+    // Post a single "Companion connection check" message. Slack returns
+    // plain text "ok" on success; anything else means the webhook is
+    // dead, revoked, or the URL is wrong.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let body = serde_json::json!({ "text": "Companion connection check" });
+    let resp = client
+        .post(url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Couldn't reach Slack webhook: {}", e))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if status.is_success() {
+        let trimmed = text.trim();
+        if trimmed.eq_ignore_ascii_case("ok") {
+            return Ok(());
+        }
+        // 200 but body wasn't "ok" — surface what Slack said.
+        return Err(format!("Slack webhook unexpected response: {}", trimmed));
+    }
+    if status.as_u16() == 404 {
+        return Err("Webhook not found (404). The webhook may have been deleted.".to_string());
+    }
+    if status.as_u16() == 410 {
+        return Err("Webhook revoked (410). Generate a new one in Slack.".to_string());
+    }
+    Err(format!("Slack webhook {}: {}", status.as_u16(), text))
+}
+
+async fn verify_airtable(api_key: &str, base_id: &str) -> Result<(), String> {
+    // Hit the meta endpoint — proves PAT + Base ID + scopes in one
+    // shot. 401 = invalid PAT; 403 = missing scope; 404 = base not
+    // found; 422 = malformed.
+    let url = format!("{}/meta/bases/{}/tables", AIRTABLE_API, base_id);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let resp = client
+        .get(&url)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|e| format!("Couldn't reach Airtable: {}", e))?;
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let body = resp.text().await.unwrap_or_default();
+    let snippet = body.chars().take(240).collect::<String>();
+    let reason = match status.as_u16() {
+        401 => "Invalid personal access token (Airtable returned 401)".to_string(),
+        403 => format!(
+            "Token missing required scope. Airtable said: {}",
+            snippet.trim()
+        ),
+        404 => "Base not found. Check the Base ID is correct.".to_string(),
+        422 => format!("Airtable rejected the request: {}", snippet.trim()),
+        code => format!("Airtable {}: {}", code, snippet.trim()),
+    };
+    Err(reason)
+}
+
+async fn verify_slack_oauth() -> Result<(), String> {
+    // auth.test is the cheapest call that proves the user-token is
+    // alive. We don't reach into slack.rs for this because the OAuth
+    // verify path doesn't need the team_id — just yes-or-no liveness.
+    let token = oauth::ensure_fresh_token(&slack::SLACK)
+        .await
+        .map_err(|e| format!("Slack token: {}", e))?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let url = format!("{}/auth.test", slack::SLACK_API_BASE);
+    let resp = client
+        .get(&url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|e| format!("Couldn't reach Slack: {}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Slack {}: {}", status.as_u16(), body));
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Parse: {}", e))?;
+    if body.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+        Ok(())
+    } else {
+        let err = body
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        Err(format!("Slack auth.test failed: {}", err))
+    }
+}
+
+async fn verify_granola() -> Result<(), String> {
+    // Granola exposes only the MCP surface and OAuth metadata; there's
+    // no introspection endpoint we can hit cheaply. Wrapping
+    // ensure_fresh_token covers the failure modes that matter most:
+    // expired access token + revoked refresh token = surfaces here.
+    // If Caitlin's refresh token is alive, we treat the integration as
+    // verified; the next pull will fail loud if the token is somehow
+    // accepted but rejected by MCP.
+    oauth::ensure_fresh_token(&granola::GRANOLA)
+        .await
+        .map_err(|e| format!("Granola token refresh failed: {}", e))?;
+    Ok(())
+}
+
+async fn verify_google() -> Result<(), String> {
+    // userinfo is the canonical liveness probe for Google OAuth tokens.
+    let token = oauth::ensure_fresh_token(&google::GOOGLE)
+        .await
+        .map_err(|e| format!("Google token: {}", e))?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let resp = client
+        .get("https://www.googleapis.com/oauth2/v3/userinfo")
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|e| format!("Couldn't reach Google: {}", e))?;
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let body = resp.text().await.unwrap_or_default();
+    let snippet = body.chars().take(240).collect::<String>();
+    match status.as_u16() {
+        401 => Err("Google token revoked or expired (401). Re-authorise.".to_string()),
+        403 => Err(format!(
+            "Google denied the call (403). Required scope may be missing: {}",
+            snippet.trim()
+        )),
+        code => Err(format!("Google {}: {}", code, snippet.trim())),
+    }
 }
 
 #[tauri::command]
-fn save_api_key(key: String) -> Result<(), String> {
+fn get_api_key_status() -> IntegrationStatus {
+    build_status_from_cache(
+        read_anthropic_key().is_some(),
+        KEYRING_ANTHROPIC_LAST_VERIFIED_AT,
+        KEYRING_ANTHROPIC_LAST_ERROR,
+        serde_json::Value::Object(serde_json::Map::new()),
+    )
+}
+
+#[tauri::command]
+async fn save_api_key(key: String) -> Result<IntegrationStatus, String> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
         return Err("Empty key".to_string());
@@ -318,7 +650,23 @@ fn save_api_key(key: String) -> Result<(), String> {
         .set_password(trimmed)
         .map_err(|e| format!("Keychain write error: {}", e))?;
     cache_secret(KEYRING_USER, trimmed);
-    Ok(())
+
+    match verify_anthropic(trimmed).await {
+        Ok(()) => {
+            record_verification_success(
+                KEYRING_ANTHROPIC_LAST_VERIFIED_AT,
+                KEYRING_ANTHROPIC_LAST_ERROR,
+            );
+        }
+        Err(reason) => {
+            record_verification_failure(
+                KEYRING_ANTHROPIC_LAST_VERIFIED_AT,
+                KEYRING_ANTHROPIC_LAST_ERROR,
+                &reason,
+            );
+        }
+    }
+    Ok(get_api_key_status())
 }
 
 fn read_slack_webhook() -> Option<String> {
@@ -326,12 +674,17 @@ fn read_slack_webhook() -> Option<String> {
 }
 
 #[tauri::command]
-fn get_slack_status() -> bool {
-    read_slack_webhook().is_some()
+fn get_slack_status() -> IntegrationStatus {
+    build_status_from_cache(
+        read_slack_webhook().is_some(),
+        KEYRING_SLACK_WEBHOOK_LAST_VERIFIED_AT,
+        KEYRING_SLACK_WEBHOOK_LAST_ERROR,
+        serde_json::Value::Object(serde_json::Map::new()),
+    )
 }
 
 #[tauri::command]
-fn save_slack_webhook(url: String) -> Result<(), String> {
+async fn save_slack_webhook(url: String) -> Result<IntegrationStatus, String> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
         return Err("Empty URL".to_string());
@@ -345,7 +698,23 @@ fn save_slack_webhook(url: String) -> Result<(), String> {
         .set_password(trimmed)
         .map_err(|e| format!("Keychain write error: {}", e))?;
     cache_secret(KEYRING_SLACK, trimmed);
-    Ok(())
+
+    match verify_slack_webhook(trimmed).await {
+        Ok(()) => {
+            record_verification_success(
+                KEYRING_SLACK_WEBHOOK_LAST_VERIFIED_AT,
+                KEYRING_SLACK_WEBHOOK_LAST_ERROR,
+            );
+        }
+        Err(reason) => {
+            record_verification_failure(
+                KEYRING_SLACK_WEBHOOK_LAST_VERIFIED_AT,
+                KEYRING_SLACK_WEBHOOK_LAST_ERROR,
+                &reason,
+            );
+        }
+    }
+    Ok(get_slack_status())
 }
 
 // ── Airtable ───────────────────────────────────────────────────────────
@@ -357,12 +726,20 @@ pub(crate) fn read_airtable_creds() -> Option<(String, String)> {
 }
 
 #[tauri::command]
-fn get_airtable_status() -> bool {
-    read_airtable_creds().is_some()
+fn get_airtable_status() -> IntegrationStatus {
+    build_status_from_cache(
+        read_airtable_creds().is_some(),
+        KEYRING_AIRTABLE_LAST_VERIFIED_AT,
+        KEYRING_AIRTABLE_LAST_ERROR,
+        serde_json::Value::Object(serde_json::Map::new()),
+    )
 }
 
 #[tauri::command]
-fn save_airtable_credentials(api_key: String, base_id: String) -> Result<(), String> {
+async fn save_airtable_credentials(
+    api_key: String,
+    base_id: String,
+) -> Result<IntegrationStatus, String> {
     let key = api_key.trim();
     let base = base_id.trim();
     if key.is_empty() || base.is_empty() {
@@ -381,7 +758,141 @@ fn save_airtable_credentials(api_key: String, base_id: String) -> Result<(), Str
         .map_err(|e| format!("Save base: {}", e))?;
     cache_secret(KEYRING_AIRTABLE_KEY, key);
     cache_secret(KEYRING_AIRTABLE_BASE, base);
-    Ok(())
+
+    match verify_airtable(key, base).await {
+        Ok(()) => {
+            record_verification_success(
+                KEYRING_AIRTABLE_LAST_VERIFIED_AT,
+                KEYRING_AIRTABLE_LAST_ERROR,
+            );
+        }
+        Err(reason) => {
+            record_verification_failure(
+                KEYRING_AIRTABLE_LAST_VERIFIED_AT,
+                KEYRING_AIRTABLE_LAST_ERROR,
+                &reason,
+            );
+        }
+    }
+    Ok(get_airtable_status())
+}
+
+// ── Manual re-verify command (v0.41) ───────────────────────────────────
+//
+// Frontend's "Test again" button on a failing row hits this. Runs the
+// integration's verification helper, stamps the result, and returns the
+// updated status so the row re-renders without a follow-up status call.
+
+#[tauri::command]
+async fn verify_integration(name: String) -> Result<IntegrationStatus, String> {
+    match name.as_str() {
+        "anthropic" => {
+            let key = match read_anthropic_key() {
+                Some(k) => k,
+                None => return Ok(get_api_key_status()),
+            };
+            match verify_anthropic(&key).await {
+                Ok(()) => record_verification_success(
+                    KEYRING_ANTHROPIC_LAST_VERIFIED_AT,
+                    KEYRING_ANTHROPIC_LAST_ERROR,
+                ),
+                Err(reason) => record_verification_failure(
+                    KEYRING_ANTHROPIC_LAST_VERIFIED_AT,
+                    KEYRING_ANTHROPIC_LAST_ERROR,
+                    &reason,
+                ),
+            }
+            Ok(get_api_key_status())
+        }
+        "slack_webhook" => {
+            let url = match read_slack_webhook() {
+                Some(u) => u,
+                None => return Ok(get_slack_status()),
+            };
+            match verify_slack_webhook(&url).await {
+                Ok(()) => record_verification_success(
+                    KEYRING_SLACK_WEBHOOK_LAST_VERIFIED_AT,
+                    KEYRING_SLACK_WEBHOOK_LAST_ERROR,
+                ),
+                Err(reason) => record_verification_failure(
+                    KEYRING_SLACK_WEBHOOK_LAST_VERIFIED_AT,
+                    KEYRING_SLACK_WEBHOOK_LAST_ERROR,
+                    &reason,
+                ),
+            }
+            Ok(get_slack_status())
+        }
+        "airtable" => {
+            let (key, base) = match read_airtable_creds() {
+                Some(c) => c,
+                None => return Ok(get_airtable_status()),
+            };
+            match verify_airtable(&key, &base).await {
+                Ok(()) => record_verification_success(
+                    KEYRING_AIRTABLE_LAST_VERIFIED_AT,
+                    KEYRING_AIRTABLE_LAST_ERROR,
+                ),
+                Err(reason) => record_verification_failure(
+                    KEYRING_AIRTABLE_LAST_VERIFIED_AT,
+                    KEYRING_AIRTABLE_LAST_ERROR,
+                    &reason,
+                ),
+            }
+            Ok(get_airtable_status())
+        }
+        "granola" => {
+            if !oauth::is_connected(&granola::GRANOLA) {
+                return Ok(get_granola_status());
+            }
+            match verify_granola().await {
+                Ok(()) => record_verification_success(
+                    KEYRING_GRANOLA_LAST_VERIFIED_AT,
+                    KEYRING_GRANOLA_LAST_ERROR,
+                ),
+                Err(reason) => record_verification_failure(
+                    KEYRING_GRANOLA_LAST_VERIFIED_AT,
+                    KEYRING_GRANOLA_LAST_ERROR,
+                    &reason,
+                ),
+            }
+            Ok(get_granola_status())
+        }
+        "google" => {
+            if !oauth::is_connected(&google::GOOGLE) {
+                return Ok(get_google_status());
+            }
+            match verify_google().await {
+                Ok(()) => record_verification_success(
+                    KEYRING_GOOGLE_LAST_VERIFIED_AT,
+                    KEYRING_GOOGLE_LAST_ERROR,
+                ),
+                Err(reason) => record_verification_failure(
+                    KEYRING_GOOGLE_LAST_VERIFIED_AT,
+                    KEYRING_GOOGLE_LAST_ERROR,
+                    &reason,
+                ),
+            }
+            Ok(get_google_status())
+        }
+        "slack_oauth" => {
+            if !oauth::is_connected(&slack::SLACK) {
+                return Ok(get_slack_oauth_status());
+            }
+            match verify_slack_oauth().await {
+                Ok(()) => record_verification_success(
+                    KEYRING_SLACK_OAUTH_LAST_VERIFIED_AT,
+                    KEYRING_SLACK_OAUTH_LAST_ERROR,
+                ),
+                Err(reason) => record_verification_failure(
+                    KEYRING_SLACK_OAUTH_LAST_VERIFIED_AT,
+                    KEYRING_SLACK_OAUTH_LAST_ERROR,
+                    &reason,
+                ),
+            }
+            Ok(get_slack_oauth_status())
+        }
+        other => Err(format!("Unknown integration: {}", other)),
+    }
 }
 
 // ── Airtable write helpers (v0.9) ───────────────────────────────────────
@@ -5804,21 +6315,25 @@ async fn reprint_receipt(state: State<'_, DbState>, receipt_id: String) -> Resul
 // the browser flow from here because the call may have come from a
 // modal action mid-typing and Caitlin shouldn't lose her place.
 
-#[derive(Serialize)]
-struct GranolaStatus {
-    connected: bool,
-    has_client_id: bool,
-    last_pull_at: Option<String>,
+fn granola_extra() -> serde_json::Value {
+    serde_json::json!({
+        "has_client_id": oauth::read_keychain(granola::GRANOLA.client_id_keychain_key).is_some(),
+        "last_pull_at": oauth::read_keychain(KEYRING_GRANOLA_LAST_PULL),
+        // Backwards-compat: older callers (today/fetch.js, source-picker)
+        // checked status.connected. Mirror it under extra so they keep
+        // working until they migrate to status.state === "verified".
+        "connected": oauth::is_connected(&granola::GRANOLA),
+    })
 }
 
 #[tauri::command]
-fn get_granola_status() -> GranolaStatus {
-    GranolaStatus {
-        connected: oauth::is_connected(&granola::GRANOLA),
-        has_client_id: oauth::read_keychain(granola::GRANOLA.client_id_keychain_key)
-            .is_some(),
-        last_pull_at: oauth::read_keychain(KEYRING_GRANOLA_LAST_PULL),
-    }
+fn get_granola_status() -> IntegrationStatus {
+    build_status_from_cache(
+        oauth::is_connected(&granola::GRANOLA),
+        KEYRING_GRANOLA_LAST_VERIFIED_AT,
+        KEYRING_GRANOLA_LAST_ERROR,
+        granola_extra(),
+    )
 }
 
 #[tauri::command]
@@ -5831,13 +6346,34 @@ fn save_granola_client_id(client_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn connect_granola() -> Result<(), String> {
-    oauth::start_oauth_flow(&granola::GRANOLA).await
+async fn connect_granola() -> Result<IntegrationStatus, String> {
+    oauth::start_oauth_flow(&granola::GRANOLA).await?;
+    // Verify immediately after the OAuth callback so Settings can
+    // render a fresh "verified just now" stamp without waiting for the
+    // first pull. Failure here is rare (we just successfully exchanged
+    // a code) but we still want to surface it if it happens.
+    match verify_granola().await {
+        Ok(()) => record_verification_success(
+            KEYRING_GRANOLA_LAST_VERIFIED_AT,
+            KEYRING_GRANOLA_LAST_ERROR,
+        ),
+        Err(reason) => record_verification_failure(
+            KEYRING_GRANOLA_LAST_VERIFIED_AT,
+            KEYRING_GRANOLA_LAST_ERROR,
+            &reason,
+        ),
+    }
+    Ok(get_granola_status())
 }
 
 #[tauri::command]
 fn disconnect_granola() -> Result<(), String> {
-    oauth::disconnect(&granola::GRANOLA)
+    oauth::disconnect(&granola::GRANOLA)?;
+    let _ = oauth::delete_keychain(KEYRING_GRANOLA_LAST_VERIFIED_AT);
+    let _ = oauth::delete_keychain(KEYRING_GRANOLA_LAST_ERROR);
+    invalidate_cached_secret(KEYRING_GRANOLA_LAST_VERIFIED_AT);
+    invalidate_cached_secret(KEYRING_GRANOLA_LAST_ERROR);
+    Ok(())
 }
 
 #[derive(Deserialize, Debug)]
@@ -6442,24 +6978,9 @@ async fn pull_granola_transcripts(
 // needing to mirror the Rust struct shape. Empty arrays come back when
 // nothing matches — render layer handles empty-state messaging.
 
-#[derive(Serialize)]
-struct GoogleStatus {
-    connected: bool,
-    has_client_id: bool,
-    last_sync_at: Option<String>,
-    // v0.25: which surfaces this token covers. Settings renders this as
-    // "Calendar, Gmail, Drive" so Caitlin can see at a glance whether
-    // she needs to re-authorise to add a missing surface. Defaults to
-    // ["calendar"] for tokens minted under v0.24 — those need a
-    // re-authorise to upgrade. We assume the full set for any new
-    // connect (the OAuth flow now requests all three).
-    scopes: Vec<String>,
-}
-
-#[tauri::command]
-fn get_google_status() -> GoogleStatus {
+fn google_extra() -> serde_json::Value {
     let connected = oauth::is_connected(&google::GOOGLE);
-    let scopes = if connected {
+    let scopes: Vec<String> = if connected {
         match oauth::read_keychain(KEYRING_GOOGLE_GRANTED_SCOPES) {
             Some(s) if !s.is_empty() => s
                 .split(',')
@@ -6474,13 +6995,25 @@ fn get_google_status() -> GoogleStatus {
     } else {
         Vec::new()
     };
-    GoogleStatus {
-        connected,
-        has_client_id: oauth::read_keychain(google::GOOGLE.client_id_keychain_key)
-            .is_some(),
-        last_sync_at: oauth::read_keychain(KEYRING_GOOGLE_LAST_SYNC),
-        scopes,
-    }
+    serde_json::json!({
+        "has_client_id": oauth::read_keychain(google::GOOGLE.client_id_keychain_key).is_some(),
+        "last_sync_at": oauth::read_keychain(KEYRING_GOOGLE_LAST_SYNC),
+        "scopes": scopes,
+        // Backwards-compat for today/fetch.js + client/fetch.js +
+        // source-picker which still read status.connected and
+        // status.scopes off the top level.
+        "connected": connected,
+    })
+}
+
+#[tauri::command]
+fn get_google_status() -> IntegrationStatus {
+    build_status_from_cache(
+        oauth::is_connected(&google::GOOGLE),
+        KEYRING_GOOGLE_LAST_VERIFIED_AT,
+        KEYRING_GOOGLE_LAST_ERROR,
+        google_extra(),
+    )
 }
 
 #[tauri::command]
@@ -6493,7 +7026,7 @@ fn save_google_client_id(client_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn connect_google() -> Result<(), String> {
+async fn connect_google() -> Result<IntegrationStatus, String> {
     oauth::start_oauth_flow(&google::GOOGLE).await?;
     // Record which surfaces this token covers. v0.25 always asks for
     // Calendar + Gmail + Drive — if the user re-authorises we overwrite
@@ -6502,7 +7035,19 @@ async fn connect_google() -> Result<(), String> {
         KEYRING_GOOGLE_GRANTED_SCOPES,
         "calendar,gmail,drive",
     );
-    Ok(())
+    // Verify immediately after OAuth so Settings shows a fresh stamp.
+    match verify_google().await {
+        Ok(()) => record_verification_success(
+            KEYRING_GOOGLE_LAST_VERIFIED_AT,
+            KEYRING_GOOGLE_LAST_ERROR,
+        ),
+        Err(reason) => record_verification_failure(
+            KEYRING_GOOGLE_LAST_VERIFIED_AT,
+            KEYRING_GOOGLE_LAST_ERROR,
+            &reason,
+        ),
+    }
+    Ok(get_google_status())
 }
 
 #[tauri::command]
@@ -6510,6 +7055,10 @@ fn disconnect_google() -> Result<(), String> {
     oauth::disconnect(&google::GOOGLE)?;
     let _ = oauth::delete_keychain(KEYRING_GOOGLE_LAST_SYNC);
     let _ = oauth::delete_keychain(KEYRING_GOOGLE_GRANTED_SCOPES);
+    let _ = oauth::delete_keychain(KEYRING_GOOGLE_LAST_VERIFIED_AT);
+    let _ = oauth::delete_keychain(KEYRING_GOOGLE_LAST_ERROR);
+    invalidate_cached_secret(KEYRING_GOOGLE_LAST_VERIFIED_AT);
+    invalidate_cached_secret(KEYRING_GOOGLE_LAST_ERROR);
     Ok(())
 }
 
@@ -6769,26 +7318,28 @@ async fn list_drive_recent_for_client(input: serde_json::Value) -> Result<String
 // connected, and the receipt-tick path will skip the webhook post when
 // no webhook URL is set.
 
-#[derive(Serialize)]
-struct SlackOauthStatus {
-    connected: bool,
-    has_client_id: bool,
-    has_client_secret: bool,
-    last_sync_at: Option<String>,
-}
-
-#[tauri::command]
-fn get_slack_oauth_status() -> SlackOauthStatus {
-    SlackOauthStatus {
-        connected: oauth::is_connected(&slack::SLACK),
-        has_client_id: oauth::read_keychain(slack::SLACK.client_id_keychain_key)
-            .is_some(),
-        has_client_secret: slack::SLACK
+fn slack_oauth_extra() -> serde_json::Value {
+    serde_json::json!({
+        "has_client_id": oauth::read_keychain(slack::SLACK.client_id_keychain_key).is_some(),
+        "has_client_secret": slack::SLACK
             .client_secret_keychain_key
             .map(|k| oauth::read_keychain(k).is_some())
             .unwrap_or(false),
-        last_sync_at: oauth::read_keychain(KEYRING_SLACK_LAST_SYNC),
-    }
+        "last_sync_at": oauth::read_keychain(KEYRING_SLACK_LAST_SYNC),
+        // Backwards-compat: today/fetch.js + source-picker still read
+        // status.connected directly. Mirrors the boolean here.
+        "connected": oauth::is_connected(&slack::SLACK),
+    })
+}
+
+#[tauri::command]
+fn get_slack_oauth_status() -> IntegrationStatus {
+    build_status_from_cache(
+        oauth::is_connected(&slack::SLACK),
+        KEYRING_SLACK_OAUTH_LAST_VERIFIED_AT,
+        KEYRING_SLACK_OAUTH_LAST_ERROR,
+        slack_oauth_extra(),
+    )
 }
 
 #[tauri::command]
@@ -6809,14 +7360,35 @@ fn save_slack_oauth_credentials(
 }
 
 #[tauri::command]
-async fn connect_slack() -> Result<(), String> {
-    oauth::start_oauth_flow(&slack::SLACK).await
+async fn connect_slack() -> Result<IntegrationStatus, String> {
+    oauth::start_oauth_flow(&slack::SLACK).await?;
+    // Verify immediately after the OAuth callback so Settings shows a
+    // fresh stamp without waiting for the first list_slack_unreads
+    // call. Failure here would mean Slack handed back a token that
+    // doesn't pass auth.test, which shouldn't happen but we surface
+    // it cleanly if it does.
+    match verify_slack_oauth().await {
+        Ok(()) => record_verification_success(
+            KEYRING_SLACK_OAUTH_LAST_VERIFIED_AT,
+            KEYRING_SLACK_OAUTH_LAST_ERROR,
+        ),
+        Err(reason) => record_verification_failure(
+            KEYRING_SLACK_OAUTH_LAST_VERIFIED_AT,
+            KEYRING_SLACK_OAUTH_LAST_ERROR,
+            &reason,
+        ),
+    }
+    Ok(get_slack_oauth_status())
 }
 
 #[tauri::command]
 fn disconnect_slack() -> Result<(), String> {
     oauth::disconnect(&slack::SLACK)?;
     let _ = oauth::delete_keychain(KEYRING_SLACK_LAST_SYNC);
+    let _ = oauth::delete_keychain(KEYRING_SLACK_OAUTH_LAST_VERIFIED_AT);
+    let _ = oauth::delete_keychain(KEYRING_SLACK_OAUTH_LAST_ERROR);
+    invalidate_cached_secret(KEYRING_SLACK_OAUTH_LAST_VERIFIED_AT);
+    invalidate_cached_secret(KEYRING_SLACK_OAUTH_LAST_ERROR);
     Ok(())
 }
 
@@ -7233,7 +7805,9 @@ pub fn run() {
             cfo_studio_totals,
             cfo_per_client,
             cfo_hour_creep_alerts,
-            cfo_outlook
+            cfo_outlook,
+            // v0.41 — manual re-verify any integration
+            verify_integration
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

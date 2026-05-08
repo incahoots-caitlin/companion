@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Layouts
+ *  Design system — Layouts (v0.42 brand alignment)
  * ══════════════════════════════════════════════════
  * Shared scaffolding both apps use:
  *   - .sidebar with brand mark + items + sections
@@ -8,17 +8,16 @@
  *   - .section-label + .feed
  *   - .empty (empty-state placeholder)
  *
- * Studio uses these names directly. Context's older
- * surfaces use namespaced equivalents (.dashboard-*,
- * .home-*) — those stay in main.css. Net new Context
- * surfaces should reach for these names.
- *
- * Use: see Studio's index.html for the canonical example.
+ * v0.42: sidebar moves to Reed (brand warm grey), main
+ * pane to Cloud (brand off-white). Active sidebar item
+ * is a thin Marigold left border, not a fill. Sidebar
+ * label tokens (--type-sidebar-label) and subitem token
+ * (--type-sidebar-subitem) are now wired through.
  */
 
 /* ── Sidebar ──────────────────────────────────────── */
 .sidebar {
-  background: var(--surface);
+  background: var(--surface2);   /* Reed */
   border-right: 1px solid var(--border-soft);
   padding: var(--space-lg) var(--space-md);
   overflow-y: auto;
@@ -32,7 +31,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
+  gap: var(--space-2xs);
 }
 
 .brand-mark {
@@ -49,7 +48,7 @@
   color: var(--text-muted);
   font-size: 10px;
   font-weight: 500;
-  padding-left: 2px;
+  padding-left: var(--space-1xs);
 }
 
 .sidebar-section {
@@ -61,57 +60,57 @@
 }
 
 .sidebar-label {
-  font-family: var(--font-mono);
+  font: var(--type-sidebar-label);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-muted);
   padding: 0 var(--space-xs);
   margin-bottom: var(--space-xs);
-  font-size: 10.5px;
-  font-weight: 500;
 }
 
 .sidebar-item {
   display: block;
-  padding: 6px var(--space-xs);
+  padding: var(--space-3xs) var(--space-xs);
   border-radius: var(--radius-md);
   color: var(--text-mid);
   text-decoration: none;
   font: var(--type-body);
   cursor: pointer;
+  border-left: 3px solid transparent;
   transition:
     background var(--transition-fast),
-    color var(--transition-fast);
+    color var(--transition-fast),
+    border-left-color var(--transition-fast);
 }
 
 .sidebar-item:hover {
-  background: var(--surface2);
+  background: var(--surface-warm);
   color: var(--text);
 }
 
 .sidebar-item.active {
-  background: var(--surface2);
+  background: var(--surface-warm);
   color: var(--text);
   font-weight: 500;
+  border-left-color: var(--accent);
 }
 
 /* v0.28 Block E: project sub-items expand under their parent client. */
 .sidebar-subitems {
   display: flex;
   flex-direction: column;
-  margin: 2px 0 4px var(--space-md);
+  margin: var(--space-1xs) 0 var(--space-2xs) var(--space-md);
   padding-left: var(--space-xs);
   border-left: 1px solid var(--border-soft);
 }
 
 .sidebar-subitem {
   display: block;
-  padding: 4px var(--space-xs);
-  border-radius: var(--radius-sm, 4px);
+  padding: var(--space-2xs) var(--space-xs);
+  border-radius: var(--radius-sm);
   color: var(--text-muted);
   text-decoration: none;
-  font: var(--type-body);
-  font-size: 12.5px;
+  font: var(--type-sidebar-subitem);
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
@@ -122,12 +121,12 @@
 }
 
 .sidebar-subitem:hover {
-  background: var(--surface2);
+  background: var(--surface-warm);
   color: var(--text);
 }
 
 .sidebar-subitem.active {
-  background: var(--surface2);
+  background: var(--surface-warm);
   color: var(--text);
   font-weight: 500;
 }
@@ -135,7 +134,7 @@
 /* ── Main pane ────────────────────────────────────── */
 .main {
   overflow-y: auto;
-  background: var(--bg);
+  background: var(--bg);   /* Cloud */
 }
 
 .main-header {
@@ -153,8 +152,9 @@
 }
 
 .main-title {
-  font: var(--type-h1);
-  letter-spacing: -0.01em;
+  font: var(--type-display);
+  letter-spacing: -0.005em;
+  color: var(--text);
 }
 
 .header-actions {
@@ -164,13 +164,13 @@
 
 /* ── Section label (eyebrow above a list) ─────────── */
 .section-label {
-  font-family: var(--font-mono);
+  font: var(--type-label);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-muted);
   padding: var(--space-md) var(--section-padding-x) var(--space-xs);
-  font-size: 10.5px;
-  font-weight: 500;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: var(--space-xs);
 }
 
 /* ── Workflow starters (cards grid) ───────────────── */
@@ -201,7 +201,8 @@
 
 .workflow-card-title {
   font: var(--type-h3);
-  margin-bottom: 4px;
+  margin-bottom: var(--space-2xs);
+  color: var(--text);
 }
 
 .workflow-card-meta {
@@ -222,7 +223,7 @@
   padding: var(--space-md);
   text-align: center;
   color: var(--text-muted);
-  font-size: 13px;
+  font: var(--type-body-sm);
   background: var(--surface);
   border: 1px dashed var(--border-soft);
   border-radius: var(--radius-md);
@@ -233,7 +234,7 @@
   padding: var(--space-md);
   text-align: center;
   color: var(--text-muted);
-  font-size: 13px;
+  font: var(--type-body-sm);
   background: var(--surface);
   border: 1px dashed var(--border-soft);
   border-radius: var(--radius-md);
@@ -248,5 +249,5 @@
 .main::-webkit-scrollbar-thumb,
 .sidebar::-webkit-scrollbar-thumb {
   background: var(--border-soft);
-  border-radius: 4px;
+  border-radius: var(--radius-2xs, 4px);
 }

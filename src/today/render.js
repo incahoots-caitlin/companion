@@ -64,6 +64,26 @@ function dispatch(name, detail) {
   document.dispatchEvent(new CustomEvent(name, { detail }));
 }
 
+// v0.42: empty-state hero with cowboys illustration + grass-stroke pattern
+// behind it. Used when a Today section is genuinely empty (clear day,
+// nothing overdue). Once per surface — never repeating, never on row cards.
+function renderEmptyHero(headlineText, metaText) {
+  const cowboys = el("img", {
+    class: "illustration-cowboys illustration-cowboys-cloud",
+    src: "illustrations/cowboys-cloud.png",
+    alt: "",
+    "aria-hidden": "true",
+  });
+  const children = [
+    cowboys,
+    el("div", { class: "empty-state-text" }, [headlineText]),
+  ];
+  if (metaText) {
+    children.push(el("div", { class: "empty-state-text-meta" }, [metaText]));
+  }
+  return el("div", { class: "empty-state today-empty-hero illustration-grass-pattern" }, children);
+}
+
 // ── Section: due today ────────────────────────────────────────────────
 
 function renderDueToday(state) {
@@ -74,7 +94,10 @@ function renderDueToday(state) {
   const decisions = state.due_today?.decisions || [];
 
   if (commitments.length === 0 && decisions.length === 0) {
-    root.appendChild(el("div", { class: "empty" }, ["Nothing due today. Clear day."]));
+    root.appendChild(renderEmptyHero(
+      "Nothing due today.",
+      "Clear day. Maybe go for a walk."
+    ));
     return root;
   }
 

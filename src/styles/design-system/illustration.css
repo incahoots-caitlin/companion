@@ -1,0 +1,112 @@
+/* ══════════════════════════════════════════════════
+ *  Design system — Illustrations (v0.42)
+ * ══════════════════════════════════════════════════
+ * Houses the In Cahoots brand motifs:
+ *   .illustration-cowboys      — two-figures-in-hats, Cloud + Reed bg variants
+ *   .illustration-grass-pattern — grass-stroke texture as low-opacity bg
+ *   .illustration-wordmark     — hand-drawn "iN CAHooTS" mark for sidebar
+ *   .illustration-star         — four-point starburst, inline SVG
+ *
+ * Used as: empty-state hero on Today when no items, splash
+ * on first launch, sidebar header wordmark, decorative
+ * corner chrome on per-client view, loading state in
+ * workflow modals.
+ *
+ * Sizing rule: cowboys at ~80-160px wide for empty states
+ * (rare, never repeating). Grass pattern at 40-60% opacity
+ * behind text. Wordmark sized per surface (sidebar = 100%
+ * of brand area, splash = larger).
+ */
+
+/* ── Cowboys illustration ──────────────────────── */
+.illustration-cowboys {
+  display: block;
+  width: 96px;
+  height: auto;
+  margin: 0 auto;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.illustration-cowboys.illustration-cowboys-cloud {
+  content: url("../../illustrations/cowboys-cloud.png");
+}
+
+.illustration-cowboys.illustration-cowboys-reed {
+  content: url("../../illustrations/cowboys-reed.png");
+}
+
+.illustration-cowboys-sm { width: 64px; }
+.illustration-cowboys-lg { width: 144px; }
+
+/* ── Grass-stroke pattern ──────────────────────── */
+.illustration-grass-pattern {
+  position: relative;
+}
+
+.illustration-grass-pattern::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: url("../../illustrations/grass-wordmark.png");
+  background-repeat: repeat-x;
+  background-position: bottom center;
+  background-size: auto 64px;
+  opacity: 0.32;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.illustration-grass-pattern > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Wordmark (hand-drawn "iN CAHooTS") ──────── */
+.illustration-wordmark {
+  display: block;
+  width: 100%;
+  max-width: 180px;
+  height: auto;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* ── Star (four-point starburst, inline SVG-friendly) ── */
+.illustration-star {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+  color: var(--text);
+}
+
+.illustration-star-sm { width: 12px; height: 12px; }
+.illustration-star-lg { width: 24px; height: 24px; }
+
+/* ── Empty-state surface (cowboys + grass) ──── */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  padding: var(--space-2xl) var(--space-md);
+  text-align: center;
+  border: 1px dashed var(--border-soft);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  position: relative;
+  overflow: hidden;
+}
+
+.empty-state-text {
+  font: var(--type-body);
+  color: var(--text-muted);
+  max-width: 320px;
+}
+
+.empty-state-text-serif {
+  font: var(--type-h2);
+  color: var(--text);
+}

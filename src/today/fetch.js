@@ -234,6 +234,28 @@ export async function loadMorningBriefing(state) {
 // Rust side) so we always read it — render uses it to decide whether
 // to show "Connect Google in Settings" instead of an empty list.
 
+// v0.41: normalise the IntegrationStatus shape into the flat
+// { connected, scopes, last_sync_at, has_client_id } the rest of the
+// today/client render code expects. The new shape carries
+// integration-specific fields under `extra`; legacy code reads them
+// off the top level. This shim keeps render.js etc unchanged.
+function flattenStatus(status) {
+  if (!status) return { connected: false };
+  const extra = status.extra || {};
+  return {
+    state: status.state,
+    last_verified_at: status.last_verified_at,
+    error_reason: status.error_reason,
+    extra,
+    connected: status.state === "verified",
+    scopes: Array.isArray(extra.scopes) ? extra.scopes : [],
+    last_sync_at: extra.last_sync_at || null,
+    last_pull_at: extra.last_pull_at || null,
+    has_client_id: !!extra.has_client_id,
+    has_client_secret: !!extra.has_client_secret,
+  };
+}
+
 export async function loadCalendar(state) {
   const cal = state.calendar || (state.calendar = {
     status: null,
@@ -242,7 +264,7 @@ export async function loadCalendar(state) {
     error: null,
   });
   try {
-    cal.status = await safeInvoke("get_google_status");
+    cal.status = flattenStatus(await safeInvoke("get_google_status"));
   } catch (e) {
     cal.status = { connected: false, has_client_id: false, last_sync_at: null };
   }
@@ -275,7 +297,7 @@ export async function loadCalendar(state) {
   // moved). Cheap second call but keeps the Settings-meta line fresh.
   if (todayRes.status === "fulfilled" && weekRes.status === "fulfilled") {
     cal.error = null;
-    try { cal.status = await safeInvoke("get_google_status"); } catch {}
+    try { cal.status = flattenStatus(await safeInvoke("get_google_status")); } catch {}
   }
   state.last_fetch_at.calendar = Date.now();
 }
@@ -293,7 +315,7 @@ export async function loadEmail(state) {
   // Reuse the calendar-fetched status when fresh; otherwise read.
   let status = state.calendar?.status;
   if (!status) {
-    try { status = await safeInvoke("get_google_status"); }
+    try { status = flattenStatus(await safeInvoke("get_google_status")); }
     catch { status = { connected: false, scopes: [] }; }
   }
   const scopes = Array.isArray(status?.scopes) ? status.scopes : [];
@@ -339,7 +361,7 @@ export async function loadSlack(state) {
     error: null,
   });
   try {
-    slack.status = await safeInvoke("get_slack_oauth_status");
+    slack.status = flattenStatus(await safeInvoke("get_slack_oauth_status"));
   } catch (e) {
     slack.status = { connected: false, has_client_id: false, has_client_secret: false, last_sync_at: null };
   }

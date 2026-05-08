@@ -1,26 +1,20 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Banners
+ *  Design system — Banners (v0.42 brand alignment)
  * ══════════════════════════════════════════════════
  * Top-of-app prompts (API key missing, secrets prompt,
  * onboarding nudge). Studio uses these for the Anthropic
  * key prompt and webhook prompt.
  *
+ * v0.42: warm Dust background (brand) instead of grey ink.
+ * Tokenised paddings.
+ *
  * Classes:
- *   .banner            — base banner (dark fill)
- *   .banner.banner-warn   — amber-tinted
- *   .banner.banner-info   — accent-tinted
+ *   .banner            — base banner (Dust fill)
+ *   .banner.banner-warn   — Marigold-tinted
+ *   .banner.banner-info   — River-tinted
  *   .banner-text       — message text
  *   .banner-input      — inline input
- *   .banner-button     — inline button (use .button.button-secondary
- *                        instead where you can; .banner-button is
- *                        kept for Studio's existing markup)
- *
- * Use:
- *   <div class="banner banner-warn">
- *     <span class="banner-text">Anthropic API key missing.</span>
- *     <input class="banner-input" placeholder="sk-ant-...">
- *     <button class="banner-button">Save</button>
- *   </div>
+ *   .banner-button     — inline button
  */
 
 .banner {
@@ -32,15 +26,15 @@
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  padding: 10px var(--space-md);
-  background: var(--text);
-  color: var(--surface);
+  padding: var(--space-3xs) var(--space-md);
+  background: var(--brand-dust);
+  color: var(--brand-cloud);
   font: var(--type-body-sm);
-  box-shadow: 0 2px 8px rgba(31, 35, 40, 0.12);
+  box-shadow: var(--shadow-md);
 }
 
-.banner.banner-warn { background: var(--text); }
-.banner.banner-info { background: var(--accent); }
+.banner.banner-warn { background: var(--accent-dark); color: #FFFFFF; }
+.banner.banner-info { background: var(--status-info); color: #FFFFFF; }
 
 .banner-text {
   flex: 1;
@@ -48,7 +42,7 @@
 }
 
 .banner-text a {
-  color: var(--surface);
+  color: inherit;
   text-decoration: underline;
   text-decoration-color: rgba(255, 255, 255, 0.4);
 }
@@ -60,11 +54,11 @@
 .banner-input {
   font: var(--type-body-sm);
   font-family: var(--font-mono);
-  padding: 6px 10px;
+  padding: var(--space-3xs) var(--space-3xs);
   border-radius: var(--radius-sm);
   border: 1px solid rgba(255, 255, 255, 0.2);
   background: rgba(255, 255, 255, 0.08);
-  color: var(--surface);
+  color: #FFFFFF;
   min-width: 220px;
   outline: none;
   transition: border-color var(--transition-fast);
@@ -81,7 +75,7 @@
 .banner-button {
   font: var(--type-body-sm);
   font-weight: 500;
-  padding: 6px 12px;
+  padding: var(--space-3xs) var(--space-3xs);
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
@@ -91,5 +85,5 @@
 }
 
 .banner-button:hover {
-  background: var(--surface2);
+  background: var(--surface-warm);
 }

@@ -568,11 +568,26 @@ function showApiKeyBanner() {
   document.getElementById("api-key-save").addEventListener("click", async () => {
     const key = document.getElementById("api-key-input").value.trim();
     if (!key) return showToast("Paste a key first");
+    const btn = document.getElementById("api-key-save");
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Verifying...";
     try {
-      await invoke("save_api_key", { key });
+      const status = await invoke("save_api_key", { key });
       banner.remove();
-      showToast("API key saved");
+      if (status?.state === "verified") {
+        showToast("Anthropic key verified");
+      } else if (status?.state === "failing") {
+        showToast(
+          `Key saved but verification failed: ${status.error_reason || "unknown"}`,
+          { ttl: 9000 }
+        );
+      } else {
+        showToast("API key saved");
+      }
     } catch (e) {
+      btn.disabled = false;
+      btn.textContent = original;
       showToast(`Save failed: ${e}`);
     }
   });
@@ -581,9 +596,16 @@ function showApiKeyBanner() {
 async function ensureApiKey() {
   if (!isTauri) return false;
   try {
-    const has = await invoke("get_api_key_status");
-    if (!has) showApiKeyBanner();
-    return has;
+    // v0.41: get_api_key_status now returns an IntegrationStatus.
+    // The banner only nags when the key is missing — a configured-but-
+    // failing key still lets workflows attempt the call (Anthropic might
+    // have momentarily 401'd; the workflow's own error handling will
+    // surface it). Treat both verified and failing as "key is set"
+    // for banner purposes.
+    const status = await invoke("get_api_key_status");
+    const configured = status && status.state !== "not_configured";
+    if (!configured) showApiKeyBanner();
+    return configured;
   } catch {
     return false;
   }
@@ -631,6 +653,99 @@ function showUpdateBanner(update) {
   });
 }
 
+// ─── Integration status (v0.41) ──────────────────────────────────────
+//
+// Shared renderer for every integration's row in the Settings modal.
+// Reads the IntegrationStatus shape returned by the Rust side
+// (state + last_verified_at + error_reason + extra) and produces a
+// status block that's identical across the six integrations. Per-
+// integration extras (Google scopes, Granola last_pull_at, Slack OAuth
+// last_sync_at) render as additional rows below the shared block.
+//
+// The "Test again" button on a failing row triggers verify_integration
+// on the Rust side, which re-runs the live verification call and
+// re-stamps the metadata. We swap the row in place when the result
+// comes back so the user doesn't need to re-open the modal.
+
+function relativeTime(rfc3339) {
+  if (!rfc3339) return "";
+  try {
+    const d = new Date(rfc3339);
+    if (Number.isNaN(d.getTime())) return rfc3339;
+    const diffMs = Date.now() - d.getTime();
+    const diffSec = Math.max(0, Math.round(diffMs / 1000));
+    if (diffSec < 30) return "just now";
+    if (diffSec < 60) return `${diffSec} seconds ago`;
+    const diffMin = Math.round(diffSec / 60);
+    if (diffMin < 60) return `${diffMin} ${diffMin === 1 ? "minute" : "minutes"} ago`;
+    const diffHr = Math.round(diffMin / 60);
+    if (diffHr < 24) return `${diffHr} ${diffHr === 1 ? "hour" : "hours"} ago`;
+    const diffDay = Math.round(diffHr / 24);
+    if (diffDay < 7) return `${diffDay} ${diffDay === 1 ? "day" : "days"} ago`;
+    return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  } catch (_) {
+    return rfc3339;
+  }
+}
+
+// Build the shared status block for an integration. `name` is the
+// identifier passed to verify_integration ("anthropic", "airtable",
+// "slack_webhook", "slack_oauth", "granola", "google"). `status` is the
+// IntegrationStatus from the Rust side. Returns a DOM node.
+function renderIntegrationStatus(name, status) {
+  const wrap = el("div", { class: "status-card-wrap" });
+  if (!status || status.state === "not_configured") {
+    wrap.appendChild(
+      el("div", { class: "status-card status-card-neutral" }, [
+        "Not configured",
+      ])
+    );
+    return wrap;
+  }
+  if (status.state === "verified") {
+    const ago = status.last_verified_at
+      ? `verified ${relativeTime(status.last_verified_at)}`
+      : "verified";
+    wrap.appendChild(
+      el("div", { class: "status-card status-card-verified" }, [
+        `Connected. ${ago.charAt(0).toUpperCase() + ago.slice(1)}.`,
+      ])
+    );
+    return wrap;
+  }
+  // failing
+  const errorBlock = el("div", { class: "status-card status-card-failing" }, [
+    el("div", { class: "status-card-title" }, ["Connection failing"]),
+    el("div", { class: "status-card-reason" }, [
+      status.error_reason || "Couldn't verify the connection.",
+    ]),
+  ]);
+  const retryBtn = el("button", {
+    class: "button button-secondary status-card-retry",
+    type: "button",
+    "data-verify-integration": name,
+  }, ["Test again"]);
+  retryBtn.addEventListener("click", async (ev) => {
+    ev.preventDefault();
+    if (!isTauri) return;
+    retryBtn.disabled = true;
+    const original = retryBtn.textContent;
+    retryBtn.textContent = "Testing...";
+    try {
+      const fresh = await invoke("verify_integration", { name });
+      const replacement = renderIntegrationStatus(name, fresh);
+      wrap.replaceWith(replacement);
+    } catch (e) {
+      retryBtn.disabled = false;
+      retryBtn.textContent = original;
+      showToast(`Test failed: ${e?.message || e}`);
+    }
+  });
+  errorBlock.appendChild(retryBtn);
+  wrap.appendChild(errorBlock);
+  return wrap;
+}
+
 // ─── Settings modal ──────────────────────────────────────────────────
 async function showSettingsModal() {
   if (document.getElementById("settings-modal")) return;
@@ -643,26 +758,47 @@ async function showSettingsModal() {
     el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
   ]));
 
-  let apiSet = false;
-  let slackSet = false;
-  let airtableSet = false;
-  let granolaStatus = { connected: false, has_client_id: false, last_pull_at: null };
-  let googleStatus = { connected: false, has_client_id: false, last_sync_at: null };
-  let slackOauthStatus = { connected: false, has_client_id: false, has_client_secret: false, last_sync_at: null };
+  // v0.41: every integration uses the IntegrationStatus shape.
+  // { state: "not_configured" | "verified" | "failing",
+  //   last_verified_at: rfc3339 | null,
+  //   error_reason: string | null,
+  //   extra: { ...integration-specific... } }
+  const blankStatus = () => ({
+    state: "not_configured",
+    last_verified_at: null,
+    error_reason: null,
+    extra: {},
+  });
+  let anthropicStatus = blankStatus();
+  let slackWebhookStatus = blankStatus();
+  let airtableStatus = blankStatus();
+  let granolaStatus = blankStatus();
+  let googleStatus = blankStatus();
+  let slackOauthStatus = blankStatus();
   // v0.38: "I am" identity. Defaults to "auto" — read OS user via whoami
   // and map it to a Subcontractor code at runtime.
   let iAmCurrent = "auto";
   let osUser = "";
   if (isTauri) {
-    try { apiSet = await invoke("get_api_key_status"); } catch {}
-    try { slackSet = await invoke("get_slack_status"); } catch {}
-    try { airtableSet = await invoke("get_airtable_status"); } catch {}
+    try { anthropicStatus = await invoke("get_api_key_status"); } catch {}
+    try { slackWebhookStatus = await invoke("get_slack_status"); } catch {}
+    try { airtableStatus = await invoke("get_airtable_status"); } catch {}
     try { granolaStatus = await invoke("get_granola_status"); } catch {}
     try { googleStatus = await invoke("get_google_status"); } catch {}
     try { slackOauthStatus = await invoke("get_slack_oauth_status"); } catch {}
     try { iAmCurrent = await invoke("get_i_am"); } catch {}
     try { osUser = await invoke("whoami_user"); } catch {}
   }
+  // Backwards-compat aliases (used by section copy below). True when the
+  // integration is fully Verified, false when not configured or failing.
+  const isVerified = (s) => s && s.state === "verified";
+  const apiSet = isVerified(anthropicStatus);
+  const slackSet = isVerified(slackWebhookStatus);
+  const airtableSet = isVerified(airtableStatus);
+  // Connected at the OAuth level (state "verified" or "failing" — token
+  // exists either way). We use this for the Connect/Disconnect button
+  // swap. Not Configured = no token yet, so the Connect button shows.
+  const isConfiguredOauth = (s) => s && s.state !== "not_configured";
 
   const body = el("div", { class: "settings-body" });
 
@@ -670,13 +806,14 @@ async function showSettingsModal() {
   body.appendChild(el("div", { class: "settings-section" }, [
     el("div", { class: "settings-label" }, ["Anthropic API key"]),
     el("div", { class: "settings-meta" }, [
-      apiSet ? "Set in Keychain. Paste again to overwrite." : "Required for Strategic Thinking and other workflows.",
+      "Required for Strategic Thinking and other workflows.",
     ]),
+    renderIntegrationStatus("anthropic", anthropicStatus),
     el("div", { class: "settings-row" }, [
       el("input", {
         id: "settings-api-key",
         type: "password",
-        placeholder: "sk-ant-...",
+        placeholder: apiSet ? "(key set, paste again to rotate)" : "sk-ant-...",
         class: "settings-input",
       }),
       el("button", { class: "button", id: "settings-api-save" }, ["Save"]),
@@ -687,15 +824,14 @@ async function showSettingsModal() {
   body.appendChild(el("div", { class: "settings-section" }, [
     el("div", { class: "settings-label" }, ["Slack webhook URL"]),
     el("div", { class: "settings-meta" }, [
-      slackSet
-        ? "Set in Keychain. Paste again to overwrite. on_done hooks on receipt items will post to this webhook's channel."
-        : "Optional. Set this and any task with on_done='slack:#channel' will post when ticked.",
+      "Optional. Save posts a one-line connection check to the webhook's channel so you can confirm it's wired correctly. Receipt-tick on_done hooks post here.",
     ]),
+    renderIntegrationStatus("slack_webhook", slackWebhookStatus),
     el("div", { class: "settings-row" }, [
       el("input", {
         id: "settings-slack-url",
         type: "url",
-        placeholder: "https://hooks.slack.com/services/...",
+        placeholder: slackSet ? "(URL set, paste again to overwrite)" : "https://hooks.slack.com/services/...",
         class: "settings-input",
       }),
       el("button", { class: "button", id: "settings-slack-save" }, ["Save"]),
@@ -706,15 +842,14 @@ async function showSettingsModal() {
   body.appendChild(el("div", { class: "settings-section" }, [
     el("div", { class: "settings-label" }, ["Airtable"]),
     el("div", { class: "settings-meta" }, [
-      airtableSet
-        ? "Connected. Sidebar pulls active clients from your base. Paste again to rotate credentials."
-        : "Connect to your 'In Cahoots Ops' base. Personal access token + base ID. Companion's sidebar will pull active clients on launch.",
+      "Connect to your 'In Cahoots Ops' base. Personal access token + Base ID. Save runs a live check against the Airtable API so you'll know straight away if the token, scope or Base ID are wrong.",
     ]),
+    renderIntegrationStatus("airtable", airtableStatus),
     el("div", { class: "settings-row" }, [
       el("input", {
         id: "settings-airtable-key",
         type: "password",
-        placeholder: "patXXXXXXXX...  (Personal Access Token)",
+        placeholder: airtableSet ? "(PAT set, paste again to rotate)" : "patXXXXXXXX...  (Personal Access Token)",
         class: "settings-input",
       }),
     ]),
@@ -722,7 +857,7 @@ async function showSettingsModal() {
       el("input", {
         id: "settings-airtable-base",
         type: "text",
-        placeholder: "appXXXXXXXX  (Base ID)",
+        placeholder: airtableSet ? "(Base ID set, paste again to overwrite)" : "appXXXXXXXX  (Base ID)",
         class: "settings-input",
       }),
       el("button", { class: "button", id: "settings-airtable-save" }, ["Save"]),
@@ -734,14 +869,20 @@ async function showSettingsModal() {
   // Granola's developer console with redirect URI
   // http://localhost:53682/callback registered), then click Connect
   // to run the browser PKCE flow. Status updates without a refresh.
-  const granolaMeta = granolaStatus.connected
-    ? `Connected. Pull from Granola is live on Monthly Check-in and Quarterly Review.${granolaStatus.last_pull_at ? ` Last pull: ${formatGranolaTimestamp(granolaStatus.last_pull_at)}.` : ""}`
-    : granolaStatus.has_client_id
-      ? "Client ID saved. Click Connect to authorise in your browser."
-      : "Optional. Paste your Granola OAuth client ID (redirect URI: http://localhost:53682/callback), then click Connect.";
+  const granolaExtra = granolaStatus.extra || {};
+  const granolaConnected = isConfiguredOauth(granolaStatus);
+  const granolaHasClientId = !!granolaExtra.has_client_id;
+  let granolaMeta;
+  if (granolaConnected) {
+    granolaMeta = `Pull from Granola is live on Monthly Check-in and Quarterly Review.${granolaExtra.last_pull_at ? ` Last pull: ${formatGranolaTimestamp(granolaExtra.last_pull_at)}.` : ""}`;
+  } else if (granolaHasClientId) {
+    granolaMeta = "Client ID saved. Click Connect to authorise in your browser.";
+  } else {
+    granolaMeta = "Optional. Paste your Granola OAuth client ID (redirect URI: http://localhost:53682/callback), then click Connect.";
+  }
 
   const granolaActions = el("div", { class: "settings-row", style: "margin-top: 8px;" });
-  if (granolaStatus.connected) {
+  if (granolaConnected) {
     granolaActions.appendChild(
       el("button", { class: "button button-secondary", id: "settings-granola-disconnect" }, ["Disconnect"]),
     );
@@ -757,11 +898,12 @@ async function showSettingsModal() {
   body.appendChild(el("div", { class: "settings-section" }, [
     el("div", { class: "settings-label" }, ["Granola integration"]),
     el("div", { class: "settings-meta" }, [granolaMeta]),
+    renderIntegrationStatus("granola", granolaStatus),
     el("div", { class: "settings-row" }, [
       el("input", {
         id: "settings-granola-client-id",
         type: "text",
-        placeholder: granolaStatus.has_client_id ? "(client ID set — paste again to overwrite)" : "Granola OAuth client ID",
+        placeholder: granolaHasClientId ? "(client ID set — paste again to overwrite)" : "Granola OAuth client ID",
         class: "settings-input",
       }),
       el("button", { class: "button button-secondary", id: "settings-granola-save-id" }, ["Save ID"]),
@@ -776,28 +918,31 @@ async function showSettingsModal() {
   // Gmail and Drive in a single OAuth — one client, three scopes. Users
   // upgrading from v0.24 (Calendar only) need to re-authorise once to
   // pick up the Gmail and Drive scopes.
-  const googleScopes = Array.isArray(googleStatus.scopes) ? googleStatus.scopes : [];
+  const googleExtra = googleStatus.extra || {};
+  const googleConnected = isConfiguredOauth(googleStatus);
+  const googleHasClientId = !!googleExtra.has_client_id;
+  const googleScopes = Array.isArray(googleExtra.scopes) ? googleExtra.scopes : [];
   const allScopes = ["calendar", "gmail", "drive"];
   const missingScopes = allScopes.filter((s) => !googleScopes.includes(s));
   const scopeList = googleScopes.length ? googleScopes.join(", ") : "none";
   let googleMeta;
-  if (googleStatus.connected) {
-    const base = `Connected. Scopes: ${scopeList}.`;
-    const lastSync = googleStatus.last_sync_at
-      ? ` Last sync: ${formatGranolaTimestamp(googleStatus.last_sync_at)}.`
+  if (googleConnected) {
+    const base = `Scopes: ${scopeList}.`;
+    const lastSync = googleExtra.last_sync_at
+      ? ` Last sync: ${formatGranolaTimestamp(googleExtra.last_sync_at)}.`
       : "";
     const upgrade = missingScopes.length
       ? ` Re-authorise to add ${missingScopes.join(" + ")}.`
       : "";
     googleMeta = base + lastSync + upgrade;
-  } else if (googleStatus.has_client_id) {
+  } else if (googleHasClientId) {
     googleMeta = "Client ID saved. Click Connect to authorise Calendar, Gmail and Drive in your browser.";
   } else {
     googleMeta = "Optional. Paste a Google OAuth client ID (Desktop app type, redirect URI http://localhost:53682/callback), then click Connect. Enable the Calendar, Gmail and Drive APIs on the Cloud Console project first.";
   }
 
   const googleActions = el("div", { class: "settings-row", style: "margin-top: 8px;" });
-  if (googleStatus.connected) {
+  if (googleConnected) {
     googleActions.appendChild(
       el("button", { class: "button button-secondary", id: "settings-google-disconnect" }, ["Disconnect"]),
     );
@@ -813,11 +958,12 @@ async function showSettingsModal() {
   body.appendChild(el("div", { class: "settings-section" }, [
     el("div", { class: "settings-label" }, ["Google integration"]),
     el("div", { class: "settings-meta" }, [googleMeta]),
+    renderIntegrationStatus("google", googleStatus),
     el("div", { class: "settings-row" }, [
       el("input", {
         id: "settings-google-client-id",
         type: "text",
-        placeholder: googleStatus.has_client_id ? "(client ID set — paste again to overwrite)" : "Google OAuth client ID",
+        placeholder: googleHasClientId ? "(client ID set — paste again to overwrite)" : "Google OAuth client ID",
         class: "settings-input",
       }),
       el("button", { class: "button button-secondary", id: "settings-google-save-id" }, ["Save ID"]),
@@ -833,22 +979,26 @@ async function showSettingsModal() {
   // show recent messages in #client-{slug}. Two-step setup: paste
   // client ID + secret (Slack v2 OAuth requires both, no PKCE), then
   // click Connect.
+  const slackOauthExtra = slackOauthStatus.extra || {};
+  const slackOauthConnected = isConfiguredOauth(slackOauthStatus);
+  const slackOauthHasClientId = !!slackOauthExtra.has_client_id;
+  const slackOauthHasClientSecret = !!slackOauthExtra.has_client_secret;
   let slackOauthMeta;
-  if (slackOauthStatus.connected) {
-    const lastSync = slackOauthStatus.last_sync_at
-      ? ` Last sync: ${formatGranolaTimestamp(slackOauthStatus.last_sync_at)}.`
+  if (slackOauthConnected) {
+    const lastSync = slackOauthExtra.last_sync_at
+      ? ` Last sync: ${formatGranolaTimestamp(slackOauthExtra.last_sync_at)}.`
       : "";
-    slackOauthMeta = `Connected. Slack activity is live on Today and per-client views.${lastSync}`;
-  } else if (slackOauthStatus.has_client_id && slackOauthStatus.has_client_secret) {
+    slackOauthMeta = `Slack activity is live on Today and per-client views.${lastSync}`;
+  } else if (slackOauthHasClientId && slackOauthHasClientSecret) {
     slackOauthMeta = "Credentials saved. Click Connect Slack to authorise in your browser.";
-  } else if (slackOauthStatus.has_client_id) {
+  } else if (slackOauthHasClientId) {
     slackOauthMeta = "Client ID saved. Add the client secret below, then Connect.";
   } else {
     slackOauthMeta = "Optional. Create a Slack app at api.slack.com/apps with redirect URL http://localhost:53682/callback and User Token Scopes: channels:read, channels:history, groups:read, groups:history, users:read. Paste the Client ID + Client Secret below, then Connect.";
   }
 
   const slackOauthActions = el("div", { class: "settings-row", style: "margin-top: 8px;" });
-  if (slackOauthStatus.connected) {
+  if (slackOauthConnected) {
     slackOauthActions.appendChild(
       el("button", { class: "button button-secondary", id: "settings-slack-oauth-disconnect" }, ["Disconnect"]),
     );
@@ -864,11 +1014,12 @@ async function showSettingsModal() {
   body.appendChild(el("div", { class: "settings-section" }, [
     el("div", { class: "settings-label" }, ["Slack integration (read)"]),
     el("div", { class: "settings-meta" }, [slackOauthMeta]),
+    renderIntegrationStatus("slack_oauth", slackOauthStatus),
     el("div", { class: "settings-row" }, [
       el("input", {
         id: "settings-slack-oauth-client-id",
         type: "text",
-        placeholder: slackOauthStatus.has_client_id ? "(client ID set — paste again to overwrite)" : "Slack app Client ID",
+        placeholder: slackOauthHasClientId ? "(client ID set — paste again to overwrite)" : "Slack app Client ID",
         class: "settings-input",
       }),
     ]),
@@ -876,7 +1027,7 @@ async function showSettingsModal() {
       el("input", {
         id: "settings-slack-oauth-client-secret",
         type: "password",
-        placeholder: slackOauthStatus.has_client_secret ? "(client secret set — paste again to overwrite)" : "Slack app Client Secret",
+        placeholder: slackOauthHasClientSecret ? "(client secret set — paste again to overwrite)" : "Slack app Client Secret",
         class: "settings-input",
       }),
       el("button", { class: "button button-secondary", id: "settings-slack-oauth-save-id" }, ["Save"]),
@@ -1058,38 +1209,96 @@ async function showSettingsModal() {
   modal.querySelector(".modal-close").addEventListener("click", close);
   document.getElementById("settings-close").addEventListener("click", close);
 
+  // Re-render the modal in place. Used by both save handlers (so the
+  // status block reflects the verification result) and OAuth handlers
+  // (so the connect/disconnect button swap reflects the new token
+  // state).
+  const reopenSettings = () => { close(); showSettingsModal(); };
+
+  // v0.41: every save handler returns an IntegrationStatus. Toast copy
+  // mirrors the verification result so the user knows immediately
+  // whether their credential is alive — instead of getting "saved" and
+  // then discovering later that the integration is broken.
+  const reportSave = (label, status) => {
+    if (!status) return;
+    if (status.state === "verified") {
+      showToast(`${label} connected`);
+    } else if (status.state === "failing") {
+      showToast(
+        `${label} saved, but verification failed: ${status.error_reason || "unknown error"}`,
+        { ttl: 9000 }
+      );
+    } else {
+      showToast(`${label} saved`);
+    }
+  };
+
   document.getElementById("settings-api-save").addEventListener("click", async () => {
     const key = document.getElementById("settings-api-key").value.trim();
     if (!key) return showToast("Paste a key first");
+    const btn = document.getElementById("settings-api-save");
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Verifying...";
     try {
-      await invoke("save_api_key", { key });
-      showToast("API key saved");
+      const status = await invoke("save_api_key", { key });
       document.getElementById("settings-api-key").value = "";
-    } catch (e) { showToast(`Save failed: ${e}`); }
+      reportSave("Anthropic", status);
+      reopenSettings();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = original;
+      showToast(`Save failed: ${e}`);
+    }
   });
 
   document.getElementById("settings-slack-save").addEventListener("click", async () => {
     const url = document.getElementById("settings-slack-url").value.trim();
     if (!url) return showToast("Paste a URL first");
+    const btn = document.getElementById("settings-slack-save");
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Verifying...";
     try {
-      await invoke("save_slack_webhook", { url });
-      showToast("Slack webhook saved");
+      const status = await invoke("save_slack_webhook", { url });
       document.getElementById("settings-slack-url").value = "";
-    } catch (e) { showToast(`Save failed: ${e}`); }
+      reportSave("Slack webhook", status);
+      reopenSettings();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = original;
+      showToast(`Save failed: ${e}`);
+    }
   });
 
   document.getElementById("settings-airtable-save").addEventListener("click", async () => {
     const apiKey = document.getElementById("settings-airtable-key").value.trim();
     const baseId = document.getElementById("settings-airtable-base").value.trim();
     if (!apiKey || !baseId) return showToast("Both fields required");
+    const btn = document.getElementById("settings-airtable-save");
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Verifying...";
     try {
-      await invoke("save_airtable_credentials", { apiKey, baseId });
-      showToast("Airtable connected");
+      const status = await invoke("save_airtable_credentials", { apiKey, baseId });
       document.getElementById("settings-airtable-key").value = "";
       document.getElementById("settings-airtable-base").value = "";
-      // Refresh the sidebar so the new client list shows up.
-      loadStudioSidebar();
-    } catch (e) { showToast(`Save failed: ${e}`); }
+      reportSave("Airtable", status);
+      // Only refresh the sidebar when the credentials actually verified
+      // — otherwise loadStudioSidebar fires off a list_airtable_clients
+      // call that 401s and shows the misleading "no clients" empty state
+      // (which is the v0.40 bug we're fixing). On failure we leave the
+      // sidebar in its previous state so Caitlin's existing list
+      // doesn't disappear under her.
+      if (status?.state === "verified") {
+        loadStudioSidebar();
+      }
+      reopenSettings();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = original;
+      showToast(`Save failed: ${e}`);
+    }
   });
 
   document.getElementById("settings-i-am-save")?.addEventListener("click", async () => {
@@ -1105,9 +1314,7 @@ async function showSettingsModal() {
   });
 
   // Granola handlers. Re-render the modal in place after state changes
-  // so the connect/disconnect button swap and the meta text update
-  // without requiring a manual reopen.
-  const reopenSettings = () => { close(); showSettingsModal(); };
+  // (uses the reopenSettings helper defined above).
 
   document.getElementById("settings-granola-save-id").addEventListener("click", async () => {
     const clientId = document.getElementById("settings-granola-client-id").value.trim();
@@ -1127,8 +1334,8 @@ async function showSettingsModal() {
     btn.disabled = true;
     btn.textContent = "Authorising...";
     try {
-      await invoke("connect_granola");
-      showToast("Granola connected");
+      const status = await invoke("connect_granola");
+      reportSave("Granola", status);
       reopenSettings();
     } catch (e) {
       btn.disabled = false;
@@ -1172,8 +1379,8 @@ async function showSettingsModal() {
     btn.disabled = true;
     btn.textContent = "Authorising...";
     try {
-      await invoke("connect_google");
-      showToast("Google connected");
+      const status = await invoke("connect_google");
+      reportSave("Google", status);
       reopenSettings();
     } catch (e) {
       btn.disabled = false;
@@ -1219,8 +1426,8 @@ async function showSettingsModal() {
     btn.disabled = true;
     btn.textContent = "Authorising...";
     try {
-      await invoke("connect_slack");
-      showToast("Slack connected");
+      const status = await invoke("connect_slack");
+      reportSave("Slack", status);
       reopenSettings();
     } catch (e) {
       btn.disabled = false;
@@ -6109,7 +6316,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     const ready = await invoke("get_api_key_status");
-    if (!ready) {
+    if (!ready || ready.state === "not_configured") {
       showApiKeyBanner();
       showToast("Set your Anthropic API key first");
       return;
@@ -6407,7 +6614,7 @@ document.addEventListener("DOMContentLoaded", () => {
         return false;
       }
       const ready = await invoke("get_api_key_status");
-      if (!ready) {
+      if (!ready || ready.state === "not_configured") {
         showApiKeyBanner();
         showToast("Set your Anthropic API key first");
         return false;
@@ -6459,7 +6666,7 @@ document.addEventListener("DOMContentLoaded", () => {
           return false;
         }
         const ready = await invoke("get_api_key_status");
-        if (!ready) {
+        if (!ready || ready.state === "not_configured") {
           showApiKeyBanner();
           showToast("Set your Anthropic API key first");
           return false;
@@ -6689,7 +6896,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     const ready = await invoke("get_api_key_status");
-    if (!ready) {
+    if (!ready || ready.state === "not_configured") {
       showApiKeyBanner();
       showToast("Set your Anthropic API key first");
       return;
@@ -6704,7 +6911,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     const ready = await invoke("get_api_key_status");
-    if (!ready) {
+    if (!ready || ready.state === "not_configured") {
       showApiKeyBanner();
       showToast("Set your Anthropic API key first");
       return;
@@ -6718,7 +6925,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     const ready = await invoke("get_api_key_status");
-    if (!ready) {
+    if (!ready || ready.state === "not_configured") {
       showApiKeyBanner();
       showToast("Set your Anthropic API key first");
       return;
@@ -6732,7 +6939,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     const ready = await invoke("get_api_key_status");
-    if (!ready) {
+    if (!ready || ready.state === "not_configured") {
       showApiKeyBanner();
       showToast("Set your Anthropic API key first");
       return;
@@ -6746,7 +6953,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     const ready = await invoke("get_api_key_status");
-    if (!ready) {
+    if (!ready || ready.state === "not_configured") {
       showApiKeyBanner();
       showToast("Set your Anthropic API key first");
       return;
@@ -6760,7 +6967,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     const ready = await invoke("get_api_key_status");
-    if (!ready) {
+    if (!ready || ready.state === "not_configured") {
       showApiKeyBanner();
       showToast("Set your Anthropic API key first");
       return;
@@ -6777,7 +6984,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     const ready = await invoke("get_api_key_status");
-    if (!ready) {
+    if (!ready || ready.state === "not_configured") {
       showApiKeyBanner();
       showToast("Set your Anthropic API key first");
       return;

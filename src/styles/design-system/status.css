@@ -1,0 +1,75 @@
+/* ══════════════════════════════════════════════════
+ *  Design system — Status card (v0.42)
+ * ══════════════════════════════════════════════════
+ * Replaces the v0.41 inline `.settings-status` BEM block.
+ * Follows the codebase's modifier-suffix convention
+ * (`.status-card-neutral`) instead of BEM
+ * (`.settings-status--neutral`).
+ *
+ * Generalises beyond Settings — Today's overdue
+ * commitments, Drift checker alerts, anywhere we need a
+ * "this is failing, here's why, click to retry" pattern
+ * can use it.
+ *
+ * Anatomy:
+ *   .status-card-wrap            — outer container
+ *     .status-card                — the card (default = neutral)
+ *       .status-card-title       — bold heading
+ *       .status-card-reason      — secondary explanation
+ *       .status-card-retry       — inline retry button
+ *
+ * Modifiers:
+ *   .status-card-neutral   — Reed soft, "not configured"
+ *   .status-card-verified  — Grass soft, "connected"
+ *   .status-card-failing   — Dust soft, "needs attention"
+ *   .status-card-info      — River soft, informational
+ */
+
+.status-card-wrap {
+  margin-top: var(--space-2xs);
+}
+
+.status-card {
+  padding: var(--space-xs) var(--space-3xs);
+  border-radius: var(--radius-md);
+  font: var(--type-body-sm);
+  line-height: 1.45;
+  border: 1px solid transparent;
+}
+
+.status-card-neutral {
+  background: var(--surface-soft);
+  color: var(--text-muted);
+}
+
+.status-card-verified {
+  background: var(--status-ok-soft);
+  color: var(--status-ok);
+}
+
+.status-card-failing {
+  background: var(--status-error-soft);
+  border-color: rgba(84, 43, 23, 0.3);
+  color: var(--status-error);
+}
+
+.status-card-info {
+  background: var(--status-info-soft);
+  color: var(--status-info);
+}
+
+.status-card-title {
+  font-weight: 600;
+}
+
+.status-card-reason {
+  font: var(--type-meta);
+  margin-top: var(--space-1xs);
+  opacity: 0.85;
+  word-break: break-word;
+}
+
+.status-card-retry {
+  margin-top: var(--space-xs);
+  font-size: 12px;
+}

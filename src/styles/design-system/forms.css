@@ -1,9 +1,13 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Forms
+ *  Design system — Forms (v0.42 brand alignment)
  * ══════════════════════════════════════════════════
  * Inputs, selects, textareas, labels, and the
  * settings-style label/input pair that Studio's
  * workflow modals already use.
+ *
+ * v0.42: Studio aliases unified on --font-sans (Syncro)
+ * — the previous mono treatment was inconsistent. Focus
+ * shadow uses the new --focus-shadow token (Marigold).
  *
  * Classes:
  *   .form-input        — text/date/email/number input
@@ -13,18 +17,6 @@
  *   .form-meta         — helper/description text
  *   .form-row          — horizontal group (input + button)
  *   .form-section      — vertical stack of label + input + meta
- *
- * Studio uses .settings-input / .settings-label /
- * .settings-section / .settings-row / .settings-meta
- * today. Those are kept as ALIASES at the bottom so
- * Studio's existing main.js works without renames.
- *
- * Use:
- *   <div class="form-section">
- *     <label class="form-label">Client</label>
- *     <select class="form-select">...</select>
- *     <div class="form-meta">Pick from your roster.</div>
- *   </div>
  */
 
 .form-input,
@@ -33,7 +25,7 @@
   width: 100%;
   font: var(--type-body-sm);
   font-family: var(--font-sans);
-  padding: 8px 12px;
+  padding: var(--space-xs) var(--space-3xs);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-soft);
   background: var(--surface-deep);
@@ -50,7 +42,7 @@
 .form-select:focus,
 .form-textarea:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  box-shadow: var(--focus-shadow);
 }
 
 .form-input::placeholder,
@@ -63,15 +55,15 @@
 .form-textarea:disabled {
   opacity: 0.6;
   cursor: not-allowed;
-  background: var(--surface2);
+  background: var(--surface-warm);
 }
 
 /* ── Select chevron ───────────────────────────────── */
 .form-select {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23656D76' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236A6A6A' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 12px center;
-  padding-right: 32px;
+  background-position: right var(--space-3xs) center;
+  padding-right: var(--space-2xl);
   cursor: pointer;
 }
 
@@ -86,7 +78,8 @@
 /* ── Date input ───────────────────────────────────── */
 .form-input[type="date"] {
   color-scheme: light;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-feature-settings: 'tnum' on;
 }
 
 /* ── Label ────────────────────────────────────────── */
@@ -95,14 +88,14 @@
   font: var(--type-body-sm);
   font-weight: 500;
   color: var(--text);
-  margin-bottom: 4px;
+  margin-bottom: var(--space-2xs);
 }
 
 /* ── Meta (helper text) ───────────────────────────── */
 .form-meta {
   font: var(--type-meta);
   color: var(--text-muted);
-  margin-top: 4px;
+  margin-top: var(--space-2xs);
 }
 
 /* ── Row (input + adjacent button) ────────────────── */
@@ -110,7 +103,7 @@
   display: flex;
   gap: var(--space-xs);
   align-items: stretch;
-  margin-top: 4px;
+  margin-top: var(--space-2xs);
 }
 
 .form-row > .form-input,
@@ -122,13 +115,14 @@
 .form-section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-2xs);
 }
 
 /* ── Studio aliases ───────────────────────────────────
- * Keep Studio's existing classnames working without
- * a rename pass. New surfaces should use .form-* names. */
-.settings-input { }
+ * Keep Studio's existing classnames working without a
+ * rename pass. v0.42 unifies the font-family on Syncro
+ * Book — the previous --font-mono treatment was a leftover
+ * from the cool-grey era. */
 .settings-input,
 .settings-input[type="text"],
 .settings-input[type="email"],
@@ -139,8 +133,8 @@ select.settings-input,
 textarea.settings-input {
   width: 100%;
   font: var(--type-body-sm);
-  font-family: var(--font-mono);
-  padding: 8px 12px;
+  font-family: var(--font-sans);
+  padding: var(--space-xs) var(--space-3xs);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-soft);
   background: var(--surface-deep);
@@ -153,14 +147,14 @@ textarea.settings-input {
 
 .settings-input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  box-shadow: var(--focus-shadow);
 }
 
 select.settings-input {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23656D76' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236A6A6A' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 12px center;
-  padding-right: 32px;
+  background-position: right var(--space-3xs) center;
+  padding-right: var(--space-2xl);
   cursor: pointer;
 }
 
@@ -176,26 +170,26 @@ textarea.settings-input {
   font: var(--type-body-sm);
   font-weight: 500;
   color: var(--text);
-  margin-bottom: 4px;
+  margin-bottom: var(--space-2xs);
 }
 
 .settings-meta {
   font: var(--type-meta);
   color: var(--text-muted);
-  margin-top: 4px;
+  margin-top: var(--space-2xs);
 }
 
 .settings-row {
   display: flex;
   gap: var(--space-xs);
   align-items: stretch;
-  margin-top: 4px;
+  margin-top: var(--space-2xs);
 }
 
 .settings-section {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-3xs);
 }
 
 /* ── Forms list (v0.30) ───────────────────────────────
@@ -206,17 +200,17 @@ textarea.settings-input {
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
-  margin-top: 6px;
+  margin-top: var(--space-3xs);
 }
 
 .settings-form-row {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-2xs);
   padding: var(--space-sm);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
-  background: var(--surface-soft, var(--surface-deep));
+  background: var(--surface-soft);
 }
 
 .settings-form-row-head {

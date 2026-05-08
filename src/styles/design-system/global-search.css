@@ -1,8 +1,12 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Global search (v0.36 Block F)
+ *  Design system — Global search (v0.42 brand alignment)
  * ══════════════════════════════════════════════════
  * Sticks to the top of the .main pane regardless of
  * which view is active. Cmd-K focuses the input.
+ *
+ * v0.42: fonts and colours pulled from brand tokens. Load
+ * order fixed in index.html so this file sits before
+ * app.css (was after, lost specificity battles).
  *
  * Structure:
  *   .global-search
@@ -24,7 +28,7 @@
   backdrop-filter: blur(var(--blur-sm));
   -webkit-backdrop-filter: blur(var(--blur-sm));
   border-bottom: 1px solid var(--border-soft);
-  padding: 10px var(--section-padding-x);
+  padding: var(--space-3xs) var(--section-padding-x);
 }
 
 .global-search-input-wrap {
@@ -35,7 +39,7 @@
 
 .global-search-icon {
   position: absolute;
-  left: 12px;
+  left: var(--space-3xs);
   font-size: 15px;
   color: var(--text-muted);
   pointer-events: none;
@@ -67,16 +71,16 @@
 
 .global-search-input:focus {
   border-color: var(--accent);
-  box-shadow: var(--focus-ring);
+  box-shadow: var(--focus-shadow);
 }
 
 .global-search-kbd {
   position: absolute;
-  right: 12px;
+  right: var(--space-3xs);
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-muted);
-  background: var(--surface2);
+  background: var(--surface-warm);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
   padding: 2px 6px;
@@ -94,7 +98,7 @@
   position: absolute;
   left: var(--section-padding-x);
   right: var(--section-padding-x);
-  margin-top: 6px;
+  margin-top: var(--space-3xs);
   max-height: 70vh;
   overflow-y: auto;
   background: var(--surface);
@@ -105,7 +109,7 @@
 }
 
 .global-search-state {
-  padding: 16px 18px;
+  padding: var(--space-sm) var(--space-md);
   font: var(--type-body-sm);
   color: var(--text-muted);
 }
@@ -122,10 +126,10 @@
   font: var(--type-label);
   text-transform: uppercase;
   color: var(--text-muted);
-  padding: 10px 18px 6px;
+  padding: var(--space-3xs) var(--space-md) var(--space-2xs);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-xs);
 }
 
 .global-search-group-icon {
@@ -138,7 +142,7 @@
   text-align: left;
   background: transparent;
   border: none;
-  padding: 8px 18px;
+  padding: var(--space-xs) var(--space-md);
   cursor: pointer;
   border-left: 2px solid transparent;
   transition: background var(--transition-fast), border-color var(--transition-fast);
@@ -146,7 +150,7 @@
 
 .global-search-result:hover,
 .global-search-result.is-selected {
-  background: var(--surface2);
+  background: var(--surface-warm);
   border-left-color: var(--accent);
 }
 
@@ -154,7 +158,7 @@
   font: var(--type-body);
   font-weight: var(--font-weight-medium);
   color: var(--text);
-  margin-bottom: 2px;
+  margin-bottom: var(--space-1xs);
   display: -webkit-box;
   -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
@@ -171,14 +175,14 @@
 }
 
 .global-search-result-snippet mark {
-  background: rgba(var(--accent-rgb), 0.15);
+  background: var(--accent-soft);
   color: var(--text);
-  padding: 0 1px;
+  padding: 0 var(--space-1xs);
   border-radius: 2px;
 }
 
 .global-search-result-meta {
   font: var(--type-meta);
   color: var(--text-dim);
-  margin-top: 4px;
+  margin-top: var(--space-2xs);
 }

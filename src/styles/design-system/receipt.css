@@ -1,0 +1,252 @@
+/* ══════════════════════════════════════════════════
+ *  Design system — Receipt (v0.42)
+ * ══════════════════════════════════════════════════
+ * Extracted from app.css in v0.42. The receipt is a
+ * major surface (printed thermal receipt look, sign-off
+ * mark, campaign sign-off stamp) and deserves its own
+ * file. Tokenised to brand fonts and warm palette.
+ *
+ * Anatomy:
+ *   .receipt
+ *     .receipt-header
+ *       .receipt-title
+ *       .receipt-meta-cluster
+ *         .receipt-meta
+ *         .receipt-action-btn
+ *     .receipt-section-label
+ *     .receipt-item, .receipt-item-task
+ *     .receipt-divider
+ *     .receipt-position (italic)
+ *     .receipt-totals
+ *     .receipt-stamp
+ *     .receipt-paid-meta
+ *     .receipt-footer
+ *     .receipt-brand
+ *       .receipt-wordmark
+ *       .receipt-entity
+ *     .receipt-signoff
+ *       .receipt-tagline
+ *       .receipt-oslo
+ *       .receipt-entity-small
+ */
+
+.receipt {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border-color);
+  border-radius: var(--card-radius);
+  padding: var(--card-padding);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.receipt-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.receipt-title {
+  font: var(--type-h3);
+  font-family: var(--font-sans);
+}
+
+.receipt-meta {
+  font: var(--type-meta);
+  color: var(--text-muted);
+}
+
+.receipt-meta-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3xs);
+}
+
+.receipt-action-btn {
+  font: var(--type-meta);
+  font-family: var(--font-mono);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  padding: var(--space-2xs) var(--space-3xs);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.receipt-action-btn:hover:not(:disabled) {
+  background: var(--surface-warm);
+  color: var(--text);
+  border-color: var(--card-border-color-hover);
+}
+
+.receipt-action-btn:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.receipt-section-label {
+  font: var(--type-label);
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: var(--space-sm) 0 var(--space-xs);
+}
+
+.receipt-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-sm);
+  padding: var(--space-2xs) 0;
+  align-items: baseline;
+}
+
+.receipt-item-text { color: var(--text); }
+
+.receipt-item-qty {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  text-align: right;
+  min-width: 28px;
+}
+
+.receipt-item-task label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  cursor: pointer;
+  user-select: none;
+}
+
+.receipt-item-task input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.receipt-item-task.done .task-label {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.receipt-divider {
+  border-top: 1px dashed var(--border);
+  margin: var(--space-md) 0;
+}
+
+.receipt-position {
+  text-align: center;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 16px;
+  color: var(--text-mid);
+  padding: var(--space-md) var(--space-sm);
+  line-height: 1.5;
+}
+
+.receipt-totals {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-sm);
+  font-family: var(--font-mono);
+  font-feature-settings: 'tnum' on, 'lnum' on;
+}
+
+.receipt-totals .total {
+  font-weight: 700;
+  border-top: 1px solid var(--text);
+  padding-top: var(--space-2xs);
+}
+
+.receipt-stamp {
+  text-align: center;
+  font-family: var(--font-sans);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-md);
+  padding: var(--space-xs) var(--space-lg);
+  margin: var(--space-md) auto;
+  width: max-content;
+  transform: rotate(-1.5deg);
+}
+
+.receipt-paid-meta {
+  text-align: center;
+  font: var(--type-meta);
+  font-family: var(--font-mono);
+  color: var(--text-mid);
+  line-height: 1.7;
+}
+
+.receipt-footer {
+  text-align: center;
+  font: var(--type-meta);
+  color: var(--text-muted);
+  font-style: italic;
+  margin-top: var(--space-md);
+  padding-top: var(--space-sm);
+  border-top: 1px dashed var(--border);
+}
+
+.receipt-brand {
+  text-align: center;
+  padding: var(--space-xs) 0 var(--space-sm);
+}
+
+.receipt-wordmark {
+  width: 200px;
+  height: auto;
+  margin: 0 auto;
+  display: block;
+}
+
+.receipt-entity {
+  font: var(--type-meta);
+  font-family: var(--font-sans);
+  color: var(--text-muted);
+  margin-top: var(--space-3xs);
+  letter-spacing: 0.02em;
+}
+
+.receipt-signoff {
+  text-align: center;
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.receipt-tagline {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 18px;
+  color: var(--text-mid);
+  transform: rotate(-2deg);
+  margin-bottom: var(--space-2xs);
+}
+
+.receipt-oslo {
+  width: 110px;
+  height: auto;
+  opacity: 0.85;
+}
+
+.receipt-entity-small {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  margin-top: var(--space-2xs);
+}

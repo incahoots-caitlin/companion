@@ -58,13 +58,21 @@ async function fetchClients() {
   if (_cache.records && now - _cache.fetched_at < CACHE_TTL) {
     return _cache.records;
   }
-  let configured = false;
+  // v0.41: get_airtable_status returns IntegrationStatus
+  // ({ state, last_verified_at, error_reason, extra }). Treat
+  // "verified" as the only signal to attempt the network pull. If
+  // the integration is "failing" (PAT rotated, base ID typo, scope
+  // missing) we deliberately don't try list_airtable_clients —
+  // calling it would 401 and the sidebar would render the
+  // misleading "no clients" empty state. Instead we return null so
+  // the caller renders "Connect Airtable in Settings".
+  let status = null;
   try {
-    configured = await safeInvoke("get_airtable_status");
+    status = await safeInvoke("get_airtable_status");
   } catch {
     // not in tauri or bridge missing — caller falls back to static markup
   }
-  if (!configured) return null;
+  if (!status || status.state !== "verified") return null;
 
   let raw;
   try {

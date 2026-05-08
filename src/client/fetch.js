@@ -35,6 +35,26 @@ function parseDate(s) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+// v0.41: same flatten shim as today/fetch.js. Translates the
+// IntegrationStatus shape into the legacy flat object that the rest
+// of the per-client fetchers expect (status.connected, status.scopes).
+function flattenStatus(status) {
+  if (!status) return { connected: false };
+  const extra = status.extra || {};
+  return {
+    state: status.state,
+    last_verified_at: status.last_verified_at,
+    error_reason: status.error_reason,
+    extra,
+    connected: status.state === "verified",
+    scopes: Array.isArray(extra.scopes) ? extra.scopes : [],
+    last_sync_at: extra.last_sync_at || null,
+    last_pull_at: extra.last_pull_at || null,
+    has_client_id: !!extra.has_client_id,
+    has_client_secret: !!extra.has_client_secret,
+  };
+}
+
 function recordLinksContain(fields, recordId) {
   const ids = fields?.client;
   if (!Array.isArray(ids)) return false;
@@ -262,7 +282,7 @@ export async function loadMeetings(state) {
     // Quick status check first. If not connected we skip the network
     // call entirely.
     let status = null;
-    try { status = await safeInvoke("get_google_status"); } catch {}
+    try { status = flattenStatus(await safeInvoke("get_google_status")); } catch {}
     if (!status?.connected) {
       state.meetings = [];
       return;
@@ -299,7 +319,7 @@ export async function loadEmails(state) {
       return;
     }
     let status = null;
-    try { status = await safeInvoke("get_google_status"); } catch {}
+    try { status = flattenStatus(await safeInvoke("get_google_status")); } catch {}
     const scopes = Array.isArray(status?.scopes) ? status.scopes : [];
     if (!status?.connected || !scopes.includes("gmail")) {
       state.emails = [];
@@ -334,7 +354,7 @@ export async function loadDriveFiles(state) {
       return;
     }
     let status = null;
-    try { status = await safeInvoke("get_google_status"); } catch {}
+    try { status = flattenStatus(await safeInvoke("get_google_status")); } catch {}
     const scopes = Array.isArray(status?.scopes) ? status.scopes : [];
     if (!status?.connected || !scopes.includes("drive")) {
       state.drive_files = [];
@@ -374,7 +394,7 @@ export async function loadSlackActivity(state) {
       return;
     }
     let status = null;
-    try { status = await safeInvoke("get_slack_oauth_status"); } catch {}
+    try { status = flattenStatus(await safeInvoke("get_slack_oauth_status")); } catch {}
     if (!status?.connected) {
       state.slack_activity = null;
       return;

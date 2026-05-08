@@ -1,20 +1,15 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Buttons
+ *  Design system — Buttons (v0.42 brand alignment)
  * ══════════════════════════════════════════════════
- * Two button languages live in Context today: the
- * primitive .btn (rounded pill, JBM, blue accent on
- * hover, used through main.css) and Studio's cleaner
- * .button (8px radius, sans, dark fill). This file
- * canonicalises Studio's .button as the design system
- * default. Context's older .btn pill style stays in
- * main.css for legacy surfaces; new Context surfaces
- * should reach for .button instead.
+ * Primary button is now Marigold orange. Secondary stays
+ * a Cloud-on-soft-border ghost. Tokenised paddings and
+ * shadows.
  *
  * Variants:
- *   .button                — primary (dark fill, white)
- *   .button.button-secondary — secondary (white, outline)
+ *   .button                — primary (Marigold fill, white text)
+ *   .button.button-secondary — secondary (white, soft outline)
  *   .button.button-ghost   — no border, subtle hover
- *   .button.button-danger  — destructive (red fill)
+ *   .button.button-danger  — destructive (Dust brown fill)
  *   .button.button-sm      — smaller padding / type
  *
  * Use:
@@ -26,14 +21,14 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-3xs);
   font: var(--type-body-sm);
   font-weight: 500;
-  padding: 8px 14px;
+  padding: var(--space-xs) var(--space-sm);
   border-radius: var(--radius-md);
-  background: var(--text);
-  color: var(--surface);
-  border: 1px solid var(--text);
+  background: var(--accent);
+  color: #FFFFFF;
+  border: 1px solid var(--accent);
   cursor: pointer;
   transition:
     transform var(--transition-fast),
@@ -48,9 +43,10 @@
 }
 
 .button:hover:not(:disabled) {
-  background: var(--text-mid);
-  border-color: var(--text-mid);
+  background: var(--accent-warm);
+  border-color: var(--accent-warm);
   transform: var(--hover-lift);
+  box-shadow: var(--shadow-md);
 }
 
 .button:active:not(:disabled) {
@@ -77,7 +73,7 @@
 }
 
 .button.button-secondary:hover:not(:disabled) {
-  background: var(--surface2);
+  background: var(--surface-warm);
   border-color: var(--border);
 }
 
@@ -89,24 +85,25 @@
 }
 
 .button.button-ghost:hover:not(:disabled) {
-  background: var(--surface2);
+  background: var(--surface-warm);
   color: var(--text);
 }
 
 /* ── Danger ───────────────────────────────────────── */
 .button.button-danger {
-  background: var(--red);
-  color: var(--surface);
-  border-color: var(--red);
+  background: var(--status-error);
+  color: #FFFFFF;
+  border-color: var(--status-error);
 }
 
 .button.button-danger:hover:not(:disabled) {
-  background: #b91c1c;
-  border-color: #b91c1c;
+  background: #3F2010;
+  border-color: #3F2010;
 }
 
 /* ── Small ────────────────────────────────────────── */
 .button.button-sm {
-  padding: 5px 10px;
+  padding: var(--space-2xs) var(--space-3xs);
   font-size: 12px;
+  gap: var(--space-2xs);
 }

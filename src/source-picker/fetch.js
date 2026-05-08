@@ -58,16 +58,23 @@ export async function probeAvailability() {
   };
   if (!t) return available;
 
+  // v0.41: status.state === "verified" replaces the old status.connected
+  // bool. We treat anything other than verified as unavailable so
+  // source-picker doesn't fan out to integrations that will fail at
+  // call-time. "Failing" status surfaces in Settings; the picker just
+  // hides the source until Caitlin re-verifies.
+  const isVerified = (s) => s && s.state === "verified";
+
   // Granola
   try {
     const status = await t.invoke("get_granola_status");
-    available.granola = !!status?.connected;
+    available.granola = isVerified(status);
   } catch (_) {}
 
   // Google (gmail + calendar share OAuth)
   try {
     const status = await t.invoke("get_google_status");
-    const connected = !!status?.connected;
+    const connected = isVerified(status);
     available.gmail = connected;
     available.calendar = connected;
   } catch (_) {}
@@ -75,7 +82,7 @@ export async function probeAvailability() {
   // Slack (OAuth path only — webhook write doesn't apply)
   try {
     const status = await t.invoke("get_slack_oauth_status");
-    available.slack = !!status?.connected;
+    available.slack = isVerified(status);
   } catch (_) {}
 
   return available;

@@ -1,29 +1,12 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Toasts
+ *  Design system — Toasts (v0.42 brand alignment)
  * ══════════════════════════════════════════════════
  * Stacked bottom-right toasts. Studio uses #toast-root
- * with .toast children. Context's older toast markup
- * uses different selectors; new Context surfaces should
- * adopt this pattern.
+ * with .toast children.
  *
- * Classes:
- *   #toast-root          — fixed container (one per page)
- *   .toast               — single toast (default = info)
- *   .toast.toast-show    — visible state (added by JS)
- *   .toast.toast-success — green tint
- *   .toast.toast-error   — red tint
- *
- * Use:
- *   <div id="toast-root"></div>
- *
- *   showToast(msg) {
- *     const t = document.createElement('div');
- *     t.className = 'toast';
- *     t.textContent = msg;
- *     document.getElementById('toast-root').appendChild(t);
- *     requestAnimationFrame(() => t.classList.add('toast-show'));
- *     setTimeout(() => t.remove(), 3000);
- *   }
+ * v0.42: Dust background (brand warm dark) with Cloud
+ * text instead of pure black ink. Variants pull from
+ * --status-* tokens. Soft warm shadow.
  */
 
 #toast-root,
@@ -39,13 +22,13 @@
 }
 
 .toast {
-  background: var(--text);
-  color: var(--surface);
+  background: var(--brand-dust);
+  color: var(--brand-cloud);
   font: var(--type-body-sm);
   font-weight: 500;
-  padding: 10px 16px;
+  padding: var(--space-3xs) var(--space-sm);
   border-radius: var(--radius-md);
-  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.18);
+  box-shadow: var(--shadow-lg);
   opacity: 0;
   transform: translateY(8px);
   transition:
@@ -62,9 +45,16 @@
 }
 
 .toast.toast-success {
-  background: var(--green);
+  background: var(--status-ok);
+  color: #FFFFFF;
 }
 
 .toast.toast-error {
-  background: var(--red);
+  background: var(--status-error);
+  color: #FFFFFF;
+}
+
+.toast.toast-info {
+  background: var(--status-info);
+  color: #FFFFFF;
 }
