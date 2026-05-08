@@ -1302,3 +1302,108 @@ button.live-status-row {
   color: var(--text-muted);
   margin-top: var(--space-xs);
 }
+
+/* ── v0.43 Calendar wiring surfaces ──────────────────
+ * Today's calls + Yesterday's calls rows carry inline
+ * action affordances (Pre-call brief, Open client,
+ * Tag to client, Draft receipt). Keep the pattern
+ * tight so the row stays scannable. */
+.today-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+}
+
+.button.button-small {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+/* Time-per-client micro-row sits inside the calendar
+   section. Pure text, no chrome. */
+.today-time-per-client {
+  font: var(--type-meta);
+  color: var(--text-muted);
+  padding: var(--space-xs) var(--section-padding-x, 0);
+  margin-top: var(--space-xs);
+}
+
+/* Per-client view "Recent and upcoming" row. Tight
+   list, no chrome. Each row a short line with a
+   relative date hint. */
+.client-recent-upcoming-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.client-recent-upcoming-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  font: var(--type-body-sm);
+  color: var(--text);
+  padding: var(--space-xs) 0;
+}
+
+.client-recent-upcoming-row .when {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  font-feature-settings: 'tnum' on;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.client-recent-upcoming-row .what {
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+
+/* Pre-call brief modal body. Headings are ABC Otto
+   serif (matches the design system's modal title), list
+   items sit tight under each heading. */
+.pre-call-brief-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-lg);
+}
+
+.pre-call-brief-markdown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.pre-call-brief-heading {
+  font: var(--type-h3, var(--type-h2));
+  color: var(--text);
+  margin-top: var(--space-sm);
+}
+
+.pre-call-brief-heading:first-child {
+  margin-top: 0;
+}
+
+.pre-call-brief-list {
+  list-style: disc;
+  padding-left: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font: var(--type-body);
+  color: var(--text);
+}
+
+.pre-call-brief-paragraph {
+  font: var(--type-body);
+  color: var(--text);
+}
+
+.pre-call-brief-meta {
+  margin-top: var(--space-sm);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-sm);
+}

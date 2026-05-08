@@ -89,6 +89,11 @@ export async function loadHeader(state, code) {
       dropbox_folder: match.fields?.dropbox_folder || null,
       gmail_thread_filter: match.fields?.gmail_thread_filter || null,
       drive_folder_id: match.fields?.drive_folder_id || null,
+      // v0.43 — Clients.match_emails carries known attendee emails the
+      // calendar matcher checks against. May be a JSON array, a single
+      // string, or null/undefined when the column hasn't been populated
+      // yet. Per-client recent/upcoming fetcher normalises shape.
+      match_emails: match.fields?.match_emails || null,
       notes: match.fields?.notes || null,
       // last_touch is filled in by loadReceipts once receipts arrive.
       last_touch: null,
@@ -268,10 +273,52 @@ export async function loadReceipts(state) {
   }
 }
 
-// ── Meetings (v0.24) ──────────────────────────────────────────────────
+// ── Meetings (v0.24) + Recent/Upcoming (v0.43) ────────────────────────
 //
 // Calls the Rust-side calendar matcher. Skips silently when Google
 // isn't connected — the section hides cleanly via render's empty check.
+//
+// v0.43 adds loadRecentUpcoming, which uses the new attendee-aware
+// matcher and returns a -1d..+7d horizon for the per-client
+// "Recent and upcoming" row.
+
+export async function loadRecentUpcoming(state) {
+  try {
+    if (!state.code || !state.header) {
+      state.recent_upcoming = [];
+      return;
+    }
+    let status = null;
+    try { status = flattenStatus(await safeInvoke("get_google_status")); } catch {}
+    if (!status?.connected) {
+      state.recent_upcoming = [];
+      return;
+    }
+    const aliases = state.header.gmail_thread_filter
+      ? [state.header.gmail_thread_filter]
+      : [];
+    const matchEmails = Array.isArray(state.header.match_emails)
+      ? state.header.match_emails
+      : (typeof state.header.match_emails === "string"
+        ? [state.header.match_emails]
+        : []);
+    const raw = await safeInvoke("list_calendar_recent_for_client", {
+      input: {
+        client_code: state.code,
+        client_name: state.header.name || null,
+        aliases,
+        primary_contact_email: state.header.primary_contact_email || null,
+        match_emails: matchEmails,
+      },
+    });
+    const events = JSON.parse(raw || "[]");
+    state.recent_upcoming = Array.isArray(events) ? events : [];
+    state.last_fetch_at.recent_upcoming = Date.now();
+  } catch (e) {
+    console.warn("loadRecentUpcoming failed:", e);
+    state.recent_upcoming = [];
+  }
+}
 
 export async function loadMeetings(state) {
   try {
@@ -432,6 +479,7 @@ export async function loadAll(state, code) {
     loadEmails(state),
     loadDriveFiles(state),
     loadSlackActivity(state),
+    loadRecentUpcoming(state),
   ]);
   return state;
 }
@@ -466,6 +514,9 @@ export async function refreshStale(state) {
   }
   if ((state.last_fetch_at.slack_activity || 0) + STALE_MS < now) {
     tasks.push(loadSlackActivity(state));
+  }
+  if ((state.last_fetch_at.recent_upcoming || 0) + STALE_MS < now) {
+    tasks.push(loadRecentUpcoming(state));
   }
   await Promise.allSettled(tasks);
 }

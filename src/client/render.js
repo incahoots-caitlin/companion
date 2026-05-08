@@ -342,6 +342,71 @@ function renderProjectRow(p) {
   return row;
 }
 
+// ── Recent and upcoming (v0.43) ───────────────────────────────────────
+//
+// One-line per row covering yesterday's call (with transcript hint when
+// known), today's calls if any, and the next 7 days. Hidden when the
+// fetch returns nothing.
+
+function relativeWhen(date) {
+  if (!date) return "";
+  const d = new Date(date);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = Math.round((target - today) / 86400000);
+  if (diff === -1) return "Yesterday";
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  if (diff > 1 && diff < 7) {
+    return d.toLocaleDateString("en-AU", { weekday: "long" });
+  }
+  return d.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" });
+}
+
+function renderRecentUpcoming(state) {
+  const items = state.recent_upcoming || [];
+  if (items.length === 0) return null;
+  const root = el("section", {
+    class: "client-section",
+    "data-section": "recent-upcoming",
+  });
+  root.appendChild(el("div", { class: "section-label" }, ["📆 RECENT AND UPCOMING"]));
+  const list = el("div", { class: "client-recent-upcoming-list" });
+  items.forEach((ev) => {
+    const row = el("div", { class: "client-recent-upcoming-row" });
+    const when = el("span", { class: "when" }, [relativeWhen(ev.start)]);
+    const what = el("span", { class: "what" });
+    const title = ev.summary || "(no title)";
+    const t = ev.start
+      ? new Date(ev.start).toLocaleTimeString("en-AU", {
+          hour: "numeric",
+          minute: "2-digit",
+          hour12: true,
+        }).replace(/\s/g, "").toLowerCase()
+      : "";
+    what.appendChild(document.createTextNode(`Calendar · ${title}${t ? " · " + t : ""}`));
+    row.appendChild(when);
+    row.appendChild(what);
+    if (ev.html_link) {
+      row.style.cursor = "pointer";
+      row.addEventListener("click", () => {
+        if (window.__TAURI__?.opener?.openUrl) {
+          window.__TAURI__.opener.openUrl(ev.html_link).catch(() =>
+            window.open(ev.html_link, "_blank")
+          );
+        } else {
+          window.open(ev.html_link, "_blank");
+        }
+      });
+    }
+    list.appendChild(row);
+  });
+  root.appendChild(list);
+  return root;
+}
+
 // ── Meetings (v0.24) ──────────────────────────────────────────────────
 //
 // Hidden if no events match — Google's empty result is the same as "not
@@ -737,6 +802,7 @@ const SECTION_RENDERERS = [
   { name: "decisions", render: renderDecisions },
   { name: "commitments", render: renderCommitments },
   { name: "meetings", render: renderMeetings },
+  { name: "recent-upcoming", render: renderRecentUpcoming },
   { name: "emails", render: renderEmails },
   { name: "slack", render: renderSlackActivity },
   { name: "drive", render: renderDriveFiles },

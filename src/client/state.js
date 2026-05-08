@@ -42,6 +42,10 @@ export function emptyClientState() {
     emails: null,
     drive_files: null,
     slack_activity: null,
+    // v0.43 — Recent and upcoming Calendar events for this client
+    // (yesterday → +7d). null while loading, empty array when nothing
+    // matches.
+    recent_upcoming: null,
     last_fetch_at: {},
   };
 }

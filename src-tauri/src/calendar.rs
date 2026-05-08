@@ -1,4 +1,4 @@
-// Companion - Google Calendar API client (v0.24)
+// Companion - Google Calendar API client (v0.24, extended in v0.43)
 //
 // Direct Google Calendar v3 REST. Calls run from the Rust backend so the
 // Anthropic Messages API token spend stays zero on the dashboard slot —
@@ -6,8 +6,9 @@
 // that need calendar reasoning.
 //
 // Fetches the authenticated user's primary calendar plus any other
-// calendars they own/subscribe to via singleEvents=true expansion. Two
-// time windows: today (local-day boundaries) and the next 7 days.
+// calendars they own/subscribe to via singleEvents=true expansion. Time
+// windows: yesterday (for transcript backfill), today, the next 7 days,
+// and a per-client horizon for the per-client view.
 //
 // Per-client lookup (`list_events_for_client`) is a heuristic: an event
 // belongs to a client if its summary, description or attendee list
@@ -15,6 +16,12 @@
 // table's `gmail_thread_filter` field is consulted as an extra alias
 // hint when set — Caitlin uses this for clients whose meetings are
 // usually with people whose addresses don't match the client name.
+//
+// v0.43 adds an attendee → client matcher (`match_event_to_client`) that
+// works off email addresses against the Clients table's
+// primary_contact_email + gmail_thread_filter aliases. Today's render
+// layer uses this to tag each event with a client_code and a deterministic
+// "no match" affordance, instead of name-substring guessing.
 
 use crate::google;
 use crate::oauth;
@@ -56,6 +63,43 @@ pub async fn list_events_today() -> Result<Vec<CalendarEvent>, String> {
     let start = local_day_start(now).with_timezone(&Utc);
     let end = local_day_end(now).with_timezone(&Utc);
     list_events_in_window(start, end).await
+}
+
+// v0.43: yesterday's events for the "Yesterday's calls" section in
+// Today, used to surface receipt-draft offers when a Granola transcript
+// shows up. Window is the local previous day, full day boundaries.
+pub async fn list_events_yesterday() -> Result<Vec<CalendarEvent>, String> {
+    let now = Local::now();
+    let yesterday = now - Duration::days(1);
+    let start = local_day_start(yesterday).with_timezone(&Utc);
+    let end = local_day_end(yesterday).with_timezone(&Utc);
+    list_events_in_window(start, end).await
+}
+
+// v0.43: per-client recent + upcoming horizon. Combines yesterday +
+// today + the next 7 days into a single sorted list, filtered by the
+// client matcher. Used by the per-client view's "Recent and upcoming"
+// row.
+pub async fn list_events_recent_and_upcoming_for_client(
+    client_name: &str,
+    extra_aliases: &[String],
+    primary_contact_email: Option<&str>,
+    match_emails: &[String],
+) -> Result<Vec<CalendarEvent>, String> {
+    let now = Local::now();
+    let start = (local_day_start(now) - Duration::days(1)).with_timezone(&Utc);
+    let end = (local_day_end(now) + Duration::days(7)).with_timezone(&Utc);
+    let all = list_events_in_window(start, end).await?;
+    let needles = build_needles(client_name, extra_aliases);
+    let attendee_emails = build_email_needles(primary_contact_email, match_emails);
+    let filtered: Vec<CalendarEvent> = all
+        .into_iter()
+        .filter(|ev| {
+            event_matches(ev, &needles)
+                || event_matches_any_attendee(ev, &attendee_emails)
+        })
+        .collect();
+    Ok(filtered)
 }
 
 pub async fn list_events_week() -> Result<Vec<CalendarEvent>, String> {
@@ -114,6 +158,182 @@ fn build_needles(client_name: &str, extra_aliases: &[String]) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+// v0.43: attendee → client match. Returns true when any of the event's
+// attendee emails matches one of the supplied "client emails" (the
+// client's primary contact email plus any extras in `match_emails`).
+// Comparison is case-insensitive on both the local part and the domain.
+//
+// Two match modes layered together:
+//   - Exact email match: the most reliable signal, used first.
+//   - Domain match: useful when a client uses several individual
+//     addresses on the same domain (Untitled, NCT, etc.). We only fall
+//     back to a domain match when the domain on the supplied email is
+//     not a generic provider (gmail.com, outlook.com, hotmail.com,
+//     icloud.com, yahoo.com, me.com) — those generics would over-match.
+fn build_email_needles(
+    primary_contact_email: Option<&str>,
+    match_emails: &[String],
+) -> Vec<String> {
+    let mut emails: Vec<String> = Vec::new();
+    let mut push = |s: &str| {
+        let trimmed = s.trim().to_lowercase();
+        if trimmed.contains('@') {
+            emails.push(trimmed);
+        }
+    };
+    if let Some(e) = primary_contact_email {
+        push(e);
+    }
+    for raw in match_emails {
+        // Aliases come through as a flat string-or-array; we accept
+        // comma/whitespace-separated lists too.
+        for piece in raw.split(|c: char| c == ',' || c == ';' || c == '\n' || c.is_whitespace()) {
+            push(piece);
+        }
+    }
+    emails.sort();
+    emails.dedup();
+    emails
+}
+
+const GENERIC_EMAIL_DOMAINS: &[&str] = &[
+    "gmail.com",
+    "googlemail.com",
+    "outlook.com",
+    "hotmail.com",
+    "live.com",
+    "icloud.com",
+    "me.com",
+    "mac.com",
+    "yahoo.com",
+    "yahoo.com.au",
+    "proton.me",
+    "protonmail.com",
+];
+
+fn split_email(addr: &str) -> Option<(String, String)> {
+    let lower = addr.trim().to_lowercase();
+    let mut parts = lower.splitn(2, '@');
+    let local = parts.next()?.to_string();
+    let domain = parts.next()?.to_string();
+    if local.is_empty() || domain.is_empty() {
+        return None;
+    }
+    Some((local, domain))
+}
+
+fn event_matches_any_attendee(ev: &CalendarEvent, client_emails: &[String]) -> bool {
+    if client_emails.is_empty() {
+        return false;
+    }
+    let attendees: Vec<(String, String)> = ev
+        .attendees
+        .iter()
+        .filter_map(|a| split_email(a))
+        .collect();
+    if attendees.is_empty() {
+        return false;
+    }
+    // Exact match wins.
+    for (al, ad) in &attendees {
+        let exact = format!("{}@{}", al, ad);
+        if client_emails.iter().any(|c| c == &exact) {
+            return true;
+        }
+    }
+    // Domain match, but only for non-generic domains.
+    for (_al, ad) in &attendees {
+        if GENERIC_EMAIL_DOMAINS.contains(&ad.as_str()) {
+            continue;
+        }
+        for ce in client_emails {
+            if let Some((_, cd)) = split_email(ce) {
+                if cd == *ad {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+// Public surface: given an event and a slice of (client_code,
+// client_name, primary_contact_email, match_emails) tuples, return the
+// best-matching client_code or None. v0.43 calling code passes the full
+// active Clients list once per dashboard refresh and applies this to
+// every event.
+//
+// Multi-match heuristic: if two clients both match (e.g. cross-client
+// meeting), pick the one whose primary_contact_email matched first.
+// Falls back to None when no client signal is found.
+pub fn match_event_to_client(
+    event: &CalendarEvent,
+    clients: &[ClientMatchRecord],
+) -> Option<String> {
+    let attendees: Vec<(String, String)> = event
+        .attendees
+        .iter()
+        .filter_map(|a| split_email(a))
+        .collect();
+    if attendees.is_empty() {
+        // Fall back to name-substring matching against the event title.
+        for c in clients {
+            let needles = build_needles(&c.name, &c.aliases);
+            if !needles.is_empty() && event_matches(event, &needles) {
+                return Some(c.code.clone());
+            }
+        }
+        return None;
+    }
+    // First pass: exact email match on primary_contact_email or
+    // match_emails.
+    for c in clients {
+        let emails = build_email_needles(c.primary_contact_email.as_deref(), &c.match_emails);
+        for (al, ad) in &attendees {
+            let exact = format!("{}@{}", al, ad);
+            if emails.iter().any(|e| e == &exact) {
+                return Some(c.code.clone());
+            }
+        }
+    }
+    // Second pass: domain match on a non-generic domain.
+    for c in clients {
+        let emails = build_email_needles(c.primary_contact_email.as_deref(), &c.match_emails);
+        for (_al, ad) in &attendees {
+            if GENERIC_EMAIL_DOMAINS.contains(&ad.as_str()) {
+                continue;
+            }
+            for ce in &emails {
+                if let Some((_, cd)) = split_email(ce) {
+                    if cd == *ad {
+                        return Some(c.code.clone());
+                    }
+                }
+            }
+        }
+    }
+    // Third pass: name-substring fallback.
+    for c in clients {
+        let needles = build_needles(&c.name, &c.aliases);
+        if !needles.is_empty() && event_matches(event, &needles) {
+            return Some(c.code.clone());
+        }
+    }
+    None
+}
+
+// Slim record passed to `match_event_to_client`. Each field is optional
+// so the caller can populate from a partial Airtable response without
+// failing.
+#[derive(Clone, Debug)]
+pub struct ClientMatchRecord {
+    pub code: String,
+    pub name: String,
+    pub primary_contact_email: Option<String>,
+    pub match_emails: Vec<String>,
+    pub aliases: Vec<String>,
 }
 
 fn event_matches(ev: &CalendarEvent, needles: &[String]) -> bool {

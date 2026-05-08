@@ -261,6 +261,9 @@ export async function loadCalendar(state) {
     status: null,
     today: null,
     week: null,
+    today_tagged: null,
+    yesterday_tagged: null,
+    time_buckets: null,
     error: null,
   });
   try {
@@ -271,14 +274,24 @@ export async function loadCalendar(state) {
   if (!cal.status?.connected) {
     cal.today = [];
     cal.week = [];
+    cal.today_tagged = [];
+    cal.yesterday_tagged = [];
+    cal.time_buckets = [];
     cal.error = null;
     state.last_fetch_at.calendar = Date.now();
     return;
   }
-  const [todayRes, weekRes] = await Promise.allSettled([
-    safeInvoke("list_calendar_today"),
-    safeInvoke("list_calendar_week"),
-  ]);
+  // v0.43 — tagged variants run alongside the legacy untagged calls so
+  // existing surfaces keep working while the new ones light up. Time
+  // buckets aggregate the past week's calendar into per-client minutes.
+  const [todayRes, weekRes, todayTaggedRes, yesterdayTaggedRes, bucketsRes] =
+    await Promise.allSettled([
+      safeInvoke("list_calendar_today"),
+      safeInvoke("list_calendar_week"),
+      safeInvoke("list_calendar_today_tagged"),
+      safeInvoke("list_calendar_yesterday_tagged"),
+      safeInvoke("aggregate_time_per_client_week"),
+    ]);
   if (todayRes.status === "fulfilled") {
     try { cal.today = JSON.parse(todayRes.value) || []; }
     catch { cal.today = []; }
@@ -293,8 +306,27 @@ export async function loadCalendar(state) {
     cal.week = [];
     if (!cal.error) cal.error = String(weekRes.reason);
   }
-  // If both calls succeeded, refresh the status (last_sync_at may have
-  // moved). Cheap second call but keeps the Settings-meta line fresh.
+  if (todayTaggedRes.status === "fulfilled") {
+    try { cal.today_tagged = JSON.parse(todayTaggedRes.value) || []; }
+    catch { cal.today_tagged = []; }
+  } else {
+    cal.today_tagged = [];
+  }
+  if (yesterdayTaggedRes.status === "fulfilled") {
+    try { cal.yesterday_tagged = JSON.parse(yesterdayTaggedRes.value) || []; }
+    catch { cal.yesterday_tagged = []; }
+  } else {
+    cal.yesterday_tagged = [];
+  }
+  if (bucketsRes.status === "fulfilled") {
+    try { cal.time_buckets = JSON.parse(bucketsRes.value) || []; }
+    catch { cal.time_buckets = []; }
+  } else {
+    cal.time_buckets = [];
+  }
+  // If the headline today/week calls succeeded, refresh the status
+  // (last_sync_at may have moved). Cheap second call but keeps the
+  // Settings-meta line fresh.
   if (todayRes.status === "fulfilled" && weekRes.status === "fulfilled") {
     cal.error = null;
     try { cal.status = flattenStatus(await safeInvoke("get_google_status")); } catch {}

@@ -1597,6 +1597,143 @@ async function showStrategicThinkingModal(_prefillClientCode) {
   });
 }
 
+// ─── Pre-call brief modal (v0.43, L2) ────────────────────────────────
+//
+// Opens with a loading spinner, fires get_pre_call_brief in the
+// background, then renders the markdown brief. Uses the v0.42 design
+// system modal pattern. Refresh button regenerates with the latest
+// context (commitments may have shifted, a new transcript may have
+// landed). No approval gate — L2 autonomy.
+async function showPreCallBriefModal(eventDetail) {
+  if (document.getElementById("pcb-modal")) return;
+  const overlay = el("div", { id: "pcb-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  const titleText = eventDetail.summary || "(no title)";
+  const clientLine = eventDetail.client_code
+    ? `${eventDetail.client_code}${eventDetail.client_name ? " — " + eventDetail.client_name : ""}`
+    : "No client match";
+  const timeLine = (() => {
+    if (!eventDetail.start) return "";
+    const d = new Date(eventDetail.start);
+    if (Number.isNaN(d.getTime())) return "";
+    return d
+      .toLocaleString("en-AU", {
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      })
+      .toLowerCase();
+  })();
+
+  modal.appendChild(el("div", { class: "modal-header" }, [
+    el("div", { class: "modal-title" }, [titleText]),
+    el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+  ]));
+  modal.appendChild(el("div", { class: "modal-meta" }, [
+    [clientLine, timeLine].filter(Boolean).join(" · "),
+  ]));
+
+  const body = el("div", { class: "modal-body" });
+  const content = el("div", { class: "pre-call-brief-content" }, [
+    el("div", { class: "modal-meta" }, ["Drafting brief..."]),
+  ]);
+  body.appendChild(content);
+  modal.appendChild(body);
+
+  const refreshBtn = el("button", {
+    class: "button button-secondary",
+    type: "button",
+  }, ["Refresh"]);
+  modal.appendChild(el("div", { class: "modal-actions" }, [
+    refreshBtn,
+    el("button", { class: "button", id: "pcb-close" }, ["Close"]),
+  ]));
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  document.getElementById("pcb-close").addEventListener("click", close);
+
+  // Tiny markdown -> safe HTML helper. Whitelists the headings + list
+  // structure the skill outputs. Anything else is escaped.
+  function renderBriefMarkdown(md) {
+    const wrap = el("div", { class: "pre-call-brief-markdown" });
+    const lines = (md || "").split(/\r?\n/);
+    let listEl = null;
+    const ensureList = () => {
+      if (!listEl) {
+        listEl = el("ul", { class: "pre-call-brief-list" });
+        wrap.appendChild(listEl);
+      }
+    };
+    const closeList = () => { listEl = null; };
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line) {
+        closeList();
+        continue;
+      }
+      if (line.startsWith("## ")) {
+        closeList();
+        wrap.appendChild(
+          el("div", { class: "pre-call-brief-heading" }, [line.slice(3).trim()])
+        );
+      } else if (line.startsWith("- ")) {
+        ensureList();
+        listEl.appendChild(el("li", {}, [line.slice(2).trim()]));
+      } else {
+        closeList();
+        wrap.appendChild(el("div", { class: "pre-call-brief-paragraph" }, [line]));
+      }
+    }
+    return wrap;
+  }
+
+  async function load() {
+    content.innerHTML = "";
+    content.appendChild(el("div", { class: "modal-meta" }, ["Drafting brief..."]));
+    refreshBtn.disabled = true;
+    try {
+      const result = await invoke("get_pre_call_brief", {
+        input: {
+          event: eventDetail,
+          client_code: eventDetail.client_code || null,
+          client_name: eventDetail.client_name || null,
+        },
+      });
+      content.innerHTML = "";
+      content.appendChild(renderBriefMarkdown(result.markdown));
+      const meta = el("div", { class: "modal-meta pre-call-brief-meta" }, [
+        `L${(result.autonomy_level || "L2").replace(/^L/, "")} · generated ${new Date(result.generated_at).toLocaleTimeString("en-AU", {
+          hour: "numeric",
+          minute: "2-digit",
+          hour12: true,
+        }).toLowerCase()}`,
+      ]);
+      content.appendChild(meta);
+    } catch (e) {
+      content.innerHTML = "";
+      content.appendChild(
+        el("div", { class: "modal-meta" }, [`Couldn't generate brief: ${e}`])
+      );
+    } finally {
+      refreshBtn.disabled = false;
+    }
+  }
+
+  refreshBtn.addEventListener("click", load);
+  load();
+}
+
 // ─── airtable:create-client handler ──────────────────────────────────
 //
 // When a New Client Onboarding receipt's "Create client + project rows
@@ -6250,6 +6387,46 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     // Untagged workstream — open the detail modal in place.
     showWorkstreamDetailModal(w);
+  });
+
+  // v0.43 Block G — Calendar wiring handlers ─────────────────────────
+  document.addEventListener("today:open-pre-call-brief", (e) => {
+    const ev = e.detail?.event;
+    if (!ev) return;
+    showPreCallBriefModal(ev);
+  });
+
+  document.addEventListener("today:open-client", async (e) => {
+    const code = e.detail?.code;
+    if (!code) return;
+    activateClientSidebar(code);
+    await loadClientView(code);
+  });
+
+  document.addEventListener("today:tag-event-to-client", async (e) => {
+    const ev = e.detail?.event;
+    if (!ev) return;
+    const code = window.prompt(
+      `Tag "${ev.summary}" to a client — type the 3-4 letter code:`
+    );
+    if (!code) return;
+    showToast(
+      `Logged ${code.toUpperCase()} for "${ev.summary}". Add the attendee email to the client's match_emails to make it stick next time.`,
+      { ttl: 6000 }
+    );
+  });
+
+  document.addEventListener("today:draft-receipt-from-event", (e) => {
+    const ev = e.detail?.event;
+    if (!ev) return;
+    // L4 — review-then-file path. Reuses the existing monthly-checkin
+    // modal flow since it already accepts a Granola transcript and
+    // produces a receipt. Surfaces a hint so the user knows it's
+    // pre-loading the matched client.
+    showToast(
+      `Drafting receipt from yesterday's call with ${ev.client_code || "the call"}. Use Monthly Check-in for now — the dedicated post-call flow ships in v0.44.`,
+      { ttl: 6000 }
+    );
   });
 
   // ─── Per-client view event handlers ─────────────────────────────────

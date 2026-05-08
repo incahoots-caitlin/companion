@@ -728,10 +728,173 @@ function renderEventRow(ev) {
   return row;
 }
 
+// v0.43 — tagged event row carries the matched client_code + a
+// pre-call brief affordance. Falls back to the untagged renderer if the
+// event came through the legacy list_calendar_today path.
+function renderTaggedEventRow(ev) {
+  const row = el("button", {
+    class: "today-row today-row-event",
+    type: "button",
+    "data-event-id": ev.id || "",
+    "data-client-code": ev.client_code || "",
+  });
+
+  const left = el("div", { class: "today-row-main" });
+  left.appendChild(el("div", { class: "today-row-title" }, [ev.summary || "(no title)"]));
+
+  const metaBits = [];
+  if (ev.client_code && ev.client_name) {
+    metaBits.push(`${ev.client_code} — ${ev.client_name}`);
+  } else if (ev.client_code) {
+    metaBits.push(ev.client_code);
+  } else {
+    metaBits.push("No client match");
+  }
+  if (ev.attendees && ev.attendees.length) {
+    const n = ev.attendees.length;
+    metaBits.push(`${n} attendee${n === 1 ? "" : "s"}`);
+  }
+  if (ev.location && !/^https?:\/\//i.test(ev.location)) metaBits.push(ev.location);
+  left.appendChild(el("div", { class: "today-row-meta" }, [metaBits.join(" · ")]));
+
+  // Affordance row: pre-call brief link, view-history link, or
+  // tag-to-client when no match. Clicks bubble up via dispatch so
+  // main.js can wire the modal without us reaching into globals.
+  const actions = el("div", { class: "today-row-actions" });
+  if (ev.client_code) {
+    const briefBtn = el("button", {
+      class: "button button-small",
+      type: "button",
+    }, ["Pre-call brief"]);
+    briefBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      dispatch("today:open-pre-call-brief", { event: ev });
+    });
+    actions.appendChild(briefBtn);
+    const viewBtn = el("button", {
+      class: "button button-small button-secondary",
+      type: "button",
+    }, ["Open client view"]);
+    viewBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      dispatch("today:open-client", { code: ev.client_code });
+    });
+    actions.appendChild(viewBtn);
+  } else {
+    const tagBtn = el("button", {
+      class: "button button-small button-secondary",
+      type: "button",
+    }, ["Tag to client"]);
+    tagBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      dispatch("today:tag-event-to-client", { event: ev });
+    });
+    actions.appendChild(tagBtn);
+  }
+  if (ev.html_link) {
+    const openBtn = el("button", {
+      class: "button button-small button-secondary",
+      type: "button",
+    }, ["Open in Calendar"]);
+    openBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      dispatch("today:open-url", { url: ev.html_link });
+    });
+    actions.appendChild(openBtn);
+  }
+  left.appendChild(actions);
+
+  const right = el("div", { class: "today-row-side" });
+  if (ev.hangout_link) {
+    const meetBtn = el("a", {
+      class: "client-status-pill status-active",
+      href: ev.hangout_link,
+      target: "_blank",
+      rel: "noopener",
+    }, ["Meet"]);
+    meetBtn.addEventListener("click", (e) => e.stopPropagation());
+    right.appendChild(meetBtn);
+  }
+  right.appendChild(el("span", { class: "today-row-time" }, [fmtEventTime(ev)]));
+
+  row.appendChild(left);
+  row.appendChild(right);
+  return row;
+}
+
+// v0.43 — yesterday's calls section. Each row that has a transcript
+// hint shows a "Draft receipt" affordance the user reviews + approves
+// (L4 autonomy). Hidden entirely when there were no events yesterday.
+function renderYesterdayCalls(state) {
+  const cal = state.calendar || {};
+  const yesterday = cal.yesterday_tagged || [];
+  if (!cal.status?.connected || yesterday.length === 0) return null;
+  const root = el("section", {
+    class: "today-section",
+    "data-section": "calendar-yesterday",
+  });
+  root.appendChild(el("div", { class: "section-label" }, ["↩ YESTERDAY'S CALLS"]));
+  const list = el("div", { class: "today-list" });
+  yesterday.forEach((ev) => {
+    const row = renderTaggedEventRow(ev);
+    // Replace the pre-call brief button with a draft-receipt offer.
+    // L4 autonomy — Caitlin reviews + approves before the receipt files.
+    const actions = row.querySelector(".today-row-actions");
+    if (actions && ev.client_code) {
+      // Clear the brief / open-client buttons and substitute the
+      // draft-receipt + open-client pair.
+      actions.innerHTML = "";
+      const draftBtn = el("button", {
+        class: "button button-small",
+        type: "button",
+      }, ["Draft receipt from transcript"]);
+      draftBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        dispatch("today:draft-receipt-from-event", { event: ev });
+      });
+      actions.appendChild(draftBtn);
+      const viewBtn = el("button", {
+        class: "button button-small button-secondary",
+        type: "button",
+      }, ["Open client view"]);
+      viewBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        dispatch("today:open-client", { code: ev.client_code });
+      });
+      actions.appendChild(viewBtn);
+    }
+    list.appendChild(row);
+  });
+  root.appendChild(list);
+  return root;
+}
+
+// v0.43 — time-per-client micro-row. Sits inside the Calendar section.
+// Reads from state.calendar.time_buckets (filed by the
+// aggregate_time_per_client_week command on every dashboard refresh).
+function renderTimePerClientMicroRow(buckets) {
+  if (!Array.isArray(buckets) || buckets.length === 0) return null;
+  const fmt = (mins) => {
+    if (!mins) return "0h";
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    if (h === 0) return `${m}m`;
+    if (m === 0) return `${h}h`;
+    return `${h}h ${m}m`;
+  };
+  const parts = buckets
+    .filter((b) => b.minutes > 0)
+    .slice(0, 6)
+    .map((b) => `${b.label} ${fmt(b.minutes)}`);
+  if (parts.length === 0) return null;
+  const text = `This week so far · ${parts.join(" · ")}`;
+  return el("div", { class: "today-time-per-client" }, [text]);
+}
+
 function renderCalendar(state) {
   const cal = state.calendar || {};
   const root = el("section", { class: "today-section", "data-section": "calendar" });
-  root.appendChild(el("div", { class: "section-label" }, ["📅 CALENDAR"]));
+  root.appendChild(el("div", { class: "section-label" }, ["📅 TODAY'S CALLS"]));
 
   if (!cal.status?.connected) {
     root.appendChild(
@@ -751,14 +914,25 @@ function renderCalendar(state) {
     return root;
   }
 
+  // v0.43 prefers the tagged list. Falls back to the untagged today
+  // list when the tagged one is still loading or returned empty —
+  // keeps existing surfaces intact while the tagger warms up.
+  const tagged = cal.today_tagged;
   const today = cal.today || [];
   const list = el("div", { class: "today-list" });
-  if (today.length === 0) {
+  if (Array.isArray(tagged) && tagged.length > 0) {
+    tagged.forEach((ev) => list.appendChild(renderTaggedEventRow(ev)));
+  } else if (today.length === 0) {
     list.appendChild(el("div", { class: "empty" }, ["Nothing on today."]));
   } else {
     today.forEach((ev) => list.appendChild(renderEventRow(ev)));
   }
   root.appendChild(list);
+
+  // Time-per-client micro-row sits underneath today's calls so the
+  // weekly tally is always one glance away. Hidden when no buckets.
+  const microRow = renderTimePerClientMicroRow(cal.time_buckets);
+  if (microRow) root.appendChild(microRow);
 
   // Week-ahead summary. We exclude today's events (already shown above)
   // and group the remaining events by day so it stays scannable.
@@ -920,6 +1094,7 @@ const SECTION_RENDERERS = [
   { name: "overdue", render: renderOverdue },
   { name: "drift", render: renderDrift },
   { name: "calendar", render: renderCalendar },
+  { name: "calendar-yesterday", render: renderYesterdayCalls },
   { name: "workstreams", render: renderWorkstreams },
   { name: "decisions", render: renderDecisions },
   { name: "pipeline", render: renderPipeline },

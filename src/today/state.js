@@ -69,6 +69,11 @@ export function emptyTodayState() {
       status: null,
       today: null,
       week: null,
+      // v0.43 — tagged events for today + yesterday, plus the
+      // per-client minute buckets for the time-per-client micro-row.
+      today_tagged: null,
+      yesterday_tagged: null,
+      time_buckets: null,
       error: null,
     },
     email: {
