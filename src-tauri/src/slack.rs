@@ -61,6 +61,12 @@ pub const SCOPE_CHANNELS_HISTORY: &str = "channels:history";
 pub const SCOPE_GROUPS_READ: &str = "groups:read";
 pub const SCOPE_GROUPS_HISTORY: &str = "groups:history";
 pub const SCOPE_USERS_READ: &str = "users:read";
+// v0.44 additions: read DMs, write back to channels (send-later drafts and
+// pre-call-brief DMs), and search across history for @-mentions of Caitlin.
+pub const SCOPE_IM_READ: &str = "im:read";
+pub const SCOPE_IM_HISTORY: &str = "im:history";
+pub const SCOPE_CHAT_WRITE: &str = "chat:write";
+pub const SCOPE_SEARCH_READ: &str = "search:read";
 
 pub const SLACK: ProviderConfig = ProviderConfig {
     name: "slack",
@@ -72,6 +78,10 @@ pub const SLACK: ProviderConfig = ProviderConfig {
         SCOPE_GROUPS_READ,
         SCOPE_GROUPS_HISTORY,
         SCOPE_USERS_READ,
+        SCOPE_IM_READ,
+        SCOPE_IM_HISTORY,
+        SCOPE_CHAT_WRITE,
+        SCOPE_SEARCH_READ,
     ],
     client_id_keychain_key: "slack-oauth-client-id",
     // Slack v2 OAuth requires a confidential client — secret is
@@ -635,4 +645,437 @@ fn urlencode(s: &str) -> String {
         }
     }
     out
+}
+
+// ── v0.44 read additions ──────────────────────────────────────────────
+//
+// New surfaces this ship adds:
+//   - auth_test_user_id()              — returns Caitlin's own user ID,
+//                                        cached per-process. Needed for
+//                                        the mention search and for the
+//                                        "DM me my pre-call brief" path.
+//   - search_mentions(since_ts)        — search.messages for @<self>
+//                                        across the workspace.
+//   - list_dms_recent(since_ts)        — pull conversations.history for
+//                                        every IM channel since the
+//                                        cutoff. Quiet when nothing new.
+//   - list_channel_messages(id, since) — generic channel pull for the
+//                                        polling worker. Filters out
+//                                        join/leave noise.
+//   - send_message(channel, text, ...) — chat.postMessage wrapper used by
+//                                        send-later drafts and the pre-
+//                                        call-brief DM cron.
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WorkspaceIdentity {
+    pub user_id: String,
+    pub team_id: String,
+    pub user_name: Option<String>,
+}
+
+pub async fn auth_test_identity() -> Result<WorkspaceIdentity, String> {
+    let token = oauth::ensure_fresh_token(&SLACK)
+        .await
+        .map_err(|e| format!("Slack: {}", e))?;
+    let url = format!("{}/auth.test", SLACK_API_BASE);
+    let val = http_get_json(&url, &token).await?;
+    let ok = val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !ok {
+        return Err(format!(
+            "auth.test: {}",
+            val.get("error").and_then(|v| v.as_str()).unwrap_or("unknown")
+        ));
+    }
+    Ok(WorkspaceIdentity {
+        user_id: val
+            .get("user_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        team_id: val
+            .get("team_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        user_name: val
+            .get("user")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+    })
+}
+
+#[derive(Deserialize, Debug)]
+struct ConversationsListIMResponse {
+    #[serde(default)]
+    channels: Vec<RawIMChannel>,
+}
+
+#[derive(Deserialize, Debug)]
+struct RawIMChannel {
+    id: String,
+    #[serde(default)]
+    user: Option<String>,
+    #[serde(default)]
+    is_user_deleted: bool,
+}
+
+// Lists IM (DM) channels open with the authed user.
+pub async fn list_im_channels() -> Result<Vec<(String, Option<String>)>, String> {
+    let token = oauth::ensure_fresh_token(&SLACK)
+        .await
+        .map_err(|e| format!("Slack: {}", e))?;
+    let url = format!(
+        "{}/conversations.list?types=im&limit=200",
+        SLACK_API_BASE
+    );
+    let val = http_get_json(&url, &token).await?;
+    let env: SlackEnvelope<ConversationsListIMResponse> =
+        parse_envelope(val, "conversations.list (im)")?;
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
+    for ch in env.body.channels {
+        if ch.is_user_deleted {
+            continue;
+        }
+        out.push((ch.id, ch.user));
+    }
+    Ok(out)
+}
+
+// Returns recent DM messages across all open IMs since the given Slack
+// timestamp string ("1714898123.001234"). Empty cutoff means last 24h.
+pub async fn list_dms_recent(since_ts: Option<&str>) -> Result<Vec<Message>, String> {
+    let token = oauth::ensure_fresh_token(&SLACK)
+        .await
+        .map_err(|e| format!("Slack: {}", e))?;
+    let team_id = workspace_team_id(&token).await.unwrap_or_default();
+    let oldest = match since_ts {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => format!(
+            "{}.000000",
+            (chrono::Utc::now() - chrono::Duration::hours(24)).timestamp()
+        ),
+    };
+    let ims = list_im_channels().await?;
+    let mut user_cache: HashMap<String, String> = HashMap::new();
+    let mut out: Vec<Message> = Vec::new();
+    for (im_id, peer_user) in ims {
+        let url = format!(
+            "{}/conversations.history?channel={}&oldest={}&limit=50",
+            SLACK_API_BASE,
+            urlencode(&im_id),
+            urlencode(&oldest),
+        );
+        let val = match http_get_json(&url, &token).await {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[slack] dm history {} failed: {}", im_id, e);
+                continue;
+            }
+        };
+        let env: SlackEnvelope<ConversationsHistoryResponse> =
+            match parse_envelope(val, "conversations.history (im)") {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+        let peer_label = match &peer_user {
+            Some(uid) => {
+                let resolved = resolve_user_name(&token, uid, &mut user_cache).await;
+                format!("DM with {}", resolved)
+            }
+            None => "DM".to_string(),
+        };
+        let web_link = build_web_link(&team_id, &im_id);
+        for raw in env.body.messages {
+            if raw.subtype.as_deref() == Some("channel_join") {
+                continue;
+            }
+            let user_name = match &raw.user {
+                Some(uid) => Some(resolve_user_name(&token, uid, &mut user_cache).await),
+                None => None,
+            };
+            out.push(Message {
+                permalink: build_permalink(&web_link, &raw.ts),
+                channel_id: im_id.clone(),
+                channel_name: peer_label.clone(),
+                ts: raw.ts,
+                user: raw.user,
+                user_name,
+                text: raw.text,
+            });
+        }
+    }
+    // Newest first.
+    out.sort_by(|a, b| b.ts.cmp(&a.ts));
+    Ok(out)
+}
+
+// Search for messages mentioning the authed user since a cutoff. Slack's
+// search.messages requires the user-token search:read scope; if it's not
+// granted, callers should fall back to per-channel scanning.
+pub async fn search_mentions(since_ts_unix: i64) -> Result<Vec<Message>, String> {
+    let token = oauth::ensure_fresh_token(&SLACK)
+        .await
+        .map_err(|e| format!("Slack: {}", e))?;
+    let team_id = workspace_team_id(&token).await.unwrap_or_default();
+    // Build query: "<@SELF>" matches explicit mentions. We also match the
+    // user name afterwards by scanning text for "@caitlin" — done in the
+    // calling layer because we don't know Caitlin's handle until we hit
+    // auth.test.
+    let identity = auth_test_identity().await?;
+    let query = format!("<@{}>", identity.user_id);
+    let url = format!(
+        "{}/search.messages?query={}&sort=timestamp&sort_dir=desc&count=50",
+        SLACK_API_BASE,
+        urlencode(&query),
+    );
+    let val = http_get_json(&url, &token).await?;
+    let ok = val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !ok {
+        // search:read not granted yet, or rate-limited. Bubble up so the
+        // caller can fall back to per-channel scanning.
+        return Err(format!(
+            "search.messages: {}",
+            val.get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+        ));
+    }
+    let mut out: Vec<Message> = Vec::new();
+    let matches = val
+        .pointer("/messages/matches")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut user_cache: HashMap<String, String> = HashMap::new();
+    for m in matches {
+        let ts = m.get("ts").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if ts.is_empty() {
+            continue;
+        }
+        // Filter by cutoff.
+        let ts_unix: i64 = ts
+            .split('.')
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        if ts_unix < since_ts_unix {
+            continue;
+        }
+        let channel_id = m
+            .pointer("/channel/id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let channel_name = m
+            .pointer("/channel/name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let user_id = m.get("user").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let user_name = match &user_id {
+            Some(uid) => Some(resolve_user_name(&token, uid, &mut user_cache).await),
+            None => m
+                .get("username")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        };
+        let text = m.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let permalink = m
+            .get("permalink")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| build_permalink(&build_web_link(&team_id, &channel_id), &ts));
+        out.push(Message {
+            permalink,
+            channel_id,
+            channel_name,
+            ts,
+            user: user_id,
+            user_name,
+            text,
+        });
+    }
+    Ok(out)
+}
+
+// Generic channel-history pull. Used by the polling worker for tracked
+// channels (#client-*, #daily-standup, #all-in-cahoots, etc.).
+pub async fn list_channel_messages(
+    channel_id: &str,
+    channel_name: Option<&str>,
+    since_ts_unix: Option<i64>,
+    limit: u32,
+) -> Result<Vec<Message>, String> {
+    let token = oauth::ensure_fresh_token(&SLACK)
+        .await
+        .map_err(|e| format!("Slack: {}", e))?;
+    let team_id = workspace_team_id(&token).await.unwrap_or_default();
+    let mut url = format!(
+        "{}/conversations.history?channel={}&limit={}",
+        SLACK_API_BASE,
+        urlencode(channel_id),
+        limit.clamp(10, 200),
+    );
+    if let Some(ts) = since_ts_unix {
+        url.push_str(&format!("&oldest={}", ts));
+    }
+    let val = http_get_json(&url, &token).await?;
+    let env: SlackEnvelope<ConversationsHistoryResponse> =
+        parse_envelope(val, "conversations.history")?;
+    let mut user_cache: HashMap<String, String> = HashMap::new();
+    let web_link = build_web_link(&team_id, channel_id);
+    let mut out: Vec<Message> = Vec::with_capacity(env.body.messages.len());
+    for raw in env.body.messages {
+        if raw.subtype.as_deref() == Some("channel_join")
+            || raw.subtype.as_deref() == Some("channel_leave")
+        {
+            continue;
+        }
+        let user_name = match &raw.user {
+            Some(uid) => Some(resolve_user_name(&token, uid, &mut user_cache).await),
+            None => None,
+        };
+        out.push(Message {
+            permalink: build_permalink(&web_link, &raw.ts),
+            channel_id: channel_id.to_string(),
+            channel_name: channel_name.unwrap_or("").to_string(),
+            ts: raw.ts,
+            user: raw.user,
+            user_name,
+            text: raw.text,
+        });
+    }
+    Ok(out)
+}
+
+// chat.postMessage. Used by send-later drafts and pre-call-brief DMs.
+// `thread_ts` lets a draft reply into a thread; pass None for top-level.
+pub async fn send_chat_message(
+    channel: &str,
+    text: &str,
+    thread_ts: Option<&str>,
+) -> Result<String, String> {
+    let token = oauth::ensure_fresh_token(&SLACK)
+        .await
+        .map_err(|e| format!("Slack: {}", e))?;
+    let url = format!("{}/chat.postMessage", SLACK_API_BASE);
+    let mut body = serde_json::json!({
+        "channel": channel,
+        "text": text,
+    });
+    if let Some(ts) = thread_ts {
+        if !ts.is_empty() {
+            body["thread_ts"] = serde_json::Value::String(ts.to_string());
+        }
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let resp = client
+        .post(&url)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network: {}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Slack {}: {}", status.as_u16(), body));
+    }
+    let val: serde_json::Value = resp.json().await.map_err(|e| format!("Parse: {}", e))?;
+    if val.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return Err(format!(
+            "chat.postMessage: {}",
+            val.get("error").and_then(|v| v.as_str()).unwrap_or("unknown")
+        ));
+    }
+    Ok(val
+        .get("ts")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string())
+}
+
+// Open (or fetch) the IM channel ID for the authed user — used so the
+// pre-call-brief DM cron knows which conversation to post to. Slack's
+// chat.postMessage accepts a user ID in the `channel` field and will
+// auto-open the IM, but conversations.open is cleaner for keeping the
+// channel id stable across sends.
+pub async fn open_im_with_self() -> Result<String, String> {
+    let identity = auth_test_identity().await?;
+    open_im_with_user(&identity.user_id).await
+}
+
+pub async fn open_im_with_user(user_id: &str) -> Result<String, String> {
+    let token = oauth::ensure_fresh_token(&SLACK)
+        .await
+        .map_err(|e| format!("Slack: {}", e))?;
+    let url = format!(
+        "{}/conversations.open?users={}",
+        SLACK_API_BASE,
+        urlencode(user_id)
+    );
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let resp = client
+        .post(&url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|e| format!("Network: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("Slack {}", resp.status().as_u16()));
+    }
+    let val: serde_json::Value = resp.json().await.map_err(|e| format!("Parse: {}", e))?;
+    if val.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return Err(format!(
+            "conversations.open: {}",
+            val.get("error").and_then(|v| v.as_str()).unwrap_or("unknown")
+        ));
+    }
+    Ok(val
+        .pointer("/channel/id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string())
+}
+
+// Best-effort granted-scopes probe. apps.permissions doesn't work for
+// user tokens; we check via auth.test response headers (X-OAuth-Scopes),
+// which Slack doesn't always send. Fall back to optimistic "granted"
+// when the header is absent — the calling code surfaces the actual
+// missing-scope error from search.messages / im.history if reads fail.
+pub async fn granted_scopes_probe() -> Result<Vec<String>, String> {
+    let token = oauth::ensure_fresh_token(&SLACK)
+        .await
+        .map_err(|e| format!("Slack: {}", e))?;
+    let url = format!("{}/auth.test", SLACK_API_BASE);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let resp = client
+        .get(&url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|e| format!("Network: {}", e))?;
+    let scopes_header = resp
+        .headers()
+        .get("X-OAuth-Scopes")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if scopes_header.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(scopes_header
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
 }

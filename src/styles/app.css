@@ -1407,3 +1407,107 @@ button.live-status-row {
   border-top: 1px solid var(--border);
   padding-top: var(--space-sm);
 }
+
+/* ── v0.44 Slack reads + morning stand-up surfaces ───
+ * Mentions overnight section, draft-reply affordance,
+ * morning stand-up markdown rendering. Reuses v0.42
+ * tokens (Cloud bg, Reed sidebar, Marigold accent) and
+ * existing .today-row geometry. */
+.section-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-xs);
+}
+
+.today-row-action {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.today-row-action:hover {
+  background: var(--accent-light, #fff7e6);
+  border-color: var(--accent, #f0a500);
+}
+
+.today-row-action[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.morning-standup-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  font: var(--type-body);
+  color: var(--text);
+}
+
+.morning-standup-h {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+
+.morning-standup-p {
+  margin: 0;
+  font: var(--type-body);
+  color: var(--text);
+}
+
+.morning-standup-list {
+  margin: 0;
+  padding-left: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.morning-standup-list li {
+  font: var(--type-body);
+  color: var(--text);
+}
+
+.morning-standup-footer {
+  font: var(--type-meta);
+  color: var(--text-muted);
+  margin-top: var(--space-sm);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-sm);
+}
+
+.form-label {
+  display: block;
+  font: var(--type-meta);
+  color: var(--text-muted);
+  margin-top: var(--space-sm);
+  margin-bottom: 4px;
+}
+
+.form-input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--type-body);
+  box-sizing: border-box;
+}
+
+.form-input:focus {
+  outline: 2px solid var(--accent, #f0a500);
+  outline-offset: -1px;
+}
+
+textarea.form-input {
+  resize: vertical;
+  min-height: 100px;
+}

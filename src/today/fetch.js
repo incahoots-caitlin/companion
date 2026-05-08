@@ -414,6 +414,141 @@ export async function loadSlack(state) {
   state.last_fetch_at.slack = Date.now();
 }
 
+// ── Slack mentions overnight (v0.44) ──────────────────────────────────
+//
+// Fetches @-mentions of Caitlin and DMs from the last 12 hours. Hidden
+// when Slack OAuth isn't connected. The render layer is "quiet by
+// default" — empty rows = no section.
+
+export async function loadSlackMentions(state) {
+  const slot =
+    state.slack_mentions ||
+    (state.slack_mentions = {
+      connected: null,
+      rows: null,
+      error: null,
+      needs_reauth: false,
+    });
+  // Reuse the slack OAuth status the existing loadSlack writes into
+  // state.slack — no extra round trip needed.
+  let connected = state.slack?.status?.connected;
+  if (connected === undefined || connected === null) {
+    try {
+      const status = await safeInvoke("get_slack_oauth_status");
+      connected = !!(status?.connected ?? status?.extra?.connected);
+    } catch (e) {
+      connected = false;
+    }
+  }
+  slot.connected = !!connected;
+  if (!connected) {
+    slot.rows = [];
+    slot.error = null;
+    state.last_fetch_at.slack_mentions = Date.now();
+    return;
+  }
+
+  // Probe identity once per process — surfaces missing-scopes when
+  // Slack returns the new-OAuth-required state.
+  try {
+    const identity = await safeInvoke("get_slack_workspace_identity");
+    slot.needs_reauth = !!identity?.needs_reauth;
+  } catch (e) {
+    // Ignore — auth.test failures will show up in the lists too.
+  }
+
+  try {
+    const [mentionsRaw, dmsRaw] = await Promise.allSettled([
+      safeInvoke("list_slack_mentions", { sinceHours: 12 }),
+      safeInvoke("list_slack_dms", { sinceHours: 12 }),
+    ]);
+    const mentions =
+      mentionsRaw.status === "fulfilled" ? JSON.parse(mentionsRaw.value || "[]") : [];
+    const dms = dmsRaw.status === "fulfilled" ? JSON.parse(dmsRaw.value || "[]") : [];
+    const merged = [...mentions, ...dms];
+    merged.sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
+    slot.rows = merged;
+    slot.error = null;
+  } catch (e) {
+    slot.rows = [];
+    slot.error = String(e);
+  }
+  state.last_fetch_at.slack_mentions = Date.now();
+}
+
+// ── Slack drafts cron (v0.44) ─────────────────────────────────────────
+//
+// Walks the queue and sends any draft whose send_at has passed. Returns
+// the worker payload so callers can surface counts in a status pill.
+
+export async function processSlackDrafts() {
+  if (!bridge()) return null;
+  try {
+    const raw = await safeInvoke("process_slack_drafts");
+    return JSON.parse(raw || "{}");
+  } catch (e) {
+    console.warn("process_slack_drafts failed:", e);
+    return null;
+  }
+}
+
+export async function listSlackDrafts() {
+  if (!bridge()) return [];
+  try {
+    const raw = await safeInvoke("list_slack_drafts");
+    return JSON.parse(raw || "[]");
+  } catch (e) {
+    console.warn("list_slack_drafts failed:", e);
+    return [];
+  }
+}
+
+export async function queueSlackDraft({ channelId, body, threadTs, sendAt, label }) {
+  if (!bridge()) throw new Error("not in tauri");
+  return safeInvoke("queue_slack_draft", {
+    input: {
+      channel_id: channelId,
+      body,
+      thread_ts: threadTs || null,
+      send_at: sendAt,
+      label: label || null,
+    },
+  });
+}
+
+export async function cancelSlackDraft(recordId) {
+  if (!bridge()) throw new Error("not in tauri");
+  return safeInvoke("cancel_slack_draft", { recordId });
+}
+
+export async function runMorningStandup({ post = false } = {}) {
+  if (!bridge()) throw new Error("not in tauri");
+  return safeInvoke("run_morning_standup", { postToSlackArg: post });
+}
+
+// ── Morning stand-up state (v0.44) ────────────────────────────────────
+//
+// The stand-up isn't fetched on the regular poller — it's run on demand
+// (cheap to refresh, expensive to generate via Sonnet). The fetch layer
+// just initialises the slot so render has something to read.
+
+export function ensureMorningStandupSlot(state) {
+  if (!state.morning_standup) {
+    state.morning_standup = {
+      loading: false,
+      last_run_at: null,
+      headline_md: "",
+      body_md: "",
+      full_md: "",
+      slack_payload_md: "",
+      posted_to_slack: false,
+      posted_at: null,
+      error: null,
+    };
+  }
+  return state.morning_standup;
+}
+
 // ── Pipeline (v0.33) ──────────────────────────────────────────────────
 //
 // Pulls the Leads table, filters to active (not won/lost). Fed by
@@ -548,6 +683,10 @@ export async function loadAll(state) {
     loadSlack(state),
     loadPipeline(state),
   ]);
+  // v0.44: mentions overnight reads after slack so it can reuse the
+  // freshly-fetched OAuth status without a second Keychain hit.
+  await loadSlackMentions(state);
+  ensureMorningStandupSlot(state);
   // Email runs after calendar so it can reuse the freshly-fetched
   // Google status without a second Keychain hit.
   await loadEmail(state);
@@ -588,6 +727,9 @@ export async function refreshStale(state) {
   }
   if ((state.last_fetch_at.slack || 0) + STALE_MS < now) {
     tasks.push(loadSlack(state));
+  }
+  if ((state.last_fetch_at.slack_mentions || 0) + LIVE_STALE_MS < now) {
+    tasks.push(loadSlackMentions(state));
   }
   if ((state.last_fetch_at.pipeline || 0) + STALE_MS < now) {
     tasks.push(loadPipeline(state));

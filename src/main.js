@@ -205,6 +205,44 @@ function registerTodayPollers() {
     getHeader: () => todayRender.sectionHeader("calendar"),
     getSignature: () => todaySignature("calendar", _state.today),
   });
+
+  // v0.44 — mentions overnight + DMs. "status" cadence (60s) so the
+  // morning scan picks up new arrivals without waiting for the slower
+  // data tick.
+  poller.register({
+    id: "today.slack_mentions",
+    kind: "status",
+    fetch: async () => {
+      await todayFetch.loadSlackMentions(_state.today);
+    },
+    onAfter: () => {
+      todayRender.drawSection(_state.today, "slack-mentions");
+    },
+    getHeader: () => todayRender.sectionHeader("slack-mentions"),
+    getSignature: () => {
+      const rows = _state.today?.slack_mentions?.rows || [];
+      return rows.map((r) => `${r.ts}:${r.channel_id}`).join("|");
+    },
+  });
+
+  // v0.44 — drafts queue worker. Walks queued drafts on the same cadence
+  // and sends ones whose send_at has passed. Runs even when the user
+  // isn't on the Today view because Companion's window-focus already
+  // gates the poller.
+  poller.register({
+    id: "today.process_drafts",
+    kind: "status",
+    fetch: async () => {
+      try {
+        await todayFetch.processSlackDrafts();
+      } catch (e) {
+        // soft-fail; failures get logged
+      }
+    },
+    onAfter: () => {},
+    getHeader: () => null,
+    getSignature: () => "",
+  });
 }
 
 function todaySignature(kind, state) {
@@ -1732,6 +1770,167 @@ async function showPreCallBriefModal(eventDetail) {
 
   refreshBtn.addEventListener("click", load);
   load();
+}
+
+// ─── Slack draft modal (v0.44) ──────────────────────────────────────
+//
+// Send-later drafts: Caitlin writes a Slack reply now, schedules it for
+// later. Companion holds it in the `Slack Drafts` Airtable table; the
+// drafts cron sends it when send_at passes. L4 — she can edit /
+// reschedule / cancel before send_at; after send_at, no further
+// approval.
+
+function defaultSendAtIso() {
+  // Default: 9am next weekday Melbourne time. If now is < 8am the
+  // default is today 9am.
+  const now = new Date();
+  let target = new Date(now);
+  if (now.getHours() >= 8) {
+    target.setDate(target.getDate() + 1);
+  }
+  // Skip weekends.
+  while (target.getDay() === 0 || target.getDay() === 6) {
+    target.setDate(target.getDate() + 1);
+  }
+  target.setHours(9, 0, 0, 0);
+  return target.toISOString().slice(0, 16); // YYYY-MM-DDTHH:MM (datetime-local)
+}
+
+function showSlackDraftModal({ channelId, threadTs, asker } = {}) {
+  if (document.getElementById("slack-draft-modal")) return;
+  const overlay = el("div", { id: "slack-draft-modal", class: "modal-overlay" });
+  const modal = el("div", { class: "modal" });
+  const close = () => overlay.remove();
+
+  modal.appendChild(
+    el("div", { class: "modal-header" }, [
+      el("div", { class: "modal-title" }, [
+        asker ? `Reply to ${asker} (send later)` : "Slack draft (send later)",
+      ]),
+      el("button", { class: "modal-close", "aria-label": "Close" }, ["×"]),
+    ])
+  );
+  modal.appendChild(
+    el("div", { class: "modal-meta" }, [
+      "Companion holds the message and sends it when the scheduled time arrives. Window must be open for delivery.",
+    ])
+  );
+
+  const body = el("div", { class: "modal-body" });
+
+  const channelInput = el("input", {
+    class: "form-input",
+    type: "text",
+    value: channelId || "",
+    placeholder: "Channel ID (e.g. C0ASF8N5DUK) or user ID for DM",
+  });
+  body.appendChild(el("label", { class: "form-label" }, ["Channel / DM"]));
+  body.appendChild(channelInput);
+
+  const threadInput = el("input", {
+    class: "form-input",
+    type: "text",
+    value: threadTs || "",
+    placeholder: "Thread timestamp (optional)",
+  });
+  body.appendChild(el("label", { class: "form-label" }, ["Thread reply (optional)"]));
+  body.appendChild(threadInput);
+
+  const textArea = el("textarea", {
+    class: "form-input",
+    rows: "6",
+    placeholder: "Message body…",
+  });
+  body.appendChild(el("label", { class: "form-label" }, ["Message"]));
+  body.appendChild(textArea);
+
+  const sendAtInput = el("input", {
+    class: "form-input",
+    type: "datetime-local",
+    value: defaultSendAtIso(),
+  });
+  body.appendChild(el("label", { class: "form-label" }, ["Send at"]));
+  body.appendChild(sendAtInput);
+
+  modal.appendChild(body);
+
+  const queueBtn = el(
+    "button",
+    { class: "button", id: "slack-draft-queue", type: "button" },
+    ["Queue draft"]
+  );
+  modal.appendChild(
+    el("div", { class: "modal-actions" }, [
+      el(
+        "button",
+        { class: "button button-secondary", id: "slack-draft-cancel", type: "button" },
+        ["Cancel"]
+      ),
+      queueBtn,
+    ])
+  );
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  modal.querySelector(".modal-close").addEventListener("click", close);
+  document.getElementById("slack-draft-cancel").addEventListener("click", close);
+
+  queueBtn.addEventListener("click", async () => {
+    const channel = channelInput.value.trim();
+    const text = textArea.value.trim();
+    const sendAt = sendAtInput.value;
+    const thread = threadInput.value.trim();
+    if (!channel || !text || !sendAt) {
+      showToast("Channel, message, and send time are required.");
+      return;
+    }
+    queueBtn.disabled = true;
+    queueBtn.textContent = "Queuing…";
+    try {
+      const sendAtIso = new Date(sendAt).toISOString();
+      await todayFetch.queueSlackDraft({
+        channelId: channel,
+        body: text,
+        threadTs: thread || null,
+        sendAt: sendAtIso,
+        label: asker ? `Reply to ${asker}` : null,
+      });
+      showToast("Draft queued.", { ttl: 3000 });
+      close();
+    } catch (e) {
+      showToast(`Couldn't queue draft: ${e}`, { ttl: 6000 });
+      queueBtn.disabled = false;
+      queueBtn.textContent = "Queue draft";
+    }
+  });
+}
+
+// ─── Morning stand-up runner (v0.44) ────────────────────────────────
+async function runMorningStandupNow({ post = false } = {}) {
+  const slot = todayFetch.ensureMorningStandupSlot(_state.today);
+  slot.loading = true;
+  slot.error = null;
+  todayRender.drawSection(_state.today, "morning-standup");
+  try {
+    const result = await todayFetch.runMorningStandup({ post });
+    slot.loading = false;
+    slot.last_run_at = new Date().toISOString();
+    slot.headline_md = result?.headline_md || "";
+    slot.body_md = result?.body_md || "";
+    slot.full_md = result?.full_md || "";
+    slot.slack_payload_md = result?.slack_payload_md || "";
+    slot.posted_to_slack = !!result?.posted_to_slack;
+    slot.posted_at = result?.posted_at || null;
+    slot.error = null;
+  } catch (e) {
+    slot.loading = false;
+    slot.error = String(e);
+  }
+  todayRender.drawSection(_state.today, "morning-standup");
 }
 
 // ─── airtable:create-client handler ──────────────────────────────────
@@ -6424,9 +6623,23 @@ document.addEventListener("DOMContentLoaded", () => {
     // produces a receipt. Surfaces a hint so the user knows it's
     // pre-loading the matched client.
     showToast(
-      `Drafting receipt from yesterday's call with ${ev.client_code || "the call"}. Use Monthly Check-in for now — the dedicated post-call flow ships in v0.44.`,
+      `Drafting receipt from yesterday's call with ${ev.client_code || "the call"}. Use Monthly Check-in for now — the dedicated post-call flow ships in v0.45.`,
       { ttl: 6000 }
     );
+  });
+
+  // v0.44 Block G — Slack mentions, drafts, morning stand-up handlers ──
+  document.addEventListener("today:draft-slack-reply", (e) => {
+    const detail = e.detail || {};
+    showSlackDraftModal({
+      channelId: detail.channel_id || "",
+      threadTs: detail.thread_ts || "",
+      asker: detail.asker || "",
+    });
+  });
+
+  document.addEventListener("today:run-morning-standup", async () => {
+    await runMorningStandupNow({ post: false });
   });
 
   // ─── Per-client view event handlers ─────────────────────────────────

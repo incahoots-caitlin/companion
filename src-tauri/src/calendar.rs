@@ -433,6 +433,29 @@ struct RawAttendee {
     response_status: Option<String>,
 }
 
+// v0.44 — exposed publicly so the time-per-client aggregator can request
+// a true 7-day window in a single backend call rather than chaining
+// list_events_yesterday + list_events_today (which only covered 2 days
+// in the v0.43 partial). Other callers should still prefer the named
+// today/yesterday/week helpers above.
+#[allow(dead_code)]
+pub async fn list_events_in_window_pub(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<Vec<CalendarEvent>, String> {
+    list_events_in_window(start, end).await
+}
+
+// Convenience wrapper that takes a number of days back from now (local
+// timezone) and returns the events from then to now. Used by the
+// 7-day time aggregation in lib.rs.
+pub async fn list_events_last_n_days(days_back: i64) -> Result<Vec<CalendarEvent>, String> {
+    let now = Local::now();
+    let start = (local_day_start(now) - Duration::days(days_back.max(1))).with_timezone(&Utc);
+    let end = local_day_end(now).with_timezone(&Utc);
+    list_events_in_window(start, end).await
+}
+
 async fn list_events_in_window(
     start: DateTime<Utc>,
     end: DateTime<Utc>,

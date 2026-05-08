@@ -7675,43 +7675,11 @@ struct TimeBucket {
 
 #[tauri::command]
 async fn aggregate_time_per_client_week() -> Result<String, String> {
-    use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
-
-    let now = Local::now();
-    let week_start = Local
-        .with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
-        .single()
-        .unwrap_or(now)
-        - Duration::days(now.weekday().num_days_from_monday() as i64);
-    let _ = week_start; // silence unused if branch optimised away
-    // Pull last 7 days through the existing list_events_today /
-    // list_events_yesterday + week helpers. We use a single in-window
-    // call for efficiency.
-    let from = (Local::now() - Duration::days(6))
-        .with_timezone(&Utc);
-    let to: DateTime<Utc> = Local::now().with_timezone(&Utc);
-    let _ = (from, to); // The internal helper isn't pub; we use the
-                        // existing yesterday + today + week helpers
-                        // which together cover -1d .. +6d. For weekly
-                        // aggregation we want -6d .. now, so we build
-                        // it from yesterday + today's events plus the
-                        // events back-walked through list_events_week
-                        // would over-shoot. Pragmatic: walk yesterday
-                        // and today, plus list_events_week for tomorrow
-                        // onwards has nothing to contribute. We
-                        // therefore reconstruct -6d..-1d via repeated
-                        // list_events_yesterday-equivalent calls below.
-    // Pragmatic v0.43 implementation: yesterday + today only. A full
-    // 7-day backfill needs a new public helper on calendar.rs and
-    // ships in v0.44 alongside the source=calendar_auto write to
-    // TimeLogs. The micro-row in Today reads from this command and
-    // shows "this week so far" which is a fair label for a 2-day
-    // partial.
-    let yesterday = calendar::list_events_yesterday().await.unwrap_or_default();
-    let today = calendar::list_events_today().await.unwrap_or_default();
-    let mut all: Vec<calendar::CalendarEvent> = Vec::new();
-    all.extend(yesterday);
-    all.extend(today);
+    // v0.44: now reads a true 7-day rolling window (today + 6 days back),
+    // via the new `list_events_last_n_days` helper on calendar.rs. v0.43
+    // shipped a 2-day partial (yesterday + today) with a TODO to expand;
+    // this is that expansion.
+    let all = calendar::list_events_last_n_days(6).await.unwrap_or_default();
 
     let clients = fetch_client_match_records().await;
     let mut buckets: HashMap<String, (String, u32)> = HashMap::new();
@@ -8113,6 +8081,799 @@ async fn list_slack_for_client(input: serde_json::Value) -> Result<String, Strin
     serde_json::to_string(&activity).map_err(|e| format!("Serialise: {}", e))
 }
 
+// ── Slack reads + drafts (v0.44, Block G ship 2 of 5) ─────────────────
+//
+// Adds the inverse of the v0.26 webhook-write path: Companion now reads
+// from Slack so Today, the per-client view, and the morning stand-up can
+// surface mentions, DMs, and tracked-channel activity.
+//
+// New surfaces:
+//   - get_slack_workspace_identity()    -> { user_id, team_id, user_name, scopes_known }
+//   - list_slack_mentions(since_hours)  -> JSON array of Mention
+//   - list_slack_dms(since_hours)       -> JSON array of Mention
+//   - list_slack_channel_messages(...)  -> JSON array of Mention
+//   - queue_slack_draft(input)          -> draft_id
+//   - list_slack_drafts()               -> JSON array of Draft
+//   - cancel_slack_draft(draft_id)      -> ()
+//   - process_slack_drafts()            -> JSON { sent, failed, pending }
+//   - run_morning_standup()             -> JSON briefing
+//   - slack_send_chat(channel, text, thread_ts) -> ts
+//
+// Persistence: drafts and message metadata roll through Airtable's
+// `Slack Drafts` and `Slack Messages` tables. They aren't created here;
+// Caitlin sets them up via the Airtable schema canvas. When the tables
+// don't exist yet the commands fail soft and surface an empty list.
+
+#[derive(Serialize, Debug, Clone)]
+struct SlackMentionRow {
+    ts: String,
+    channel_id: String,
+    channel_name: String,
+    channel_kind: String, // "client" | "reference" | "dm" | "other"
+    user_id: Option<String>,
+    user_name: Option<String>,
+    text: String,
+    permalink: String,
+    is_dm: bool,
+    is_explicit_mention: bool,
+    client_code: Option<String>,
+}
+
+fn classify_channel_kind(channel_name: &str, is_dm: bool) -> &'static str {
+    if is_dm {
+        return "dm";
+    }
+    if channel_name.starts_with("client-") {
+        return "client";
+    }
+    matches!(
+        channel_name,
+        "daily-standup"
+            | "all-in-cahoots"
+            | "context-product"
+            | "context-bugs"
+            | "context-builds"
+            | "context-beta"
+    )
+    .then_some("reference")
+    .unwrap_or("other")
+}
+
+// Best-effort client-code resolution for a Slack channel name. Returns
+// the matched code from Clients table when the channel name follows the
+// `client-{slug}` convention. Falls back to None.
+async fn resolve_client_code_from_channel(channel_name: &str) -> Option<String> {
+    if !channel_name.starts_with("client-") {
+        return None;
+    }
+    let slug = &channel_name[7..]; // strip "client-"
+    if slug.is_empty() {
+        return None;
+    }
+    // Pull active clients and slug-match against names. Cheap because
+    // the list is small.
+    let data = airtable_get(
+        "Clients",
+        "filterByFormula=%7Bstatus%7D%3D%27active%27\
+&fields%5B%5D=code\
+&fields%5B%5D=name",
+    )
+    .await
+    .unwrap_or(serde_json::Value::Null);
+    let records = data["records"].as_array().cloned().unwrap_or_default();
+    for r in records {
+        let name = r["fields"]["name"].as_str().unwrap_or("");
+        let code = r["fields"]["code"].as_str().unwrap_or("");
+        let s = slugify_client_name(name);
+        if s == slug || slug.starts_with(&s) || s.starts_with(slug) {
+            return Some(code.to_string());
+        }
+    }
+    None
+}
+
+#[tauri::command]
+async fn get_slack_workspace_identity() -> Result<serde_json::Value, String> {
+    let identity = slack::auth_test_identity().await?;
+    let scopes = slack::granted_scopes_probe().await.unwrap_or_default();
+    let required = ["channels:history", "groups:history", "im:history", "users:read", "chat:write"];
+    let missing: Vec<&str> = required
+        .iter()
+        .filter(|s| {
+            !scopes.is_empty() && !scopes.iter().any(|g| g == *s)
+        })
+        .copied()
+        .collect();
+    Ok(serde_json::json!({
+        "user_id": identity.user_id,
+        "team_id": identity.team_id,
+        "user_name": identity.user_name,
+        "scopes": scopes,
+        "missing_scopes": missing,
+        "needs_reauth": !missing.is_empty(),
+    }))
+}
+
+#[tauri::command]
+async fn list_slack_mentions(since_hours: Option<u32>) -> Result<String, String> {
+    let hours = since_hours.unwrap_or(24).max(1).min(168) as i64;
+    let cutoff = (chrono::Utc::now() - chrono::Duration::hours(hours)).timestamp();
+    let raw = slack::search_mentions(cutoff).await.unwrap_or_default();
+    let mut out: Vec<SlackMentionRow> = Vec::with_capacity(raw.len());
+    for m in raw {
+        let kind = classify_channel_kind(&m.channel_name, false);
+        let client_code = resolve_client_code_from_channel(&m.channel_name).await;
+        out.push(SlackMentionRow {
+            ts: m.ts,
+            channel_id: m.channel_id,
+            channel_name: m.channel_name,
+            channel_kind: kind.to_string(),
+            user_id: m.user,
+            user_name: m.user_name,
+            text: m.text,
+            permalink: m.permalink,
+            is_dm: false,
+            is_explicit_mention: true,
+            client_code,
+        });
+    }
+    stamp_slack_last_sync();
+    serde_json::to_string(&out).map_err(|e| format!("Serialise: {}", e))
+}
+
+#[tauri::command]
+async fn list_slack_dms(since_hours: Option<u32>) -> Result<String, String> {
+    let hours = since_hours.unwrap_or(24).max(1).min(168);
+    let since_ts = format!(
+        "{}.000000",
+        (chrono::Utc::now() - chrono::Duration::hours(hours as i64)).timestamp()
+    );
+    let raw = slack::list_dms_recent(Some(&since_ts))
+        .await
+        .unwrap_or_default();
+    // Filter out Caitlin's own outbound messages — those belong in the
+    // commitment-detect path, not the inbound mentions surface.
+    let identity = slack::auth_test_identity().await.ok();
+    let self_id = identity.as_ref().map(|i| i.user_id.clone()).unwrap_or_default();
+    let mut out: Vec<SlackMentionRow> = Vec::new();
+    for m in raw {
+        if !self_id.is_empty() && m.user.as_deref() == Some(self_id.as_str()) {
+            continue;
+        }
+        out.push(SlackMentionRow {
+            ts: m.ts,
+            channel_id: m.channel_id,
+            channel_name: m.channel_name,
+            channel_kind: "dm".to_string(),
+            user_id: m.user,
+            user_name: m.user_name,
+            text: m.text,
+            permalink: m.permalink,
+            is_dm: true,
+            is_explicit_mention: false,
+            client_code: None,
+        });
+    }
+    stamp_slack_last_sync();
+    serde_json::to_string(&out).map_err(|e| format!("Serialise: {}", e))
+}
+
+#[derive(Deserialize, Debug)]
+struct ListChannelMessagesInput {
+    channel_id: String,
+    #[serde(default)]
+    channel_name: Option<String>,
+    #[serde(default)]
+    since_hours: Option<u32>,
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+#[tauri::command]
+async fn list_slack_channel_messages(input: serde_json::Value) -> Result<String, String> {
+    let parsed: ListChannelMessagesInput =
+        serde_json::from_value(input).map_err(|e| format!("Invalid input: {}", e))?;
+    if parsed.channel_id.trim().is_empty() {
+        return Err("channel_id required".to_string());
+    }
+    let hours = parsed.since_hours.unwrap_or(24).max(1).min(168) as i64;
+    let cutoff = (chrono::Utc::now() - chrono::Duration::hours(hours)).timestamp();
+    let limit = parsed.limit.unwrap_or(50);
+    let messages = slack::list_channel_messages(
+        &parsed.channel_id,
+        parsed.channel_name.as_deref(),
+        Some(cutoff),
+        limit,
+    )
+    .await?;
+    stamp_slack_last_sync();
+    serde_json::to_string(&messages).map_err(|e| format!("Serialise: {}", e))
+}
+
+#[derive(Deserialize, Debug)]
+struct SendChatInput {
+    channel: String,
+    text: String,
+    #[serde(default)]
+    thread_ts: Option<String>,
+}
+
+#[tauri::command]
+async fn slack_send_chat(input: serde_json::Value) -> Result<String, String> {
+    let parsed: SendChatInput =
+        serde_json::from_value(input).map_err(|e| format!("Invalid input: {}", e))?;
+    if parsed.channel.trim().is_empty() || parsed.text.trim().is_empty() {
+        return Err("channel and text required".to_string());
+    }
+    slack::send_chat_message(&parsed.channel, &parsed.text, parsed.thread_ts.as_deref()).await
+}
+
+// ── Send-later drafts ─────────────────────────────────────────────────
+//
+// Drafts persist in the `Slack Drafts` Airtable table with these fields:
+//   draft_id (single line text), channel_id, thread_ts, body, send_at
+//   (datetime), status (single select: queued | sent | cancelled |
+//   failed), created_at, sent_ts, error.
+//
+// The cron worker (process_slack_drafts) walks the queue every time it's
+// invoked. v0.44 wires it to the frontend's existing poller so the
+// Companion window doesn't need a long-running background task. Future
+// hardening: a tokio task at app setup that ticks every 60s.
+
+#[derive(Deserialize, Debug)]
+struct QueueDraftInput {
+    channel_id: String,
+    body: String,
+    #[serde(default)]
+    thread_ts: Option<String>,
+    // RFC3339 timestamp for when to send. Server interprets in UTC.
+    send_at: String,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+#[tauri::command]
+async fn queue_slack_draft(input: serde_json::Value) -> Result<String, String> {
+    let parsed: QueueDraftInput =
+        serde_json::from_value(input).map_err(|e| format!("Invalid input: {}", e))?;
+    if parsed.channel_id.trim().is_empty() || parsed.body.trim().is_empty() {
+        return Err("channel_id and body required".to_string());
+    }
+    if parsed.send_at.trim().is_empty() {
+        return Err("send_at required (RFC3339)".to_string());
+    }
+    let draft_id = format!(
+        "drf_{}",
+        chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S")
+    );
+    let mut fields = serde_json::json!({
+        "draft_id": draft_id,
+        "channel_id": parsed.channel_id.trim(),
+        "body": parsed.body.trim(),
+        "send_at": parsed.send_at.trim(),
+        "status": "queued",
+        "created_at": chrono::Utc::now().to_rfc3339(),
+    });
+    if let Some(t) = parsed.thread_ts.as_deref() {
+        if !t.is_empty() {
+            fields["thread_ts"] = serde_json::Value::String(t.to_string());
+        }
+    }
+    if let Some(l) = parsed.label.as_deref() {
+        if !l.is_empty() {
+            fields["label"] = serde_json::Value::String(l.to_string());
+        }
+    }
+    // Best-effort write. If the table doesn't exist yet, surface the
+    // error so Settings can prompt Caitlin to create it.
+    let _ = airtable_create_record("Slack Drafts", fields).await?;
+    Ok(draft_id)
+}
+
+#[tauri::command]
+async fn list_slack_drafts() -> Result<String, String> {
+    let qs = "filterByFormula=NOT(%7Bstatus%7D%3D%27cancelled%27)\
+&pageSize=50\
+&fields%5B%5D=draft_id\
+&fields%5B%5D=channel_id\
+&fields%5B%5D=thread_ts\
+&fields%5B%5D=body\
+&fields%5B%5D=send_at\
+&fields%5B%5D=status\
+&fields%5B%5D=created_at\
+&fields%5B%5D=label\
+&fields%5B%5D=sent_ts\
+&fields%5B%5D=error\
+&sort%5B0%5D%5Bfield%5D=send_at&sort%5B0%5D%5Bdirection%5D=asc";
+    let data = airtable_get("Slack Drafts", qs)
+        .await
+        .unwrap_or(serde_json::Value::Null);
+    let records = data["records"].as_array().cloned().unwrap_or_default();
+    let mut out: Vec<serde_json::Value> = Vec::with_capacity(records.len());
+    for r in records {
+        let id = r["id"].as_str().unwrap_or("").to_string();
+        let mut f = r["fields"].clone();
+        if let Some(obj) = f.as_object_mut() {
+            obj.insert("record_id".to_string(), serde_json::Value::String(id));
+        }
+        out.push(f);
+    }
+    serde_json::to_string(&out).map_err(|e| format!("Serialise: {}", e))
+}
+
+#[tauri::command]
+async fn cancel_slack_draft(record_id: String) -> Result<(), String> {
+    let id = record_id.trim();
+    if id.is_empty() {
+        return Err("record_id required".to_string());
+    }
+    airtable_update_record(
+        "Slack Drafts",
+        id,
+        serde_json::json!({
+            "status": "cancelled",
+        }),
+    )
+    .await
+}
+
+// Walks the drafts queue and sends anything whose send_at has passed.
+// Returns counts. Designed to be called by a frontend poller every 60s
+// while the app is foreground — same cadence pattern the Today live
+// status uses today.
+#[tauri::command]
+async fn process_slack_drafts() -> Result<String, String> {
+    let now = chrono::Utc::now();
+    // Filter: status=queued AND send_at <= now. Airtable formula handles
+    // datetime comparison via DATETIME_DIFF.
+    let qs = format!(
+        "filterByFormula={}&pageSize=50",
+        urlencode(&format!(
+            "AND({{status}}='queued',IS_BEFORE({{send_at}}, DATETIME_PARSE('{}')))",
+            now.to_rfc3339()
+        ))
+    );
+    let data = airtable_get("Slack Drafts", &qs)
+        .await
+        .unwrap_or(serde_json::Value::Null);
+    let records = data["records"].as_array().cloned().unwrap_or_default();
+    let mut sent = 0u32;
+    let mut failed = 0u32;
+    for r in &records {
+        let record_id = r["id"].as_str().unwrap_or("");
+        let channel_id = r["fields"]["channel_id"].as_str().unwrap_or("");
+        let body = r["fields"]["body"].as_str().unwrap_or("");
+        let thread_ts = r["fields"]["thread_ts"].as_str();
+        if record_id.is_empty() || channel_id.is_empty() || body.is_empty() {
+            continue;
+        }
+        match slack::send_chat_message(channel_id, body, thread_ts).await {
+            Ok(ts) => {
+                let _ = airtable_update_record(
+                    "Slack Drafts",
+                    record_id,
+                    serde_json::json!({
+                        "status": "sent",
+                        "sent_ts": ts,
+                    }),
+                )
+                .await;
+                sent += 1;
+            }
+            Err(e) => {
+                let _ = airtable_update_record(
+                    "Slack Drafts",
+                    record_id,
+                    serde_json::json!({
+                        "status": "failed",
+                        "error": format!("{}", e),
+                    }),
+                )
+                .await;
+                failed += 1;
+            }
+        }
+    }
+    let pending_qs = "filterByFormula=%7Bstatus%7D%3D%27queued%27&pageSize=1";
+    let pending_data = airtable_get("Slack Drafts", pending_qs)
+        .await
+        .unwrap_or(serde_json::Value::Null);
+    let pending = pending_data["records"]
+        .as_array()
+        .map(|r| r.len() as u32)
+        .unwrap_or(0);
+    Ok(serde_json::json!({
+        "sent": sent,
+        "failed": failed,
+        "pending_remaining": pending,
+        "checked_at": now.to_rfc3339(),
+    })
+    .to_string())
+}
+
+// ── Morning stand-up ──────────────────────────────────────────────────
+//
+// The synthesis ship folded into v0.44. Pulls overnight mentions, today's
+// Calendar, yesterday's unsummarised Granola transcripts (best-effort —
+// when Granola isn't connected this is empty), open commitments due
+// today, and yesterday's receipts-by-client. Hands the JSON blob to the
+// `morning-standup` Sonnet skill for the synthesis.
+//
+// The post-to-#daily-standup behaviour is L2 in the brief; the v0.44
+// wiring runs it on demand from the frontend (Today's "Run morning
+// stand-up" affordance) rather than from a cron. The cron belongs in
+// v0.45 alongside the pre-call-brief DM cron — both need the same
+// background-tokio-task scaffolding which isn't in the codebase yet.
+
+const MORNING_STANDUP_PROMPT: &str = include_str!("../prompts/skills/morning-standup.md");
+
+#[derive(Serialize, Debug)]
+struct MorningStandupOutput {
+    headline_md: String,
+    body_md: String,
+    full_md: String,
+    slack_payload_md: String,
+    posted_to_slack: bool,
+    posted_at: Option<String>,
+    autonomy_level: &'static str,
+}
+
+#[tauri::command]
+async fn run_morning_standup(post_to_slack_arg: Option<bool>) -> Result<MorningStandupOutput, String> {
+    let key = read_anthropic_key().ok_or("Anthropic API key not set")?;
+
+    // ── Gather inputs in parallel where possible. ─────────────────────
+    let calendar_today_fut = calendar::list_events_today();
+    let calendar_yest_fut = calendar::list_events_yesterday();
+    let mentions_fut = list_slack_mentions(Some(12));
+    let dms_fut = list_slack_dms(Some(12));
+    let drafts_fut = list_slack_drafts();
+    let (cal_today, cal_yest, mentions, dms, drafts_list) = tokio::join!(
+        calendar_today_fut,
+        calendar_yest_fut,
+        mentions_fut,
+        dms_fut,
+        drafts_fut,
+    );
+    let _ = drafts_list; // queued drafts aren't surfaced in the briefing
+                          // body but we pull them so a future shape can.
+
+    let cal_today = cal_today.unwrap_or_default();
+    let cal_yest = cal_yest.unwrap_or_default();
+    let mentions_json: Vec<serde_json::Value> = serde_json::from_str(
+        &mentions.unwrap_or_else(|_| "[]".to_string()),
+    )
+    .unwrap_or_default();
+    let dms_json: Vec<serde_json::Value> = serde_json::from_str(
+        &dms.unwrap_or_else(|_| "[]".to_string()),
+    )
+    .unwrap_or_default();
+
+    // Combine mentions + DMs for the overnight feed. Cap at 8 so the
+    // skill doesn't spend tokens on noise.
+    let mut overnight: Vec<serde_json::Value> = mentions_json;
+    overnight.extend(dms_json);
+    overnight.sort_by(|a, b| {
+        b["ts"].as_str().unwrap_or("").cmp(a["ts"].as_str().unwrap_or(""))
+    });
+    overnight.truncate(8);
+
+    // Today's calls — keep the shape thin so the skill doesn't see
+    // attendee email lists.
+    let todays_calls: Vec<serde_json::Value> = cal_today
+        .iter()
+        .filter(|e| !e.all_day)
+        .map(|e| {
+            let start = chrono::DateTime::parse_from_rfc3339(&e.start).ok();
+            let now = chrono::Utc::now();
+            let minutes_until = start
+                .map(|s| (s.with_timezone(&chrono::Utc) - now).num_minutes())
+                .unwrap_or(0);
+            let time_label = start
+                .map(|s| s.with_timezone(&chrono::Local).format("%H:%M").to_string())
+                .unwrap_or_default();
+            serde_json::json!({
+                "time_label": time_label,
+                "summary": e.summary,
+                "minutes_until": minutes_until,
+                "has_brief": false,
+                "all_day": e.all_day,
+            })
+        })
+        .collect();
+
+    // Open commitments due today.
+    let due_today = airtable_get(
+        "Commitments",
+        "filterByFormula=AND(%7Bstatus%7D%3D%27open%27%2CIS_SAME(%7Bdue_at%7D%2CTODAY()%2C%27day%27))\
+&pageSize=10\
+&fields%5B%5D=title\
+&fields%5B%5D=due_at\
+&fields%5B%5D=client",
+    )
+    .await
+    .unwrap_or(serde_json::Value::Null);
+    let due_today_rows: Vec<serde_json::Value> = due_today["records"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "deliverable": r["fields"]["title"].as_str().unwrap_or(""),
+                "deadline_label": "today",
+                "client_record_ids": r["fields"]["client"].clone(),
+            })
+        })
+        .collect();
+
+    // Yesterday's unsummarised transcripts: tag-call from cal_yest. We
+    // surface the events themselves as candidates; the frontend already
+    // knows how to offer "Draft receipt" against an event id.
+    let yesterdays_calls: Vec<serde_json::Value> = cal_yest
+        .iter()
+        .filter(|e| !e.all_day)
+        .map(|e| {
+            let start = chrono::DateTime::parse_from_rfc3339(&e.start).ok();
+            let end = chrono::DateTime::parse_from_rfc3339(&e.end).ok();
+            let duration = match (start, end) {
+                (Some(s), Some(en)) => (en - s).num_minutes(),
+                _ => 0,
+            };
+            serde_json::json!({
+                "meeting_summary": e.summary,
+                "duration_min": duration,
+                "transcript_id": e.id,
+            })
+        })
+        .collect();
+
+    // Yesterday's receipts grouped by client. Pull last 24h of receipts.
+    let receipts_qs = "filterByFormula=IS_AFTER(%7Bdate%7D%2C+DATEADD(TODAY()%2C-1%2C%27days%27))\
+&pageSize=20\
+&fields%5B%5D=date\
+&fields%5B%5D=client\
+&fields%5B%5D=workflow\
+&fields%5B%5D=summary";
+    let receipts = airtable_get("Receipts", receipts_qs)
+        .await
+        .unwrap_or(serde_json::Value::Null);
+    let receipts_count = receipts["records"]
+        .as_array()
+        .map(|r| r.len())
+        .unwrap_or(0);
+
+    // Aggregate yesterday-time-by-client from the existing aggregator.
+    // It now reads 7 days, but the morning briefing uses it as a
+    // proxy for "last 24h" via the per-bucket breakdown — Caitlin reads
+    // it as "this week so far" anyway.
+    let week_buckets_str = aggregate_time_per_client_week()
+        .await
+        .unwrap_or_else(|_| "[]".to_string());
+    let week_buckets: Vec<serde_json::Value> =
+        serde_json::from_str(&week_buckets_str).unwrap_or_default();
+
+    let now_local = chrono::Local::now();
+    let user_payload = serde_json::json!({
+        "now_iso": now_local.to_rfc3339(),
+        "weekday": now_local.format("%A").to_string(),
+        "date_label": now_local.format("%-d %b").to_string(),
+        "overnight_mentions": overnight,
+        "todays_calls": todays_calls,
+        "yesterdays_unsummarised_transcripts": yesterdays_calls,
+        "due_today_commitments": due_today_rows,
+        "yesterdays_receipts_count": receipts_count,
+        "week_time_buckets": week_buckets,
+    });
+
+    // ── Run the synthesis through Sonnet. Brief calls for Sonnet because
+    // the synthesis matters; Haiku rushes it. ────────────────────────────
+    let body = AnthropicRequest {
+        model: "claude-sonnet-4-5",
+        max_tokens: 1500,
+        system: MORNING_STANDUP_PROMPT,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: user_payload.to_string(),
+        }],
+        mcp_servers: None,
+    };
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("HTTP init: {}", e))?;
+    let response = http
+        .post(ANTHROPIC_API)
+        .header("x-api-key", &key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network: {}", e))?;
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Morning stand-up {}: {}", status.as_u16(), text));
+    }
+    let parsed_resp: AnthropicResponse =
+        response.json().await.map_err(|e| format!("Parse: {}", e))?;
+    let raw_text = collect_text_blocks(&parsed_resp.content);
+
+    // Extract JSON. Skill output contract returns strict JSON.
+    let json_str = extract_json_block(&raw_text)
+        .unwrap_or_else(|_| raw_text.clone());
+    let parsed_json: serde_json::Value = serde_json::from_str(&json_str)
+        .unwrap_or_else(|_| {
+            // Fallback: treat the whole response as the markdown body.
+            serde_json::json!({
+                "headline_md": "",
+                "body_md": raw_text,
+                "full_md": raw_text,
+                "slack_payload_md": raw_text,
+            })
+        });
+
+    let headline_md = parsed_json["headline_md"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let body_md = parsed_json["body_md"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let full_md = parsed_json["full_md"]
+        .as_str()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            if headline_md.is_empty() {
+                body_md.clone()
+            } else {
+                format!("{}\n\n{}", headline_md, body_md)
+            }
+        });
+    let slack_payload_md = parsed_json["slack_payload_md"]
+        .as_str()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| full_md.clone());
+
+    // Post to #daily-standup when requested. L2: post automatically. We
+    // re-use the existing webhook path to keep auth simple. Failing to
+    // post is non-fatal — the briefing still surfaces in Today.
+    let mut posted_to_slack = false;
+    let mut posted_at: Option<String> = None;
+    if post_to_slack_arg.unwrap_or(false) {
+        if let Some(webhook) = read_slack_webhook() {
+            if let Err(e) = post_to_slack(&webhook, &slack_payload_md).await {
+                eprintln!("[morning-standup] post failed: {}", e);
+            } else {
+                posted_to_slack = true;
+                posted_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+        }
+    }
+
+    Ok(MorningStandupOutput {
+        headline_md,
+        body_md,
+        full_md,
+        slack_payload_md,
+        posted_to_slack,
+        posted_at,
+        autonomy_level: "L2",
+    })
+}
+
+// ── Pre-call brief Slack DM (the v0.43 deferral) ──────────────────────
+//
+// Companion fires `get_pre_call_brief` for tagged Calendar events 15
+// minutes before they start, then DMs Caitlin the brief via
+// `slack_send_chat` to her own user_id. v0.44 ships the on-demand
+// command (`dm_pre_call_brief_for_event`) so the frontend can wire it
+// to the existing Today calendar poller; the every-60-second cron
+// scaffolding belongs in v0.45.
+//
+// Per-meeting-type opt-out and quiet-morning-batch live in the
+// Companion Settings keychain entries; the command reads them and
+// short-circuits when off. v0.44 wires the keys but the Settings UI
+// for them is queued for v0.45 with the cron itself.
+
+const KEYRING_PRECALL_DM_OPT_OUT_INTERNAL: &str = "precall-dm-optout-internal";
+const KEYRING_PRECALL_DM_QUIET_MORNING: &str = "precall-dm-quiet-morning";
+
+#[derive(Deserialize, Debug)]
+struct DmPreCallBriefInput {
+    event: serde_json::Value,
+    #[serde(default)]
+    client_code: Option<String>,
+    #[serde(default)]
+    client_name: Option<String>,
+    #[serde(default)]
+    is_internal: Option<bool>,
+}
+
+#[tauri::command]
+async fn dm_pre_call_brief_for_event(input: serde_json::Value) -> Result<serde_json::Value, String> {
+    let parsed: DmPreCallBriefInput =
+        serde_json::from_value(input).map_err(|e| format!("Invalid input: {}", e))?;
+
+    // Opt-out checks. Both off by default.
+    let optout_internal = oauth::read_keychain(KEYRING_PRECALL_DM_OPT_OUT_INTERNAL)
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let quiet_morning = oauth::read_keychain(KEYRING_PRECALL_DM_QUIET_MORNING)
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    if optout_internal && parsed.is_internal.unwrap_or(false) {
+        return Ok(serde_json::json!({
+            "skipped": true,
+            "reason": "internal-meeting-optout",
+        }));
+    }
+    let now_local = chrono::Local::now();
+    let hour = now_local.format("%H").to_string().parse::<u32>().unwrap_or(12);
+    if quiet_morning && hour < 9 {
+        return Ok(serde_json::json!({
+            "skipped": true,
+            "reason": "quiet-morning-batch",
+        }));
+    }
+
+    // Build the brief by reusing the existing get_pre_call_brief command.
+    let brief_input = serde_json::json!({
+        "event": parsed.event,
+        "client_code": parsed.client_code,
+        "client_name": parsed.client_name,
+    });
+    let brief = get_pre_call_brief(brief_input).await?;
+
+    // Open IM with self and post the brief.
+    let im_channel = slack::open_im_with_self().await?;
+    let summary = parsed
+        .event
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Upcoming call");
+    let header = format!("*Pre-call brief — {}*\n", summary);
+    let payload = format!("{}{}", header, brief.markdown);
+    let ts = slack::send_chat_message(&im_channel, &payload, None).await?;
+    Ok(serde_json::json!({
+        "skipped": false,
+        "channel_id": im_channel,
+        "ts": ts,
+        "client_code": brief.client_code,
+        "client_name": brief.client_name,
+    }))
+}
+
+#[tauri::command]
+fn set_precall_dm_settings(
+    optout_internal: Option<bool>,
+    quiet_morning: Option<bool>,
+) -> Result<(), String> {
+    if let Some(v) = optout_internal {
+        oauth::write_keychain(
+            KEYRING_PRECALL_DM_OPT_OUT_INTERNAL,
+            if v { "true" } else { "false" },
+        )?;
+    }
+    if let Some(v) = quiet_morning {
+        oauth::write_keychain(
+            KEYRING_PRECALL_DM_QUIET_MORNING,
+            if v { "true" } else { "false" },
+        )?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_precall_dm_settings() -> serde_json::Value {
+    serde_json::json!({
+        "optout_internal": oauth::read_keychain(KEYRING_PRECALL_DM_OPT_OUT_INTERNAL).map(|v| v == "true").unwrap_or(false),
+        "quiet_morning": oauth::read_keychain(KEYRING_PRECALL_DM_QUIET_MORNING).map(|v| v == "true").unwrap_or(false),
+    })
+}
+
 // ── Conversations (v0.27 Block D) ──────────────────────────────────────
 //
 // Chat surface bound to a Workstream. Three commands cover the full
@@ -8448,7 +9209,21 @@ pub fn run() {
             list_calendar_yesterday_tagged,
             list_calendar_recent_for_client,
             get_pre_call_brief,
-            aggregate_time_per_client_week
+            aggregate_time_per_client_week,
+            // v0.44 Block G — Slack reads + drafts + morning stand-up (ship 2 of 5)
+            get_slack_workspace_identity,
+            list_slack_mentions,
+            list_slack_dms,
+            list_slack_channel_messages,
+            slack_send_chat,
+            queue_slack_draft,
+            list_slack_drafts,
+            cancel_slack_draft,
+            process_slack_drafts,
+            run_morning_standup,
+            dm_pre_call_brief_for_event,
+            set_precall_dm_settings,
+            get_precall_dm_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -479,6 +479,274 @@ function renderSlackChannelRow(u) {
   return row;
 }
 
+// ── Section: Slack mentions overnight (v0.44) ─────────────────────────
+//
+// Surfaces the highest-signal Slack content for Caitlin's morning scan:
+// @-mentions across all channels + recent DMs that aren't Caitlin's own
+// outbound messages. Quiet by default — the fetch layer caps at 5 rows
+// and falls silent when nothing landed in the last 12h.
+
+function renderSlackMentions(state) {
+  const m = state.slack_mentions || {};
+  if (m.connected === false) return null; // Slack OAuth not connected
+  const rows = Array.isArray(m.rows) ? m.rows : [];
+  if (rows.length === 0 && !m.error) return null; // quiet by default
+
+  const root = el("section", {
+    class: "today-section",
+    "data-section": "slack-mentions",
+  });
+  root.appendChild(
+    el("div", { class: "section-label" }, ["💬 MENTIONS OVERNIGHT"])
+  );
+
+  if (m.error) {
+    root.appendChild(
+      el("div", { class: "empty" }, [
+        m.needs_reauth
+          ? "Slack scopes need a refresh — open Settings → Slack."
+          : `Mentions unavailable: ${m.error}`,
+      ])
+    );
+    return root;
+  }
+
+  if (rows.length === 0) {
+    root.appendChild(el("div", { class: "empty" }, ["Nothing landed overnight."]));
+    return root;
+  }
+
+  root.appendChild(
+    el("div", { class: "today-section-meta" }, [
+      `${rows.length} mention${rows.length === 1 ? "" : "s"} since you last looked`,
+    ])
+  );
+
+  const list = el("div", { class: "today-list" });
+  rows.slice(0, 5).forEach((row) => list.appendChild(renderMentionRow(row)));
+  root.appendChild(list);
+  return root;
+}
+
+function renderMentionRow(m) {
+  const row = el("div", { class: "today-row" });
+  const sender = m.user_name || m.user_id || "—";
+  const channelLabel = m.is_dm
+    ? "DM"
+    : `#${m.channel_name || "channel"}`;
+  const clientTag = m.client_code ? ` · ${m.client_code}` : "";
+  const ts = formatSlackTs(m.ts);
+
+  const main = el("div", { class: "today-row-main" }, [
+    el("div", { class: "today-row-title" }, [
+      `${sender} (${channelLabel}${clientTag})`,
+    ]),
+    el("div", { class: "today-row-meta" }, [
+      [ts, m.text ? truncate(m.text, 110) : ""].filter(Boolean).join(" · "),
+    ]),
+  ]);
+  const actions = el("div", { class: "today-row-side" }, [
+    el(
+      "button",
+      {
+        class: "today-row-action",
+        type: "button",
+        "data-action": "open-mention-permalink",
+        "data-permalink": m.permalink || "",
+      },
+      ["Open"]
+    ),
+    el(
+      "button",
+      {
+        class: "today-row-action",
+        type: "button",
+        "data-action": "draft-reply",
+        "data-channel-id": m.channel_id || "",
+        "data-thread-ts": m.ts || "",
+        "data-asker": sender,
+      },
+      ["Draft reply"]
+    ),
+  ]);
+  row.appendChild(main);
+  row.appendChild(actions);
+
+  row.addEventListener("click", (e) => {
+    const t = e.target.closest("[data-action]");
+    if (!t) return;
+    const action = t.getAttribute("data-action");
+    if (action === "open-mention-permalink") {
+      const url = t.getAttribute("data-permalink");
+      if (url) dispatch("today:open-url", { url });
+    } else if (action === "draft-reply") {
+      dispatch("today:draft-slack-reply", {
+        channel_id: t.getAttribute("data-channel-id"),
+        thread_ts: t.getAttribute("data-thread-ts"),
+        asker: t.getAttribute("data-asker"),
+      });
+    }
+  });
+  return row;
+}
+
+function formatSlackTs(ts) {
+  if (!ts) return "";
+  const seconds = parseInt(String(ts).split(".")[0], 10);
+  if (!Number.isFinite(seconds)) return "";
+  const d = new Date(seconds * 1000);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  return d.toLocaleTimeString("en-AU", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }) + (sameDay ? "" : ` · ${d.toLocaleDateString("en-AU", { day: "numeric", month: "short" })}`);
+}
+
+function truncate(s, n) {
+  if (!s) return "";
+  if (s.length <= n) return s;
+  return s.slice(0, n - 1).trimEnd() + "…";
+}
+
+// ── Section: morning stand-up (v0.44) ─────────────────────────────────
+//
+// Renders the morning briefing markdown when Caitlin has run it for the
+// day. The "Run morning stand-up" affordance lives in the section header
+// so a fresh briefing is one click away.
+
+function renderMorningStandup(state) {
+  const ms = state.morning_standup || {};
+  // Always show the section header so the affordance is discoverable.
+  const root = el("section", {
+    class: "today-section",
+    "data-section": "morning-standup",
+  });
+  const headerRow = el("div", { class: "section-label-row" }, [
+    el("div", { class: "section-label" }, ["☀ MORNING STAND-UP"]),
+    el(
+      "button",
+      {
+        class: "today-row-action",
+        type: "button",
+        "data-action": "run-morning-standup",
+      },
+      [ms.last_run_at ? "Refresh" : "Run now"]
+    ),
+  ]);
+  root.appendChild(headerRow);
+
+  if (ms.loading) {
+    root.appendChild(el("div", { class: "empty" }, ["Synthesising…"]));
+    headerRow.querySelector("button")?.setAttribute("disabled", "true");
+    return root;
+  }
+
+  if (!ms.last_run_at) {
+    root.appendChild(
+      el("div", { class: "empty" }, [
+        "No briefing yet today. Run it to scan overnight Slack, today's calls, and open commitments.",
+      ])
+    );
+    return root;
+  }
+
+  if (ms.error) {
+    root.appendChild(
+      el("div", { class: "empty" }, [`Stand-up failed: ${ms.error}`])
+    );
+    return root;
+  }
+
+  const md = ms.full_md || ms.body_md || "";
+  if (!md) {
+    root.appendChild(el("div", { class: "empty" }, ["Briefing was empty."]));
+    return root;
+  }
+
+  // Lightweight markdown rendering: bold paragraphs and bullets only.
+  const body = el("div", { class: "morning-standup-body" });
+  md.split(/\n\n+/).forEach((para) => {
+    const lines = para.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return;
+    if (lines.every((l) => l.startsWith("- ") || l.startsWith("• "))) {
+      const list = el("ul", { class: "morning-standup-list" });
+      lines.forEach((l) =>
+        list.appendChild(
+          el("li", {}, [renderMdInlines(l.replace(/^[-•]\s+/, ""))])
+        )
+      );
+      body.appendChild(list);
+    } else if (lines.length === 1 && /^\*\*.+\*\*$/.test(lines[0])) {
+      body.appendChild(
+        el("div", { class: "morning-standup-h" }, [
+          lines[0].replace(/^\*\*|\*\*$/g, ""),
+        ])
+      );
+    } else {
+      const p = el("p", { class: "morning-standup-p" });
+      lines.forEach((l, i) => {
+        if (i > 0) p.appendChild(document.createElement("br"));
+        const node = renderMdInlines(l);
+        if (node instanceof Node) p.appendChild(node);
+        else p.appendChild(document.createTextNode(String(node || "")));
+      });
+      body.appendChild(p);
+    }
+  });
+  root.appendChild(body);
+
+  if (ms.posted_to_slack) {
+    root.appendChild(
+      el("div", { class: "morning-standup-footer" }, [
+        `Posted to #daily-standup at ${formatSlackTs(
+          ms.posted_at
+            ? `${Math.floor(new Date(ms.posted_at).getTime() / 1000)}.0`
+            : ""
+        )}`,
+      ])
+    );
+  }
+
+  // Wire the run button.
+  headerRow
+    .querySelector('[data-action="run-morning-standup"]')
+    ?.addEventListener("click", () => {
+      dispatch("today:run-morning-standup", {});
+    });
+  return root;
+}
+
+function renderMdInlines(line) {
+  // Convert **bold** to <strong>. Everything else literal.
+  if (!line.includes("**")) return document.createTextNode(line);
+  const frag = document.createDocumentFragment();
+  let rest = line;
+  while (rest.length) {
+    const open = rest.indexOf("**");
+    if (open === -1) {
+      frag.appendChild(document.createTextNode(rest));
+      break;
+    }
+    if (open > 0) frag.appendChild(document.createTextNode(rest.slice(0, open)));
+    const close = rest.indexOf("**", open + 2);
+    if (close === -1) {
+      frag.appendChild(document.createTextNode(rest.slice(open)));
+      break;
+    }
+    frag.appendChild(
+      el("strong", {}, [rest.slice(open + 2, close)])
+    );
+    rest = rest.slice(close + 2);
+  }
+  return frag;
+}
+
 // ── Section: live status ──────────────────────────────────────────────
 
 function renderLiveStatus(state) {
@@ -1095,6 +1363,11 @@ const SECTION_RENDERERS = [
   { name: "drift", render: renderDrift },
   { name: "calendar", render: renderCalendar },
   { name: "calendar-yesterday", render: renderYesterdayCalls },
+  // v0.44 — Slack mentions overnight + DMs, ranked. Sits above the
+  // existing channel-unread block so the highest-signal Slack content
+  // is what Caitlin sees first when she opens Companion in the morning.
+  { name: "slack-mentions", render: renderSlackMentions },
+  { name: "morning-standup", render: renderMorningStandup },
   { name: "workstreams", render: renderWorkstreams },
   { name: "decisions", render: renderDecisions },
   { name: "pipeline", render: renderPipeline },
