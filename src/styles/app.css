@@ -1,24 +1,24 @@
 /* ══════════════════════════════════════════════════
- *  Companion — app-specific layer (v0.42)
+ *  Companion — app-specific layer (v0.45 Typst-aligned)
  * ══════════════════════════════════════════════════
- * Loads after the design-system files. Keep only
- * Companion-specific surfaces here. Tokens, buttons,
- * modals, forms, banners, toasts, sidebar, workflow
- * cards, status pills, scrollbar polish, illustrations,
- * receipt and the empty-state placeholder all live in
+ * Loads after the design-system files. Companion-specific
+ * surfaces only. Tokens, buttons, modals, forms, banners,
+ * toasts, sidebar, workflow cards, status pills,
+ * dividers, receipt, illustrations all live in
  * design-system/.
  *
- * v0.42 changes vs v0.41:
- *   - Receipt block (~210 lines) extracted to
- *     design-system/receipt.css
- *   - v0.41 .settings-status BEM block extracted to
- *     design-system/status.css with modifier-suffix
- *     naming (.status-card-neutral / -verified / -failing)
- *   - Hardcoded font-sizes replaced with --type-* tokens
- *   - Hardcoded spacing replaced with --space-* tokens
- *   - Hardcoded colours replaced with brand and status
- *     tokens
- *   - Pulse and live-state colours pull from --status-*
+ * v0.45 changes vs v0.44:
+ *   - Sidebar / main pane move to cool-grey GitHub-style
+ *     surfaces. Driven by token redefinition in
+ *     primitives.css; this file inherits.
+ *   - Today / per-client data rows lean Typst-receipt:
+ *     mono codes / numbers / timestamps, sans narrative
+ *     text, hairline dashed separators between rows.
+ *   - Section headers in data surfaces use --type-label
+ *     (mono caps).
+ *   - Per-client hero name uses --type-h1 (sans, NOT
+ *     serif) per Caitlin's call: In Cahoots branding is
+ *     logos only.
  */
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -50,7 +50,7 @@ body {
 /* ── Per-client view ─────────────────────────────────── */
 .client-header {
   padding: var(--space-lg) 0 var(--space-md);
-  border-bottom: 1px solid var(--border-soft);
+  border-bottom: 1px dashed rgba(31, 35, 40, 0.4);
   margin-bottom: var(--space-lg);
 }
 
@@ -63,7 +63,7 @@ body {
 }
 
 .client-name {
-  font: var(--type-display);
+  font: var(--type-h1);
   letter-spacing: -0.005em;
   margin-bottom: var(--space-xs);
   color: var(--text);
@@ -98,8 +98,8 @@ body {
 }
 
 .client-shortcut:hover {
-  border-color: var(--accent);
-  background: var(--surface-warm);
+  border-color: var(--border-strong);
+  background: var(--surface-2);
 }
 
 .client-shortcut-title {
@@ -147,6 +147,12 @@ body {
 .client-section .section-label {
   padding-left: 0;
   padding-right: 0;
+  border-bottom: 1px dashed rgba(31, 35, 40, 0.4);
+  font: var(--type-label);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text);
+  padding-bottom: var(--space-2xs);
 }
 
 .client-title-row {
@@ -178,8 +184,8 @@ body {
 }
 
 .client-project-clickable:hover {
-  border-color: var(--accent);
-  background: var(--surface-warm);
+  border-color: var(--border-strong);
+  background: var(--surface-2);
 }
 
 .client-project-main {
@@ -251,6 +257,12 @@ body {
 .today-section .section-label {
   padding-left: 0;
   padding-right: 0;
+  border-bottom: 0;
+  font: var(--type-label);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text);
+  margin-bottom: var(--space-2xs);
 }
 
 .section-label-warn {
@@ -261,12 +273,18 @@ body {
   font: var(--type-meta);
   color: var(--text-muted);
   padding: 0 0 var(--space-xs);
+  border-bottom: 1px dashed rgba(31, 35, 40, 0.25);
+  margin-bottom: var(--space-2xs);
 }
 
 .today-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2xs);
+  gap: 0;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  overflow: hidden;
 }
 
 .today-row {
@@ -275,29 +293,30 @@ body {
   justify-content: space-between;
   align-items: center;
   gap: var(--space-md);
-  padding: var(--space-xs) var(--space-sm);
-  background: var(--card-bg);
-  border: 1px solid var(--card-border-color);
-  border-radius: var(--card-radius);
-  font: var(--type-body);
+  padding: 6px 12px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dashed rgba(31, 35, 40, 0.15);
+  border-radius: 0;
+  font: var(--type-body-sm);
   color: var(--text);
   text-align: left;
   cursor: pointer;
   transition:
-    transform var(--transition-fast),
-    border-color var(--transition-fast),
-    box-shadow var(--transition-fast);
+    background var(--transition-fast);
+}
+
+.today-list .today-row:last-child {
+  border-bottom: 0;
 }
 
 button.today-row {
-  font: var(--type-body);
+  font: var(--type-body-sm);
   color: var(--text);
 }
 
 .today-row:hover {
-  transform: var(--hover-lift);
-  border-color: var(--card-border-color-hover);
-  box-shadow: var(--card-shadow-hover);
+  background: var(--surface-2);
 }
 
 .today-row-main {
@@ -325,9 +344,10 @@ button.today-row {
 
 .today-row-title {
   font-weight: 500;
-  font-size: 14px;
+  font-size: 13px;
   color: var(--text);
   overflow-wrap: anywhere;
+  font-family: var(--font-sans);
 }
 
 .today-row-meta {
@@ -1361,8 +1381,8 @@ button.live-status-row {
   overflow-wrap: anywhere;
 }
 
-/* Pre-call brief modal body. Headings are ABC Otto
-   serif (matches the design system's modal title), list
+/* Pre-call brief modal body. Headings inherit the modal
+   title type (Helvetica/Geist sans, --type-h2). List
    items sit tight under each heading. */
 .pre-call-brief-content {
   display: flex;

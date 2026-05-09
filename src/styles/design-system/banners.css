@@ -1,20 +1,21 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Banners (v0.42 brand alignment)
+ *  Design system — Banners (v0.45 soft-tinted)
  * ══════════════════════════════════════════════════
  * Top-of-app prompts (API key missing, secrets prompt,
- * onboarding nudge). Studio uses these for the Anthropic
- * key prompt and webhook prompt.
+ * onboarding nudge).
  *
- * v0.42: warm Dust background (brand) instead of grey ink.
- * Tokenised paddings.
+ * v0.45: soft-tinted backgrounds (info / warn / error)
+ * with a 3px coloured leading edge on the left. Text
+ * colour pulls from the matching status base.
  *
  * Classes:
- *   .banner            — base banner (Dust fill)
- *   .banner.banner-warn   — Marigold-tinted
- *   .banner.banner-info   — River-tinted
- *   .banner-text       — message text
- *   .banner-input      — inline input
- *   .banner-button     — inline button
+ *   .banner               — base banner (info / accent-soft)
+ *   .banner.banner-warn   — watch-tinted
+ *   .banner.banner-info   — accent-tinted (default)
+ *   .banner.banner-error  — flag-tinted
+ *   .banner-text          — message text
+ *   .banner-input         — inline input
+ *   .banner-button        — inline button
  */
 
 .banner {
@@ -26,15 +27,17 @@
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  padding: var(--space-3xs) var(--space-md);
-  background: var(--brand-dust);
-  color: var(--brand-cloud);
+  padding: 10px var(--space-md);
+  background: var(--accent-soft);
+  color: var(--text);
+  border-left: 3px solid var(--accent);
   font: var(--type-body-sm);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm);
 }
 
-.banner.banner-warn { background: var(--accent-dark); color: #FFFFFF; }
-.banner.banner-info { background: var(--status-info); color: #FFFFFF; }
+.banner.banner-info  { background: var(--status-info-soft);  border-left-color: var(--status-info); }
+.banner.banner-warn  { background: var(--status-warn-soft);  border-left-color: var(--status-warn); }
+.banner.banner-error { background: var(--status-error-soft); border-left-color: var(--status-error); }
 
 .banner-text {
   flex: 1;
@@ -42,48 +45,50 @@
 }
 
 .banner-text a {
-  color: inherit;
+  color: var(--accent);
   text-decoration: underline;
-  text-decoration-color: rgba(255, 255, 255, 0.4);
+  text-decoration-color: var(--accent-ring);
 }
 
 .banner-text a:hover {
-  text-decoration-color: rgba(255, 255, 255, 0.9);
+  text-decoration-color: var(--accent);
 }
 
 .banner-input {
   font: var(--type-body-sm);
   font-family: var(--font-mono);
-  padding: var(--space-3xs) var(--space-3xs);
+  padding: 6px 10px;
   border-radius: var(--radius-sm);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.08);
-  color: #FFFFFF;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
   min-width: 220px;
   outline: none;
-  transition: border-color var(--transition-fast);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .banner-input:focus {
-  border-color: rgba(255, 255, 255, 0.6);
+  border-color: var(--border-strong);
+  box-shadow: var(--focus-shadow);
 }
 
 .banner-input::placeholder {
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--text-dim);
 }
 
 .banner-button {
   font: var(--type-body-sm);
   font-weight: 500;
-  padding: var(--space-3xs) var(--space-3xs);
+  padding: 6px 12px;
   border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--text);
-  border: 0;
+  background: var(--accent);
+  color: #FFFFFF;
+  border: 1px solid var(--accent);
   cursor: pointer;
-  transition: background var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .banner-button:hover {
-  background: var(--surface-warm);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }

@@ -1,29 +1,26 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Pills (v0.42 brand alignment)
+ *  Design system — Pills (v0.45 status semantics)
  * ══════════════════════════════════════════════════
- * Status pill colours pull from the new brand semantic
- * tokens. Brand-named variants added for client and
- * project tagging (Sun, Marigold, Grass, Dust, River,
- * Sky, Reed). Background uses the colour at low opacity
- * (~14%); text uses the colour at full saturation. Pill
- * type stays mono 10px uppercase per the brand book.
+ * Status colour is functional, not decorative. Pills pull
+ * from --status-* tokens which map to Typst win/watch/flag.
+ * Brand-named variants stay defined for opt-in but no
+ * default surface uses them.
  *
- * Status families:
- *   .pill                 — neutral pill (mono, uppercase)
- *   .pill.pill-active     — Grass (active retainer)
- *   .pill.pill-wrap       — Marigold (wrapping up)
- *   .pill.pill-archive    — Reed (archived)
- *   .pill.pill-lead       — Sky (lead)
- *   .pill.pill-warn       — Dust (warning, error)
+ * Status families (default):
+ *   .pill                 — neutral pill (mono caps)
+ *   .pill.pill-active     — info / blue (active retainer)
+ *   .pill.pill-pending    — watch / amber
+ *   .pill.pill-archive    — muted grey
+ *   .pill.pill-lead       — ok / green (lead, going well)
+ *   .pill.pill-warn       — error / coral
  *
- * Brand-named families:
- *   .pill.pill-sun
- *   .pill.pill-marigold
- *   .pill.pill-grass
- *   .pill.pill-dust
- *   .pill.pill-river
- *   .pill.pill-sky
- *   .pill.pill-reed
+ * Legacy aliases retained:
+ *   .pill.pill-wrap       — alias of pill-pending
+ *
+ * Brand-named families (RESERVED — opt-in only,
+ *   no default surface uses these):
+ *   .pill.pill-sun / .pill-marigold / .pill-grass /
+ *   .pill.pill-dust / .pill-river / .pill-sky / .pill-reed
  *
  * Studio aliases at the bottom keep .client-status-pill +
  * .status-* working without a markup pass.
@@ -37,30 +34,32 @@
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  background: var(--surface-warm);
+  background: var(--surface-2);
   color: var(--text-mid);
   line-height: 1.6;
   white-space: nowrap;
 }
 
-/* ── Status families ───────────────────────────── */
-.pill.pill-active  { background: var(--status-ok-soft);    color: var(--status-ok); }
-.pill.pill-wrap    { background: var(--status-warn-soft);  color: var(--accent-dark); }
-.pill.pill-archive { background: rgba(196, 194, 181, 0.45); color: var(--text-muted); }
-.pill.pill-lead    { background: var(--status-info-soft);  color: var(--status-info); }
+/* ── Status families (default chrome) ──────────── */
+.pill.pill-active  { background: var(--status-info-soft);  color: var(--status-info); }
+.pill.pill-pending { background: var(--status-warn-soft);  color: var(--status-warn); }
+.pill.pill-wrap    { background: var(--status-warn-soft);  color: var(--status-warn); }
+.pill.pill-archive { background: var(--surface-2);         color: var(--text-muted); }
+.pill.pill-lead    { background: var(--status-ok-soft);    color: var(--status-ok); }
 .pill.pill-warn    { background: var(--status-error-soft); color: var(--status-error); }
 
-/* ── Brand-named families ──────────────────────── */
+/* ── Brand-named families (RESERVED, opt-in only) ─ */
 .pill.pill-sun      { background: rgba(242, 214, 38, 0.18);  color: #6E5E0F; }
-.pill.pill-marigold { background: var(--status-warn-soft);   color: var(--accent-dark); }
-.pill.pill-grass    { background: var(--status-ok-soft);     color: var(--brand-grass); }
-.pill.pill-dust     { background: var(--status-error-soft);  color: var(--brand-dust); }
-.pill.pill-river    { background: var(--status-info-soft);   color: var(--brand-river); }
+.pill.pill-marigold { background: rgba(252, 163, 41, 0.14);  color: #C97D14; }
+.pill.pill-grass    { background: rgba(99, 84, 51, 0.14);    color: var(--brand-grass); }
+.pill.pill-dust     { background: rgba(84, 43, 23, 0.14);    color: var(--brand-dust); }
+.pill.pill-river    { background: rgba(79, 102, 176, 0.14);  color: var(--brand-river); }
 .pill.pill-sky      { background: rgba(125, 178, 214, 0.22); color: #355A82; }
 .pill.pill-reed     { background: rgba(196, 194, 181, 0.45); color: var(--text-muted); }
 
 /* ── Studio aliases ───────────────────────────────────
- * Keep .client-status-pill markup working. */
+ * Keep .client-status-pill markup working. Status colour
+ * maps to win/watch/flag through --status-*. */
 .client-status-pill {
   display: inline-block;
   padding: 2px 10px;
@@ -69,13 +68,14 @@
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  background: var(--surface-warm);
+  background: var(--surface-2);
   color: var(--text-mid);
   line-height: 1.6;
   white-space: nowrap;
 }
 
-.client-status-pill.status-active  { background: var(--status-ok-soft);    color: var(--status-ok); }
-.client-status-pill.status-wrap    { background: var(--status-warn-soft);  color: var(--accent-dark); }
-.client-status-pill.status-archive { background: rgba(196, 194, 181, 0.45); color: var(--text-muted); }
-.client-status-pill.status-lead    { background: var(--status-info-soft);  color: var(--status-info); }
+.client-status-pill.status-active  { background: var(--status-info-soft);  color: var(--status-info); }
+.client-status-pill.status-wrap    { background: var(--status-warn-soft);  color: var(--status-warn); }
+.client-status-pill.status-archive { background: var(--surface-2);         color: var(--text-muted); }
+.client-status-pill.status-lead    { background: var(--status-ok-soft);    color: var(--status-ok); }
+.client-status-pill.status-warn    { background: var(--status-error-soft); color: var(--status-error); }

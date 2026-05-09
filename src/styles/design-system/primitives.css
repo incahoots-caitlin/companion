@@ -1,43 +1,48 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Primitives (v0.42 brand alignment)
+ *  Design system — Primitives (v0.45 Typst-aligned)
  * ══════════════════════════════════════════════════
  * Foundational palette, typography, spacing, radii,
  * shadows, transitions, blur, z-index, type scale.
  *
- * v0.42: dropped the cool-grey Geist-on-blue treatment
- * (legacy Vercel/Linear cosplay) and replaced it with the
- * canonical In Cahoots brand palette: eight named colours
- * (Sun, Marigold, Grass, Dust, River, Sky, Reed, Cloud)
- * plus black, drawn verbatim from
- * `Dropbox/IN CAHOOTS/06 BRAND/Jack Loel - Caption Studio/
- *  INC_BrandAssets/INC_guidelines_v01.pdf` page 4.
+ * v0.45: traditional SaaS chrome (cool-grey GitHub-style
+ * surfaces, system-blue accent) with macOS-leaning UI
+ * components and a receipt-leaning aesthetic for data
+ * surfaces. Receipt aesthetic pulled from Caitlin's
+ * canonical Typst document templates:
+ *   Dropbox/IN CAHOOTS/05 TEMPLATES/RECEIPT-DOCS/typst/
+ *     brand.typ + components.typ
+ * which define sage / win / watch / flag colours and the
+ * dashed/dot divider conventions.
  *
- * Brand rule (per the guidelines): no more than two
- * colours per design plus black. Companion bends the rule
- * for status semantics — Grass / Marigold / Dust / River
- * carry meaning on ok/warn/error/info pills. The bend is
- * documented here and in tokens.css. Jack to sign off if
- * asked.
+ * The eight-named brand palette (Sun, Marigold, Grass,
+ * Dust, River, Sky, Reed, Cloud) stays defined here as
+ * opt-in tokens, but no default surface uses them. They
+ * are reserved for explicit branded moments only.
  *
  * Australian spelling.
  */
 
 :root {
-  /* ── Brand palette — verbatim from guidelines ────── */
-  --brand-sun:       #F2D626;  /* yellow */
-  --brand-marigold:  #FCA329;  /* orange, primary action accent */
-  --brand-grass:     #635433;  /* dark olive, dark surfaces */
-  --brand-dust:      #542B17;  /* warm brown, near-black */
-  --brand-river:     #4F66B0;  /* cobalt blue */
-  --brand-sky:       #7DB2D6;  /* sky blue */
-  --brand-reed:      #C4C2B5;  /* warm grey */
-  --brand-cloud:     #EDEDED;  /* off-white */
-  --brand-black:     #000000;  /* preferred for body text */
+  /* ── Brand palette (RESERVED for opt-in branded moments) ──
+     Defined for completeness; not used in default chrome.
+     Reach for these only when a surface is intentionally
+     branded (splash screen, marketing-style empty hero). */
+  --brand-sun:       #F2D626;
+  --brand-marigold:  #FCA329;
+  --brand-grass:     #635433;
+  --brand-dust:      #542B17;
+  --brand-river:     #4F66B0;
+  --brand-sky:       #7DB2D6;
+  --brand-reed:      #C4C2B5;
+  --brand-cloud:     #EDEDED;
+  --brand-black:     #000000;
   --brand-white:     #FFFFFF;
 
   /* Legacy aliases — older Studio code paths read these.
-     Kept while the migration sweep finishes. New surfaces
-     should reach for --brand-* or the semantic tokens. */
+     Mapped to the brand palette so anything that still
+     looks them up doesn't break. New surfaces should
+     reach for the semantic tokens (--accent, --text,
+     --status-*) below. */
   --sun:       var(--brand-sun);
   --marigold:  var(--brand-marigold);
   --grass:     var(--brand-grass);
@@ -49,54 +54,78 @@
   --black:     var(--brand-black);
   --white:     var(--brand-white);
 
-  /* ── Surfaces (light-mode chrome) ───────────────── */
-  --bg:               var(--brand-cloud);     /* main pane background */
-  --surface:          #FFFFFF;                /* card surface on Cloud */
-  --surface2:         var(--brand-reed);      /* sidebar, secondary chrome */
-  --surface-deep:     #F4F4F2;                /* sunken inputs */
-  --surface-warm:     #DDD9C9;                /* hover state, warm Reed */
-  --surface-elevated: #FFFFFF;
-  --surface-glass:    rgba(255, 255, 255, 0.85);
-  --surface-glass-light: rgba(255, 255, 255, 0.65);
-  --surface-soft:     #F4F4F2;
+  /* ── Typst receipt tokens (canonical, copy verbatim from
+        Dropbox/IN CAHOOTS/05 TEMPLATES/RECEIPT-DOCS/typst/
+        brand.typ). Used for status semantics and any
+        receipt-leaning data surface. ───────────────── */
+  --receipt-sage:       #afa797;   /* warm grey-green, opt-in accent */
+  --receipt-light-sage: #d2cdc4;   /* lighter warm grey */
+  --receipt-win-fill:   #e4f0dc;   /* pale green callout */
+  --receipt-win-dot:    #4f8a3d;   /* mid green */
+  --receipt-watch-fill: #fbf1d6;   /* warm cream callout */
+  --receipt-watch-dot:  #b58a2a;   /* warm amber */
+  --receipt-flag-fill:  #fadedc;   /* soft coral callout */
+  --receipt-flag-dot:   #b63c2a;   /* coral red */
+
+  /* ── Surfaces (cool grey, GitHub / Context-landing baseline) ──
+     The chrome reads as traditional SaaS. Sidebar pulls
+     down to a slightly darker cool grey; the main pane
+     sits a hair lighter for the document-style contrast. */
+  --bg:                  #F6F8FA;
+  --surface:             #FFFFFF;
+  --surface-2:           #F0F2F5;             /* sidebar */
+  --surface-deep:        #F0F2F5;             /* sunken inputs (alias of surface-2) */
+  --surface-elevated:    #FFFFFF;
+  --surface-glass:       rgba(255, 255, 255, 0.85);
+  --surface-glass-light: rgba(255, 255, 255, 0.7);
+  --surface-soft:        #F0F2F5;
+  --surface-warm:        #E6EAEF;             /* hover state on cool surfaces */
+
+  /* Legacy alias (older Studio CSS reads --surface2). */
+  --surface2:         var(--surface-2);
 
   /* ── Text ───────────────────────────────────────── */
-  --text:       var(--brand-black);   /* black for body, per brand rule */
-  --text-mid:   #3A3A3A;
-  --text-muted: #6A6A6A;
-  --text-dim:   #8A8A8A;
-  --text-soft:  #9A9A9A;
-  --text-faint: #B0B0B0;
+  --text:        #1F2328;
+  --text-mid:    #424A53;
+  --text-muted:  #656D76;
+  --text-dim:    #848D97;
+  --text-soft:   #8B949E;
+  --text-faint:  #B0B0B0;
 
   /* ── Borders ────────────────────────────────────── */
-  --border:        rgba(0, 0, 0, 0.16);
-  --border-soft:   rgba(0, 0, 0, 0.08);
-  --border-softer: rgba(0, 0, 0, 0.04);
-  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-soft:    rgba(31, 35, 40, 0.06);
+  --border:         rgba(31, 35, 40, 0.12);
+  --border-strong:  rgba(31, 35, 40, 0.20);
+  --border-softer:  rgba(31, 35, 40, 0.04);
+  --border-subtle:  rgba(31, 35, 40, 0.06);
 
-  /* ── Accent (primary CTA, focus ring) ─────────── */
-  --accent:       var(--brand-marigold);
-  --accent-warm:  #E8911F;                          /* hover marigold */
-  --accent-soft:  rgba(252, 163, 41, 0.14);
-  --accent-dark:  #C97D14;
-  --accent-rgb:   252, 163, 41;
-  --marigold-rgb: 252, 163, 41;
+  /* ── Accent (system blue, Context #2563EB) ──────── */
+  --accent:        #2563EB;
+  --accent-hover:  #1D4ED8;
+  --accent-warm:   #1D4ED8;                  /* legacy alias for hover */
+  --accent-soft:   rgba(37, 99, 235, 0.10);
+  --accent-ring:   rgba(37, 99, 235, 0.18);
+  --accent-dark:   #1E40AF;
+  --accent-rgb:    37, 99, 235;
+  --marigold-rgb:  37, 99, 235;             /* legacy alias, repointed */
 
-  /* ── Status semantics (rule-bend, see header) ─── */
-  --status-ok:        var(--brand-grass);     /* dark olive for success */
-  --status-warn:      var(--brand-marigold);  /* marigold doubles for warn */
-  --status-error:     var(--brand-dust);      /* dust brown for error/strong */
-  --status-info:      var(--brand-river);     /* cobalt for informational */
-  --status-ok-soft:    rgba(99, 84, 51, 0.14);
-  --status-warn-soft:  rgba(252, 163, 41, 0.14);
-  --status-error-soft: rgba(84, 43, 23, 0.14);
-  --status-info-soft:  rgba(79, 102, 176, 0.14);
+  /* ── Status semantics (mapped to Typst win/watch/flag) ──
+     Functional colour, not decorative. */
+  --status-ok:         var(--receipt-win-dot);
+  --status-ok-soft:    var(--receipt-win-fill);
+  --status-warn:       var(--receipt-watch-dot);
+  --status-warn-soft:  var(--receipt-watch-fill);
+  --status-error:      var(--receipt-flag-dot);
+  --status-error-soft: var(--receipt-flag-fill);
+  --status-info:       var(--accent);
+  --status-info-soft:  var(--accent-soft);
 
   /* Legacy status aliases — older surfaces still reach for
-     --red / --amber / --green. Map them to brand status. */
-  --red:    var(--brand-dust);
-  --amber:  var(--brand-marigold);
-  --green:  var(--brand-grass);
+     --red / --amber / --green. Map them to the new status
+     semantics. */
+  --red:    var(--status-error);
+  --amber:  var(--status-warn);
+  --green:  var(--status-ok);
 
   /* ── Radii ─────────────────────────────────────── */
   --radius-sm:   6px;
@@ -104,17 +133,17 @@
   --radius-lg:   12px;
   --radius-pill: 999px;
 
-  /* ── Shadows — soft, warm ──────────────────────── */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.05);
+  /* ── Shadows — soft charcoal ───────────────────── */
+  --shadow-sm:      0 1px 2px rgba(31, 35, 40, 0.05);
+  --shadow-md:      0 4px 12px rgba(31, 35, 40, 0.08), 0 1px 2px rgba(31, 35, 40, 0.04);
+  --shadow-lg:      0 12px 32px rgba(31, 35, 40, 0.12), 0 2px 6px rgba(31, 35, 40, 0.05);
   --shadow-dark-sm: 0 2px 8px rgba(0, 0, 0, 0.18);
   --shadow-dark-md: 0 6px 20px rgba(0, 0, 0, 0.28);
   --shadow-dark-lg: 0 16px 48px rgba(0, 0, 0, 0.4);
 
   /* ── Transitions ────────────────────────────────── */
   --transition-fast:   150ms cubic-bezier(0.16, 1, 0.3, 1);
-  --transition-base:   200ms cubic-bezier(0.22, 1, 0.36, 1);
+  --transition-base:   200ms cubic-bezier(0.16, 1, 0.3, 1);
   --transition-spring: 350ms cubic-bezier(0.22, 1, 0.36, 1);
 
   /* ── Blur ───────────────────────────────────────── */
@@ -122,9 +151,9 @@
   --blur-md: 16px;
   --blur-lg: 24px;
 
-  /* ── Focus ring (Marigold tinted) ──────────────── */
-  --focus-ring:   0 0 0 3px rgba(252, 163, 41, 0.25);
-  --focus-shadow: 0 0 0 3px rgba(252, 163, 41, 0.18);
+  /* ── Focus ring (system-blue tinted) ──────────── */
+  --focus-ring:   0 0 0 3px var(--accent-ring);
+  --focus-shadow: 0 0 0 3px var(--accent-ring);
 
   /* ── Z-index ────────────────────────────────────── */
   --z-dropdown:       100;
@@ -158,10 +187,12 @@
   --leading-base:    1.5;
   --leading-relaxed: 1.7;
 
-  /* ── Type families — fallbacks before tokens.css
-        loads ABC Otto + Syncro. tokens.css redeclares
-        these to prepend the brand fonts. ────────── */
-  --font-sans:  'Syncro', 'Syncro Book', 'Inter', system-ui, -apple-system, sans-serif;
-  --font-mono:  'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
-  --font-serif: 'ABC Otto', 'ABC Otto Light', 'Source Serif Pro', Georgia, serif;
+  /* ── Type families — fallback chains. tokens.css
+        re-declares these to lock in the canonical
+        Typst chains (Helvetica primary, DejaVu Mono
+        for body / data rows). ─────────────────────── */
+  --font-sans:   'Helvetica', 'Helvetica Neue', 'Geist', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono:   'DejaVu Sans Mono', 'Geist Mono', 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+  --font-italic: 'Syncro', 'Syncro Book', italic;
+  --font-serif:  'Baskerville', 'Charter', 'Iowan Old Style', 'New York', 'Georgia', serif;
 }

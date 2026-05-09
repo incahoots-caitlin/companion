@@ -1,20 +1,16 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Buttons (v0.42 brand alignment)
+ *  Design system — Buttons (v0.45 macOS-leaning)
  * ══════════════════════════════════════════════════
- * Primary button is now Marigold orange. Secondary stays
- * a Cloud-on-soft-border ghost. Tokenised paddings and
- * shadows.
+ * System-blue primary, neutral secondary, transparent
+ * ghost, soft destructive. macOS-feel padding and
+ * radius. No Marigold, no orange.
  *
  * Variants:
- *   .button                — primary (Marigold fill, white text)
- *   .button.button-secondary — secondary (white, soft outline)
- *   .button.button-ghost   — no border, subtle hover
- *   .button.button-danger  — destructive (Dust brown fill)
- *   .button.button-sm      — smaller padding / type
- *
- * Use:
- *   <button class="button">Save</button>
- *   <button class="button button-secondary">Cancel</button>
+ *   .button                  — primary (blue fill, white text)
+ *   .button.button-secondary — secondary (white, hairline border)
+ *   .button.button-ghost     — no border, subtle hover
+ *   .button.button-danger    — destructive (red flag fill)
+ *   .button.button-sm        — smaller padding / type
  */
 
 .button {
@@ -24,12 +20,13 @@
   gap: var(--space-3xs);
   font: var(--type-body-sm);
   font-weight: 500;
-  padding: var(--space-xs) var(--space-sm);
+  padding: 8px 14px;
   border-radius: var(--radius-md);
   background: var(--accent);
   color: #FFFFFF;
   border: 1px solid var(--accent);
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
   transition:
     transform var(--transition-fast),
     background var(--transition-fast),
@@ -43,14 +40,13 @@
 }
 
 .button:hover:not(:disabled) {
-  background: var(--accent-warm);
-  border-color: var(--accent-warm);
-  transform: var(--hover-lift);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
   box-shadow: var(--shadow-md);
 }
 
 .button:active:not(:disabled) {
-  transform: scale(0.97);
+  transform: scale(0.98);
 }
 
 .button:disabled,
@@ -62,30 +58,36 @@
 
 .button:focus-visible {
   outline: none;
-  box-shadow: var(--focus-ring);
+  box-shadow: var(--focus-ring), var(--shadow-sm);
 }
 
 /* ── Secondary ────────────────────────────────────── */
 .button.button-secondary {
   background: var(--surface);
   color: var(--text);
-  border-color: var(--border-soft);
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
 }
 
 .button.button-secondary:hover:not(:disabled) {
-  background: var(--surface-warm);
-  border-color: var(--border);
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+}
+
+.button.button-secondary:focus-visible {
+  box-shadow: var(--focus-ring);
 }
 
 /* ── Ghost ────────────────────────────────────────── */
 .button.button-ghost {
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-mid);
   border-color: transparent;
+  box-shadow: none;
 }
 
 .button.button-ghost:hover:not(:disabled) {
-  background: var(--surface-warm);
+  background: var(--surface-2);
   color: var(--text);
 }
 
@@ -97,13 +99,13 @@
 }
 
 .button.button-danger:hover:not(:disabled) {
-  background: #3F2010;
-  border-color: #3F2010;
+  background: #9d2f1f;
+  border-color: #9d2f1f;
 }
 
 /* ── Small ────────────────────────────────────────── */
 .button.button-sm {
-  padding: var(--space-2xs) var(--space-3xs);
+  padding: 4px 10px;
   font-size: 12px;
   gap: var(--space-2xs);
 }

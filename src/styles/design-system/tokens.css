@@ -1,57 +1,35 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Tokens (v0.42 brand alignment)
+ *  Design system — Tokens (v0.45 Typst-aligned)
  * ══════════════════════════════════════════════════
- * Loads ABC Otto Light + Syncro Book + Syncro BookItalic
- * and maps Open Props primitives to In Cahoots-named
- * tokens (spacing, card chrome, easing, type rhythm).
+ * Locks in the canonical Typst type chains, the type
+ * ramp, and the macOS-leaning component rhythm.
  *
- * v0.42: Geist is gone. ABC Otto Light is the brand serif
- * (display, h1, h2, CFO stat numbers). Syncro Book is the
- * brand sans (body, dense tables, sidebar items, h3). The
- * hand-drawn "iN CAHooTS" mark stays as an SVG / PNG
- * asset, never a system font.
+ * v0.45: Helvetica leads (installed by default on macOS),
+ * Geist Sans falls back if Helvetica isn't available.
+ * DejaVu Sans Mono is the body / data-row font on
+ * receipt-leaning surfaces. Syncro is reserved for the
+ * italic register only (one place: the receipt-tagline).
+ * ABC Otto retired from default chrome — loaded only via
+ * @font-face if a future surface explicitly opts in.
  *
- * Order in build.js / index.html:
+ * Order in index.html:
  *   1. open-props.min.css
  *   2. primitives.css
  *   3. tokens.css   ← this file
  *   4. forms / buttons / modals / pills / banners /
- *      toasts / layouts / animations / receipt /
- *      status / illustration (any order)
+ *      toasts / layouts / animations / dividers /
+ *      receipt / status / illustration (any order)
  *   5. global-search.css   ← MUST come before app.css
  *   6. app.css (Companion app surface)
  *
  * Studio note: brand fonts live at fonts/*.otf relative
- * to index.html.
- *
- * Brand rule (per the guidelines): max 2 colours per
- * design plus black. Companion bends this for status
- * semantics; the chrome holds Reed sidebar + Cloud main
- * pane plus Marigold accent. Status pills add Grass /
- * Marigold / Dust / River as needed for meaning.
+ * to index.html. Syncro Book Italic is the only one
+ * loaded into the default surface.
  */
 
-@font-face {
-  font-family: 'ABC Otto';
-  src: url('../../fonts/ABCOtto-Light.otf') format('opentype');
-  font-weight: 300;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: 'ABC Otto Light';
-  src: url('../../fonts/ABCOtto-Light.otf') format('opentype');
-  font-weight: 300;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: 'Syncro';
-  src: url('../../fonts/Syncro-Book.otf') format('opentype');
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
+/* Syncro Book Italic — the one place the brand italic
+   register lives (receipt tagline, "pleasure being in
+   cahoots"). Roman cuts retired from default chrome. */
 @font-face {
   font-family: 'Syncro';
   src: url('../../fonts/Syncro-BookItalic.otf') format('opentype');
@@ -61,26 +39,53 @@
 }
 @font-face {
   font-family: 'Syncro Book';
-  src: url('../../fonts/Syncro-Book.otf') format('opentype');
+  src: url('../../fonts/Syncro-BookItalic.otf') format('opentype');
   font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* Geist Sans / Mono — graceful fallback if Helvetica
+   isn't on the system. Loaded conditionally; if the
+   files aren't present the chain falls through to
+   the next system font. */
+@font-face {
+  font-family: 'Geist';
+  src: local('Geist'), local('Geist Sans');
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: local('Geist Mono');
+  font-weight: 400 700;
   font-style: normal;
   font-display: swap;
 }
 
 :root {
-  /* Brand fonts win on cascade order. primitives.css
-     declares the fallback chain; this :root block
-     redeclares with the brand fonts at the front. */
-  --font-serif:   'ABC Otto', 'ABC Otto Light', 'Source Serif Pro', Georgia, serif;
-  --font-sans:    'Syncro', 'Syncro Book', 'Inter', system-ui, -apple-system, sans-serif;
-  --font-display: 'ABC Otto', 'ABC Otto Light', Georgia, serif;
-  --font-mono:    'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
-  font-feature-settings: 'kern', 'liga';
+  /* Lock in the canonical Typst chains. primitives.css
+     declares the same fallback chains; this redeclaration
+     ensures cascade order doesn't drop tokens.css if it
+     loads later. */
+  --font-sans:    'Helvetica', 'Helvetica Neue', 'Geist', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono:    'DejaVu Sans Mono', 'Geist Mono', 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+  --font-italic:  'Syncro', 'Syncro Book', italic;
+  --font-serif:   'Baskerville', 'Charter', 'Iowan Old Style', 'New York', 'Georgia', serif;
+  /* Display reaches for sans (Helvetica/Geist 600). The
+     serif chain is reserved for the italic tagline only. */
+  --font-display: var(--font-sans);
+
+  /* v0.40 baseline ss01 / cv11 features restored.
+     Helvetica ignores them; Geist picks them up if it's
+     the chosen face. */
+  font-feature-settings: 'kern', 'liga', 'ss01', 'cv11';
   font-optical-sizing: auto;
 }
 
 :root {
-  /* ── Spacing — generous, brand-warm ─────────────── */
+  /* ── Spacing — generous, neutral ────────────────── */
   --space-1xs: 2px;                 /* hairline */
   --space-2xs: var(--space-1);      /*  4px */
   --space-3xs: 6px;                 /* between very-related things */
@@ -92,11 +97,11 @@
   --space-2xl: 32px;
   --space-3xl: 48px;
 
-  /* ── Card chrome — soft, warm ──────────────────── */
+  /* ── Card chrome — soft, neutral ───────────────── */
   --card-bg: var(--surface);
   --card-bg-hover: var(--surface);
   --card-border-color: var(--border-soft);
-  --card-border-color-hover: rgba(0, 0, 0, 0.14);
+  --card-border-color-hover: var(--border);
   --card-radius: var(--radius-lg);
   --card-padding: var(--space-lg);          /* 24px */
   --card-padding-tight: var(--space-md);    /* 20px */
@@ -107,7 +112,7 @@
 
   /* ── Easing ────────────────────────────────────── */
   --ease-snap: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-flow: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-flow: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-soft: cubic-bezier(0.25, 0.46, 0.45, 0.94);
 
   /* ── Section rhythm ───────────────────────────── */
@@ -115,38 +120,40 @@
   --section-padding-y: var(--space-xl);
   --section-gap: var(--space-2xl);
 
-  /* ── Typography rhythm — ABC Otto + Syncro ─────── */
-  --type-display:  300 32px/1.15  var(--font-serif);   /* surface titles in ABC Otto Light */
-  --type-h1:       300 24px/1.25  var(--font-serif);   /* page headers, Otto Light */
-  --type-h2:       300 20px/1.3   var(--font-serif);   /* section headers, Otto Light */
-  --type-h3:       500 15px/1.4   var(--font-sans);    /* dense sub-headers in Syncro Book */
-  --type-body:     400 14px/1.55  var(--font-sans);    /* Syncro Book */
-  --type-body-sm:  400 13px/1.5   var(--font-sans);
-  --type-meta:     400 12px/1.5   var(--font-sans);
-  --type-label:    500 10.5px/1.2 var(--font-mono);    /* eyebrow labels stay mono */
-  --type-stat:     300 28px/1     var(--font-serif);   /* CFO numbers in Otto Light */
-  --type-mono:     400 12px/1.4   var(--font-mono);
+  /* ── Typography rhythm — Helvetica/Geist sans, DejaVu
+        Mono for receipt-leaning data rows. Sizes mirror
+        the Typst documents (8.5pt mono body, 7pt sans
+        section labels, scaled up for screen). ──── */
+  --type-display:  600 24px/1.25 var(--font-sans);   /* hero only */
+  --type-h1:       600 20px/1.3  var(--font-sans);
+  --type-h2:       600 16px/1.35 var(--font-sans);
+  --type-h3:       600 14px/1.4  var(--font-sans);
+  --type-body:     400 13px/1.55 var(--font-sans);
+  --type-body-sm:  400 12px/1.5  var(--font-sans);
+  --type-meta:     400 11px/1.5  var(--font-sans);
+  --type-data:     400 12px/1.5  var(--font-mono);   /* mono body, matches Typst 8.5pt feel */
+  --type-label:    500 10px/1.2  var(--font-mono);   /* eyebrow caps (mono) */
+  --type-stat:     600 24px/1    var(--font-mono);   /* tabular numbers */
+  --type-mono:     400 12px/1.4  var(--font-mono);
 
-  /* Sidebar typography (filled the audit's gap) */
-  --type-sidebar-label:    500 10.5px/1.2 var(--font-mono);
-  --type-sidebar-subitem:  400 12.5px/1.4 var(--font-sans);
+  /* Sidebar typography */
+  --type-sidebar-label:   500 10px/1.2 var(--font-mono);
+  --type-sidebar-subitem: 400 12px/1.4 var(--font-sans);
 
   /* Modal dimensions */
   --modal-max-width:  640px;
   --modal-max-height: 90vh;
 
-  /* Tabular figures — apply on numerical contexts (CFO,
-     time logs, commitment counters) per the brand book. */
-
   /* ── Hover lift — soft, fast ──────────────────── */
-  --hover-lift: translateY(-1px);
+  --hover-lift:          translateY(-1px);
   --hover-lift-stronger: translateY(-2px);
 }
 
 /* Tabular figures helper. Add `.tabular` to any element
-   carrying numbers that should align (CFO tables, ticket
-   counts). The OpenType `tnum` feature comes from the
-   Syncro Book file. */
+   carrying numbers that should align (CFO tables, time
+   logs, commitment counters). DejaVu Sans Mono is
+   inherently monospaced; this also picks up tnum/lnum
+   when Geist Mono is the chosen face. */
 .tabular,
 .tabular-figures {
   font-feature-settings: 'tnum' on, 'lnum' on;

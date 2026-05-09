@@ -1,9 +1,9 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Modals (v0.42 brand alignment)
+ *  Design system — Modals (v0.45 macOS-leaning)
  * ══════════════════════════════════════════════════
- * Modal title is now ABC Otto serif. Soft, warm shadow
- * on the dialog box. Tokenised dimensions
- * (--modal-max-width / --modal-max-height).
+ * Sheet treatment: white bg, --radius-lg, --shadow-lg.
+ * Header uses Helvetica/Geist sans (--type-h2). Soft
+ * charcoal shadow, hairline borders. No serif.
  *
  * Anatomy:
  *   .modal-overlay         — full-screen backdrop
@@ -119,20 +119,20 @@
   width: 100%;
   margin: 0;
   padding: var(--space-sm);
-  border: 1px solid var(--border-soft);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   font: var(--type-body);
   font-family: var(--font-sans);
   resize: vertical;
   min-height: 180px;
-  background: var(--surface-deep);
+  background: var(--surface);
   color: var(--text);
   outline: none;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .modal-textarea:focus {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   box-shadow: var(--focus-shadow);
 }
 

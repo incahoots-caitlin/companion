@@ -1,0 +1,62 @@
+/* ══════════════════════════════════════════════════
+ *  Design system — Dividers (v0.45 Typst-aligned)
+ * ══════════════════════════════════════════════════
+ * Two divider helpers matching the Typst document
+ * conventions in components.typ:
+ *
+ *   .divider-dashed — 0.5pt black, 2pt-3pt dash pattern
+ *                     (Typst: line(stroke: (paint: black,
+ *                     thickness: 0.5pt, dash: (2pt, 3pt))))
+ *
+ *   .divider-dotted — 0.5pt black circles every 4pt
+ *                     (Typst: dot-divider() in
+ *                     components.typ)
+ *
+ * Use these in Today / per-client / per-project section
+ * dividers and inside the receipt component to keep the
+ * data surfaces feeling printed.
+ */
+
+.divider-dashed {
+  border: 0;
+  border-top: 1px dashed rgba(31, 35, 40, 0.4);
+  margin: 12px 0;
+  height: 0;
+}
+
+.divider-dotted {
+  border: 0;
+  background-image: radial-gradient(
+    circle,
+    rgba(31, 35, 40, 0.5) 0.5px,
+    transparent 0.5px
+  );
+  background-size: 4px 1px;
+  background-repeat: repeat-x;
+  background-position: center;
+  height: 1px;
+  margin: 12px 0;
+}
+
+/* Inline-section variant: tighter margins for use inside
+   stacked rows (Today rows, per-client lists). */
+.divider-dashed-tight {
+  border: 0;
+  border-top: 1px dashed rgba(31, 35, 40, 0.25);
+  margin: 6px 0;
+  height: 0;
+}
+
+.divider-dotted-tight {
+  border: 0;
+  background-image: radial-gradient(
+    circle,
+    rgba(31, 35, 40, 0.5) 0.5px,
+    transparent 0.5px
+  );
+  background-size: 4px 1px;
+  background-repeat: repeat-x;
+  background-position: center;
+  height: 1px;
+  margin: 6px 0;
+}

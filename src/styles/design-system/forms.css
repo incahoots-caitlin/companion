@@ -1,13 +1,9 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Forms (v0.42 brand alignment)
+ *  Design system — Forms (v0.45 macOS-leaning)
  * ══════════════════════════════════════════════════
- * Inputs, selects, textareas, labels, and the
- * settings-style label/input pair that Studio's
- * workflow modals already use.
- *
- * v0.42: Studio aliases unified on --font-sans (Syncro)
- * — the previous mono treatment was inconsistent. Focus
- * shadow uses the new --focus-shadow token (Marigold).
+ * Inputs, selects, textareas, labels. Hairline borders
+ * on white, blue focus shadow, padding 8px 12px,
+ * --radius-md. Classes mirror v0.44.
  *
  * Classes:
  *   .form-input        — text/date/email/number input
@@ -25,10 +21,10 @@
   width: 100%;
   font: var(--type-body-sm);
   font-family: var(--font-sans);
-  padding: var(--space-xs) var(--space-3xs);
+  padding: 8px 12px;
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-soft);
-  background: var(--surface-deep);
+  border: 1px solid var(--border);
+  background: var(--surface);
   color: var(--text);
   outline: none;
   transition:
@@ -41,7 +37,7 @@
 .form-input:focus,
 .form-select:focus,
 .form-textarea:focus {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   box-shadow: var(--focus-shadow);
 }
 
@@ -55,7 +51,7 @@
 .form-textarea:disabled {
   opacity: 0.6;
   cursor: not-allowed;
-  background: var(--surface-warm);
+  background: var(--surface-2);
 }
 
 /* ── Select chevron ───────────────────────────────── */
@@ -134,10 +130,10 @@ textarea.settings-input {
   width: 100%;
   font: var(--type-body-sm);
   font-family: var(--font-sans);
-  padding: var(--space-xs) var(--space-3xs);
+  padding: 8px 12px;
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-soft);
-  background: var(--surface-deep);
+  border: 1px solid var(--border);
+  background: var(--surface);
   color: var(--text);
   outline: none;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
@@ -146,7 +142,7 @@ textarea.settings-input {
 }
 
 .settings-input:focus {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   box-shadow: var(--focus-shadow);
 }
 

@@ -1,12 +1,12 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Toasts (v0.42 brand alignment)
+ *  Design system — Toasts (v0.45 dark fill)
  * ══════════════════════════════════════════════════
- * Stacked bottom-right toasts. Studio uses #toast-root
- * with .toast children.
+ * Stacked bottom-right. Studio uses #toast-root with
+ * .toast children.
  *
- * v0.42: Dust background (brand warm dark) with Cloud
- * text instead of pure black ink. Variants pull from
- * --status-* tokens. Soft warm shadow.
+ * v0.45: near-black fill with white text. Status
+ * variants get a 3px coloured leading edge (left border)
+ * pulling from --status-*.
  */
 
 #toast-root,
@@ -22,12 +22,13 @@
 }
 
 .toast {
-  background: var(--brand-dust);
-  color: var(--brand-cloud);
+  background: var(--text);
+  color: #FFFFFF;
   font: var(--type-body-sm);
   font-weight: 500;
-  padding: var(--space-3xs) var(--space-sm);
+  padding: 10px 14px;
   border-radius: var(--radius-md);
+  border-left: 3px solid transparent;
   box-shadow: var(--shadow-lg);
   opacity: 0;
   transform: translateY(8px);
@@ -44,17 +45,7 @@
   transform: translateY(0);
 }
 
-.toast.toast-success {
-  background: var(--status-ok);
-  color: #FFFFFF;
-}
-
-.toast.toast-error {
-  background: var(--status-error);
-  color: #FFFFFF;
-}
-
-.toast.toast-info {
-  background: var(--status-info);
-  color: #FFFFFF;
-}
+.toast.toast-success { border-left-color: var(--status-ok); }
+.toast.toast-error   { border-left-color: var(--status-error); }
+.toast.toast-info    { border-left-color: var(--status-info); }
+.toast.toast-warn    { border-left-color: var(--status-warn); }

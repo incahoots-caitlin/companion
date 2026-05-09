@@ -1,12 +1,24 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Receipt (v0.42)
+ *  Design system — Receipt (v0.45 Typst-aligned)
  * ══════════════════════════════════════════════════
- * Extracted from app.css in v0.42. The receipt is a
- * major surface (printed thermal receipt look, sign-off
- * mark, campaign sign-off stamp) and deserves its own
- * file. Tokenised to brand fonts and warm palette.
+ * Updated to mirror Caitlin's canonical Typst document
+ * templates (Dropbox/IN CAHOOTS/05 TEMPLATES/RECEIPT-DOCS/
+ * typst/components.typ).
  *
- * Anatomy:
+ * Key alignment with Typst source:
+ *   - Body / data rows use --type-data (mono, DejaVu)
+ *   - Section labels use --type-label (mono caps, ~7pt feel)
+ *   - Title uses sans (Helvetica/Geist) — no serif
+ *   - Dividers use the dashed-line style (1px dashed, 40%
+ *     opacity black) matching Typst's
+ *     line(stroke: (paint: black, thickness: 0.5pt,
+ *     dash: (2pt, 3pt)))
+ *   - Stamp uses sage / win-fill instead of brand
+ *     Marigold orange
+ *   - Tagline is the one place Syncro Book Italic lives
+ *     (var(--font-italic))
+ *
+ * Anatomy unchanged from v0.42:
  *   .receipt
  *     .receipt-header
  *       .receipt-title
@@ -35,9 +47,7 @@
   border: 1px solid var(--card-border-color);
   border-radius: var(--card-radius);
   padding: var(--card-padding);
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.55;
+  font: var(--type-data);                /* mono body, matches Typst */
   color: var(--text);
 }
 
@@ -45,13 +55,13 @@
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  border-bottom: 1px dashed var(--border);
+  border-bottom: 1px dashed rgba(31, 35, 40, 0.4);
   padding-bottom: var(--space-sm);
   margin-bottom: var(--space-sm);
 }
 
 .receipt-title {
-  font: var(--type-h3);
+  font: var(--type-h3);                  /* sans, NOT serif */
   font-family: var(--font-sans);
 }
 
@@ -82,9 +92,9 @@
 }
 
 .receipt-action-btn:hover:not(:disabled) {
-  background: var(--surface-warm);
+  background: var(--surface-2);
   color: var(--text);
-  border-color: var(--card-border-color-hover);
+  border-color: var(--border);
 }
 
 .receipt-action-btn:disabled {
@@ -93,9 +103,9 @@
 }
 
 .receipt-section-label {
-  font: var(--type-label);
+  font: var(--type-label);              /* mono caps, ~7pt feel */
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--text);
   margin: var(--space-sm) 0 var(--space-xs);
 }
 
@@ -105,6 +115,7 @@
   gap: var(--space-sm);
   padding: var(--space-2xs) 0;
   align-items: baseline;
+  font-family: var(--font-mono);
 }
 
 .receipt-item-text { color: var(--text); }
@@ -135,14 +146,23 @@
   color: var(--text-muted);
 }
 
+/* Dashed divider — same look as .divider-dashed in
+   dividers.css. Kept as a separate rule so the
+   receipt component is self-contained. */
 .receipt-divider {
-  border-top: 1px dashed var(--border);
+  border: 0;
+  border-top: 1px dashed rgba(31, 35, 40, 0.4);
   margin: var(--space-md) 0;
+  height: 0;
 }
 
+/* "pleasure being in cahoots" — the one place the
+   Syncro italic register lives. Uses var(--font-italic)
+   which falls back to the serif chain if Syncro isn't
+   loaded. */
 .receipt-position {
   text-align: center;
-  font-family: var(--font-serif);
+  font-family: var(--font-italic);
   font-style: italic;
   font-size: 16px;
   color: var(--text-mid);
@@ -164,14 +184,17 @@
   padding-top: var(--space-2xs);
 }
 
+/* Stamp — pulls from Typst sage / win-fill where it
+   used to be brand Marigold. */
 .receipt-stamp {
   text-align: center;
   font-family: var(--font-sans);
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.05em;
-  color: var(--accent);
-  border: 2px solid var(--accent);
+  color: var(--receipt-win-dot);
+  background: var(--receipt-win-fill);
+  border: 2px solid var(--receipt-win-dot);
   border-radius: var(--radius-md);
   padding: var(--space-xs) var(--space-lg);
   margin: var(--space-md) auto;
@@ -194,7 +217,7 @@
   font-style: italic;
   margin-top: var(--space-md);
   padding-top: var(--space-sm);
-  border-top: 1px dashed var(--border);
+  border-top: 1px dashed rgba(31, 35, 40, 0.4);
 }
 
 .receipt-brand {
@@ -221,15 +244,16 @@
   text-align: center;
   margin-top: var(--space-lg);
   padding-top: var(--space-md);
-  border-top: 1px dashed var(--border);
+  border-top: 1px dashed rgba(31, 35, 40, 0.4);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: var(--space-xs);
 }
 
+/* Tagline — Syncro italic, the canonical italic register */
 .receipt-tagline {
-  font-family: var(--font-serif);
+  font-family: var(--font-italic);
   font-style: italic;
   font-size: 18px;
   color: var(--text-mid);

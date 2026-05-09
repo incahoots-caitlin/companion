@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════
- *  Design system — Layouts (v0.42 brand alignment)
+ *  Design system — Layouts (v0.45 traditional SaaS)
  * ══════════════════════════════════════════════════
  * Shared scaffolding both apps use:
  *   - .sidebar with brand mark + items + sections
@@ -8,25 +8,25 @@
  *   - .section-label + .feed
  *   - .empty (empty-state placeholder)
  *
- * v0.42: sidebar moves to Reed (brand warm grey), main
- * pane to Cloud (brand off-white). Active sidebar item
- * is a thin Marigold left border, not a fill. Sidebar
- * label tokens (--type-sidebar-label) and subitem token
- * (--type-sidebar-subitem) are now wired through.
+ * v0.45: cool-grey GitHub-style sidebar (#F0F2F5), white
+ * main pane background sits a hair above (#F6F8FA).
+ * Active sidebar item gets a subtle accent-soft fill.
+ * Sidebar header carries the morph In Cahoots GIF — no
+ * filters, no hover effects.
  */
 
 /* ── Sidebar ──────────────────────────────────────── */
 .sidebar {
-  background: var(--surface2);   /* Reed */
+  background: var(--surface-2);
   border-right: 1px solid var(--border-soft);
-  padding: var(--space-lg) var(--space-md);
+  padding: 12px 8px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
 }
 
 .sidebar-brand {
-  margin-bottom: var(--space-xl);
+  margin-bottom: var(--space-lg);
   padding: var(--space-xs);
   display: flex;
   flex-direction: column;
@@ -39,6 +39,15 @@
   max-width: 180px;
   height: auto;
   display: block;
+}
+
+/* Morph GIF — runs its own animation, no filters,
+   no hover effects. Sized to sit comfortably in the
+   sidebar header. */
+.brand-mark.logo-morph {
+  max-height: 28px;
+  width: auto;
+  filter: none;
 }
 
 .brand-tag {
@@ -70,29 +79,26 @@
 
 .sidebar-item {
   display: block;
-  padding: var(--space-3xs) var(--space-xs);
+  padding: 6px 10px;
   border-radius: var(--radius-md);
   color: var(--text-mid);
   text-decoration: none;
-  font: var(--type-body);
+  font: var(--type-body-sm);
   cursor: pointer;
-  border-left: 3px solid transparent;
   transition:
     background var(--transition-fast),
-    color var(--transition-fast),
-    border-left-color var(--transition-fast);
+    color var(--transition-fast);
 }
 
 .sidebar-item:hover {
-  background: var(--surface-warm);
+  background: var(--surface-glass-light);
   color: var(--text);
 }
 
 .sidebar-item.active {
-  background: var(--surface-warm);
+  background: var(--accent-soft);
   color: var(--text);
   font-weight: 500;
-  border-left-color: var(--accent);
 }
 
 /* v0.28 Block E: project sub-items expand under their parent client. */
@@ -121,12 +127,12 @@
 }
 
 .sidebar-subitem:hover {
-  background: var(--surface-warm);
+  background: var(--surface-glass-light);
   color: var(--text);
 }
 
 .sidebar-subitem.active {
-  background: var(--surface-warm);
+  background: var(--accent-soft);
   color: var(--text);
   font-weight: 500;
 }
@@ -152,7 +158,7 @@
 }
 
 .main-title {
-  font: var(--type-display);
+  font: var(--type-h1);
   letter-spacing: -0.005em;
   color: var(--text);
 }
@@ -167,9 +173,9 @@
   font: var(--type-label);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--text-muted);
+  color: var(--text);
   padding: var(--space-md) var(--section-padding-x) var(--space-xs);
-  border-bottom: 1px solid var(--border-soft);
+  border-bottom: 1px dashed rgba(31, 35, 40, 0.4);
   margin-bottom: var(--space-xs);
 }
 

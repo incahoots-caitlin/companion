@@ -64,24 +64,18 @@ function dispatch(name, detail) {
   document.dispatchEvent(new CustomEvent(name, { detail }));
 }
 
-// v0.42: empty-state hero with cowboys illustration + grass-stroke pattern
-// behind it. Used when a Today section is genuinely empty (clear day,
-// nothing overdue). Once per surface — never repeating, never on row cards.
+// v0.45: quiet empty-state. Drops the cowboys-illustration default in
+// favour of a plain message — chrome reads as traditional SaaS now,
+// not branded. The cowboys class stays available via
+// .illustration-cowboys for opt-in use elsewhere.
 function renderEmptyHero(headlineText, metaText) {
-  const cowboys = el("img", {
-    class: "illustration-cowboys illustration-cowboys-cloud",
-    src: "illustrations/cowboys-cloud.png",
-    alt: "",
-    "aria-hidden": "true",
-  });
   const children = [
-    cowboys,
     el("div", { class: "empty-state-text" }, [headlineText]),
   ];
   if (metaText) {
     children.push(el("div", { class: "empty-state-text-meta" }, [metaText]));
   }
-  return el("div", { class: "empty-state today-empty-hero illustration-grass-pattern" }, children);
+  return el("div", { class: "empty-state today-empty-hero" }, children);
 }
 
 // ── Section: due today ────────────────────────────────────────────────
